@@ -1,0 +1,19 @@
+{
+  "name": "solid-circuits",
+  "version": "0.1.0",
+  "description": "SolID Protocol ZK circuits",
+  "scripts": {
+    "compile": "circom compound_query.circom --r1cs --wasm --sym --c --output build/ -l node_modules/circomlib/circuits",
+    "setup": "node scripts/setup.js",
+    "test": "mocha test/ --timeout 60000"
+  },
+  "dependencies": {
+    "circomlib": "^2.0.5"
+  },
+  "devDependencies": {
+    "mocha": "^10.2.0",
+    "chai": "^4.3.7",
+    "snarkjs": "^0.7.0",
+    "ffjavascript": "^0.2.59"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "basic_identity_v1",
+  "version": 1,
+  "category": "Hospitality",
+  "description": "Basic identity verification for age-gating, residency, and KYC level",
+  "fields": [
+    { "index": 0, "name": "age", "type": "uint64", "range_queryable": true, "description": "Age in years" },
+    { "index": 1, "name": "country_code", "type": "uint64", "range_queryable": false, "description": "ISO 3166-1 numeric country code" },
+    { "index": 2, "name": "resident_region", "type": "uint64", "range_queryable": false, "description": "Region code" },
+    { "index": 3, "name": "id_type", "type": "enum", "variants": ["Passport", "DL", "NationalID"], "range_queryable": false, "description": "Identity document type" },
+    { "index": 4, "name": "verification_level", "type": "uint64", "range_queryable": true, "description": "1=Self, 2=KYC, 3=InPerson" },
+    { "index": 5, "name": "issued_date", "type": "timestamp", "range_queryable": true, "description": "Issuance timestamp" },
+    { "index": 6, "name": "nationality", "type": "uint64", "range_queryable": false, "description": "Nationality code" },
+    { "index": 7, "name": "_reserved", "type": "uint64", "range_queryable": false, "description": "Reserved for future use" }
+  ]
+}

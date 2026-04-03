@@ -1,0 +1,16 @@
+{
+  "name": "product_cert_v1",
+  "version": 1,
+  "category": "SupplyChain",
+  "description": "Product certification for supply chain compliance and organic verification",
+  "fields": [
+    { "index": 0, "name": "product_category", "type": "uint64", "range_queryable": false, "description": "Product category code" },
+    { "index": 1, "name": "certification_level", "type": "uint64", "range_queryable": true, "description": "1=Basic, 2=Standard, 3=Premium" },
+    { "index": 2, "name": "audit_date", "type": "timestamp", "range_queryable": true, "description": "Last audit date" },
+    { "index": 3, "name": "auditor_id", "type": "uint64", "range_queryable": false, "description": "Auditor identifier" },
+    { "index": 4, "name": "compliance_score", "type": "uint64", "range_queryable": true, "description": "0-100 compliance score" },
+    { "index": 5, "name": "region", "type": "uint64", "range_queryable": false, "description": "Production region code" },
+    { "index": 6, "name": "organic_flag", "type": "boolean", "range_queryable": false, "description": "Organic certification (0=No, 1=Yes)" },
+    { "index": 7, "name": "valid_until", "type": "timestamp", "range_queryable": true, "description": "Certification validity expiry" }
+  ]
+}

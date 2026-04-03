@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  },
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/light" },
+    { "path": "packages/issuer" },
+    { "path": "packages/holder" },
+    { "path": "packages/verifier" }
+  ],
+  "files": []
+}

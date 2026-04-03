@@ -1,0 +1,76 @@
+pragma circom 2.1.0;
+
+include "../node_modules/circomlib/circuits/comparators.circom";
+include "../node_modules/circomlib/circuits/mux1.circom";
+
+/// Evaluate a single predicate: field_value <operator> query_value
+/// Operators: 0=NOOP 1=EQ 2=NE 3=GT 4=GTE 5=LT 6=LTE
+/// Output: 1 if predicate passes, 0 if fails.
+template PredicateEvaluator() {
+    signal input fieldValue;
+    signal input operator;
+    signal input queryValue;
+    signal output result;
+
+    // Comparison components
+    component isEq = IsEqual();
+    isEq.in[0] <== fieldValue;
+    isEq.in[1] <== queryValue;
+
+    component isGt = GreaterThan(252);
+    isGt.in[0] <== fieldValue;
+    isGt.in[1] <== queryValue;
+
+    component isLt = LessThan(252);
+    isLt.in[0] <== fieldValue;
+    isLt.in[1] <== queryValue;
+
+    // Derived comparisons
+    signal gte <== isGt.out + isEq.out - isGt.out * isEq.out; // GTE = GT OR EQ
+    signal lte <== isLt.out + isEq.out - isLt.out * isEq.out; // LTE = LT OR EQ
+    signal ne <== 1 - isEq.out;
+
+    // Operator decoding (one-hot via equality checks)
+    component opIs[7];
+    for (var i = 0; i < 7; i++) {
+        opIs[i] = IsEqual();
+        opIs[i].in[0] <== operator;
+        opIs[i].in[1] <== i;
+    }
+
+    // Select result based on operator:
+    // op=0 (NOOP) → always 1
+    // op=1 (EQ)   → isEq
+    // op=2 (NE)   → ne
+    // op=3 (GT)   → isGt
+    // op=4 (GTE)  → gte
+    // op=5 (LT)   → isLt
+    // op=6 (LTE)  → lte
+    result <== opIs[0].out * 1
+             + opIs[1].out * isEq.out
+             + opIs[2].out * ne
+             + opIs[3].out * isGt.out
+             + opIs[4].out * gte
+             + opIs[5].out * isLt.out
+             + opIs[6].out * lte;
+}
+
+/// Select a field value from attestation data by index.
+template FieldSelector(NUM_FIELDS) {
+    signal input data[NUM_FIELDS];
+    signal input index;
+    signal output value;
+
+    component indexEq[NUM_FIELDS];
+    signal mux[NUM_FIELDS];
+
+    var acc = 0;
+    for (var i = 0; i < NUM_FIELDS; i++) {
+        indexEq[i] = IsEqual();
+        indexEq[i].in[0] <== index;
+        indexEq[i].in[1] <== i;
+        mux[i] <== indexEq[i].out * data[i];
+        acc += mux[i];
+    }
+    value <== acc;
+}

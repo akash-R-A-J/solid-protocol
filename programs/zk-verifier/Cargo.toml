@@ -1,0 +1,19 @@
+[package]
+name = "zk-verifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "zk_verifier"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+
+[dependencies]
+anchor-lang = { workspace = true }
+groth16-solana = "0.2"

@@ -1,0 +1,33 @@
+﻿cargo : warning: unused import: 
+`OsRng as AesOsRng`
+At line:1 char:52
++ ... cation 
+c:\Users\KIIT\Desktop\solid-protocol; 
+cargo check 2>&1 | Out-F ...
++                                     
+             ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpec 
+   ified: (warning: unused...ng as A  
+  esOsRng`:String) [], RemoteExcept   
+ ion
+    + FullyQualifiedErrorId : NativeC 
+   ommandError
+ 
+  --> crates\solid-core\src\babyjubjub
+.rs:11:27
+   |
+11 |     aead::{Aead, KeyInit, OsRng 
+as AesOsRng},
+   |                           
+^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` 
+(part of `#[warn(unused)]`) on by 
+default
+
+warning: `solid-core` (lib) generated 
+1 warning (run `cargo fix --lib -p 
+solid-core` to apply 1 suggestion)
+    Finished `dev` profile 
+[unoptimized + debuginfo] target(s) 
+in 0.13s

@@ -1,0 +1,16 @@
+{
+  "name": "vaccination_v1",
+  "version": 1,
+  "category": "Healthcare",
+  "description": "Vaccination status verification including vaccine type, doses, and authority",
+  "fields": [
+    { "index": 0, "name": "vaccine_type", "type": "enum", "variants": ["COVID", "Flu", "Measles"], "range_queryable": false, "description": "Vaccine type" },
+    { "index": 1, "name": "dose_number", "type": "uint64", "range_queryable": true, "description": "Dose number" },
+    { "index": 2, "name": "date_administered", "type": "timestamp", "range_queryable": true, "description": "Administration date" },
+    { "index": 3, "name": "issuer_authority", "type": "uint64", "range_queryable": false, "description": "1=CDC, 2=WHO, 3=NHS" },
+    { "index": 4, "name": "batch_number", "type": "uint64", "range_queryable": false, "description": "Vaccine batch ID" },
+    { "index": 5, "name": "expiry_date", "type": "timestamp", "range_queryable": true, "description": "Vaccination validity expiry (0=none)" },
+    { "index": 6, "name": "country_code", "type": "uint64", "range_queryable": false, "description": "ISO 3166-1 country code" },
+    { "index": 7, "name": "recipient_age", "type": "uint64", "range_queryable": true, "description": "Age at vaccination" }
+  ]
+}

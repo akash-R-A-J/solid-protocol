@@ -1,0 +1,19 @@
+{
+  "name": "@solid-protocol/holder",
+  "version": "0.1.0",
+  "description": "Proof generation SDK for credential holders",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@solid-protocol/core": "0.1.0",
+    "@solid-protocol/light": "0.1.0",
+    "snarkjs": "^0.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

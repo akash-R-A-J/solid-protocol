@@ -1,0 +1,19 @@
+{
+  "name": "@solid-protocol/issuer",
+  "version": "0.1.0",
+  "description": "Credential issuance SDK with Light Protocol tree insertion",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@solid-protocol/core": "0.1.0",
+    "@solid-protocol/light": "0.1.0",
+    "@solana/web3.js": "^1.95.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+Cargo.lock
+node_modules/
+dist/
+pkg/
+circuits/build/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+.env
