@@ -11,3 +11,8 @@ circuits/build/
 .DS_Store
 Thumbs.db
 .env
+
+# SolID Research & Audit (Local Only)
+# docs/SOLID_INFRA_MANIFESTO.md
+# docs/SOLID_SECURITY_AUDIT.md
+# docs/SOLID_COMPREHENSIVE_REVIEW.md

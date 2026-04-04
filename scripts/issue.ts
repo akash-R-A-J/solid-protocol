@@ -55,7 +55,18 @@ async function main() {
 
     // 2. Define Schema & Data
     const fields = ['age', 'country_code', 'region', 'id_type', 'verification_level', 'issued_date', 'nationality', '_reserved'];
-    const schemaHash = poseidonHashBytes([Buffer.from(fields.join(','))]);
+    
+    // Chunk/Pad metadata string to 32-byte blocks for Poseidon
+    const metadataBytes = Buffer.from(fields.join(','));
+    const chunkCount = Math.ceil(metadataBytes.length / 32);
+    const schemaChunks: Uint8Array[] = [];
+    for (let i = 0; i < chunkCount; i++) {
+        const chunk = new Uint8Array(32);
+        const source = metadataBytes.subarray(i * 32, (i + 1) * 32);
+        chunk.set(source);
+        schemaChunks.push(chunk);
+    }
+    const schemaHash = poseidonHashBytes(schemaChunks);
     console.log(`   Schema Hash: ${Buffer.from(schemaHash).toString('hex')}`);
 
     const attestationData = [
