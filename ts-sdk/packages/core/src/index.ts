@@ -53,8 +53,7 @@ function ensureInit() {
 
 export function poseidonHash(fields: bigint[]): Uint8Array {
   ensureInit();
-  const u64Fields = fields.map(f => Number(f));
-  return new Uint8Array(wasmModule.poseidonHash(new BigUint64Array(u64Fields)));
+  return new Uint8Array(wasmModule.poseidonHash(new BigUint64Array(fields)));
 }
 
 export function poseidonHashBytes(inputs: Uint8Array[]): Uint8Array {
@@ -99,7 +98,7 @@ export function computeCommitment(
 ): Uint8Array {
   ensureInit();
   return new Uint8Array(wasmModule.computeCommitment(
-    new BigUint64Array(dataFields.map(Number)),
+    new BigUint64Array(dataFields),
     schemaHash, holderPubKeyX, holderPubKeyY, salt,
   ));
 }

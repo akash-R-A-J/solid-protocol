@@ -54,7 +54,7 @@ SolID enables **selective disclosure** and **privacy-preserving verification** o
 git clone https://github.com/your-org/solid-protocol.git
 cd solid-protocol
 
-# Run all 40 core crypto tests
+# Run all 41 core crypto tests
 cargo test -p solid-core
 
 # Build WASM module
@@ -79,14 +79,15 @@ anchor deploy --provider.cluster devnet
 
 | Package | Type | Description |
 |---|---|---|
-| `solid-core` | Rust crate | Poseidon hash, BabyJubJub EdDSA, commitments, nullifiers |
+| `solid-core` | Rust crate | Poseidon hash, BabyJubJub EdDSA, commitments, nullifiers, SAS types |
+| `solid-light` | Rust crate | Light Protocol CPI helpers (insert, revoke, verify root) |
 | `solid-wasm` | Rust → WASM | Browser/Node.js bridge for solid-core |
 | `@solid-protocol/core` | TypeScript | WASM loader + QueryBuilder DSL |
 | `@solid-protocol/issuer` | TypeScript | Credential issuance + Light Protocol tree insertion |
-| `@solid-protocol/holder` | TypeScript | Groth16 proof generation (snarkjs) |
+| `@solid-protocol/holder` | TypeScript | Groth16 proof generation (snarkjs + Photon) |
 | `@solid-protocol/verifier` | TypeScript | On-chain proof submission |
 | `@solid-protocol/light` | TypeScript | Light Protocol compressed tree operations |
-| `zk-verifier` | Anchor | Groth16 verification + nullifier registry |
+| `zk-verifier` | Anchor | Groth16 verification (real alt_bn128) + Bloom filter nullifiers |
 | `issuer-registry` | Anchor | DAO-governed issuer trust management |
 | `schema-registry` | Anchor | Modular schema definitions |
 

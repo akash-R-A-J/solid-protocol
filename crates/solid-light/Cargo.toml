@@ -1,0 +1,13 @@
+[package]
+name = "solid-light"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Light Protocol CPI integration for SolID credential trees"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+anchor-lang = { workspace = true }
+borsh = "0.10"

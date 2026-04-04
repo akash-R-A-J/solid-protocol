@@ -148,8 +148,10 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     // ═════════════════════════════════════════════════════════════════
 
     // AND result: all must be 1
-    signal andResult <== predicateResults[0] * predicateResults[1] *
-                         predicateResults[2] * predicateResults[3];
+    // R1CS only allows one multiplication per constraint, so chain pairwise:
+    signal and01 <== predicateResults[0] * predicateResults[1];
+    signal and012 <== and01 * predicateResults[2];
+    signal andResult <== and012 * predicateResults[3];
 
     // OR result: at least one must be 1
     signal orSum <== predicateResults[0] + predicateResults[1] +
@@ -164,7 +166,10 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     logicIsOr.in[0] <== compoundLogic;
     logicIsOr.in[1] <== 1;
 
-    signal finalResult <== (1 - logicIsOr.out) * andResult + logicIsOr.out * orResult;
+    // Mux: split into two intermediate products (one multiplication each)
+    signal selectAnd <== (1 - logicIsOr.out) * andResult;
+    signal selectOr <== logicIsOr.out * orResult;
+    signal finalResult <== selectAnd + selectOr;
 
     // Constrain: proof only valid if query passes
     finalResult === 1;

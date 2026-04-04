@@ -1,6 +1,7 @@
 pragma circom 2.1.0;
 
 include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
 
 /// Compute a nullifier hash for anti-replay.
 /// nullifier = Poseidon(holderPrivKey, schemaHash, verifierNonce)

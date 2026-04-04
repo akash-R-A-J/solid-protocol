@@ -1,6 +1,9 @@
 /**
  * Trusted setup ceremony script for the compound query circuit.
  * Run: node scripts/setup.js
+ *
+ * WARNING: This is a single-party ceremony for development only.
+ * For production, use a multi-party ceremony (see infra_roadmap.md).
  */
 const snarkjs = require('snarkjs');
 const fs = require('fs');
@@ -24,15 +27,20 @@ async function main() {
     console.log('  SolID Protocol — Trusted Setup');
     console.log('═══════════════════════════════════════\n');
 
-    // Phase 1: Powers of Tau
-    console.log('[1/5] Generating Powers of Tau...');
+    // ─── Phase 1: Powers of Tau ────────────────────────────────────────
+
+    // Build the BN128 curve properly (snarkjs 0.7+ requires this)
+    const { getCurveFromName } = require("ffjavascript");
+    const curve = await getCurveFromName("bn128");
+
     const ptauPath0 = path.join(SETUP_DIR, 'pot_0000.ptau');
     const ptauPath1 = path.join(SETUP_DIR, 'pot_0001.ptau');
     const ptauFinal = path.join(SETUP_DIR, 'pot_final.ptau');
 
-    await snarkjs.powersOfTau.newAccumulator(
-        snarkjs.bn128, 16, ptauPath0
-    );
+    // Power 16 supports up to 2^16 = 65,536 constraints
+    // Our circuit has ~26K, so 16 is sufficient
+    console.log('[1/5] Generating Powers of Tau (2^16)...');
+    await snarkjs.powersOfTau.newAccumulator(curve, 16, ptauPath0);
 
     console.log('[2/5] Contributing to ceremony...');
     await snarkjs.powersOfTau.contribute(
@@ -43,7 +51,8 @@ async function main() {
     console.log('[3/5] Preparing Phase 2...');
     await snarkjs.powersOfTau.preparePhase2(ptauPath1, ptauFinal);
 
-    // Phase 2: Circuit-specific setup
+    // ─── Phase 2: Circuit-specific setup ───────────────────────────────
+
     console.log('[4/5] Generating circuit-specific keys...');
     const zkey0 = path.join(BUILD_DIR, 'circuit_0000.zkey');
     const zkeyFinal = path.join(BUILD_DIR, 'circuit_final.zkey');
@@ -54,7 +63,8 @@ async function main() {
         'SolID circuit contribution', 'solid-circuit-entropy-' + Date.now()
     );
 
-    // Export verification key
+    // ─── Export verification key ───────────────────────────────────────
+
     console.log('[5/5] Exporting verification key...');
     const vkPath = path.join(BUILD_DIR, 'verification_key.json');
     const vk = await snarkjs.zKey.exportVerificationKey(zkeyFinal);
@@ -63,10 +73,19 @@ async function main() {
     console.log('\n✅ Trusted setup complete!');
     console.log(`   Verification key: ${vkPath}`);
     console.log(`   Proving key:      ${zkeyFinal}`);
+    console.log(`   Powers of Tau:    ${ptauFinal}`);
 
-    // Print circuit info
-    const r1csInfo = await snarkjs.r1cs.info(r1csPath);
-    console.log(`\n   Constraints: ${r1csInfo.nConstraints}`);
+    // Cleanup intermediate files
+    if (fs.existsSync(ptauPath0)) fs.unlinkSync(ptauPath0);
+    if (fs.existsSync(ptauPath1)) fs.unlinkSync(ptauPath1);
+    if (fs.existsSync(zkey0)) fs.unlinkSync(zkey0);
+    console.log('   Intermediate files cleaned up.');
+
+    // Terminate the curve worker threads
+    await curve.terminate();
 }
 
-main().catch(console.error);
+main().catch((err) => {
+    console.error('Setup failed:', err);
+    process.exit(1);
+});

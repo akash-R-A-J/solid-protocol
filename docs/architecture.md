@@ -25,9 +25,10 @@ All crypto is implemented in Rust (`solid-core`) and compiled to WASM for browse
 Three Anchor programs:
 
 1. **ZK Verifier** (`zk-verifier/`)
-   - Verifies Groth16 proofs from the compound query circuit
-   - Maintains nullifier registry for anti-replay
-   - Uses `groth16-solana` for efficient native verification
+   - Verifies Groth16 proofs via `groth16_solana::Groth16Verifier` (alt_bn128 syscalls)
+   - Bloom filter nullifier registry (32KB, ~100K capacity, O(1) lookup)
+   - Verification key stored in separate `VkStorage` PDA (10KB, chunked upload)
+   - Events emitted for indexer consumption
 
 2. **Issuer Registry** (`issuer-registry/`)
    - Full DAO-governed trust management
@@ -43,11 +44,15 @@ Three Anchor programs:
 ### Layer 3: SDK Layer
 
 ```
-@solid-protocol/
+Rust Crates:
+├── solid-core   — Poseidon, BJJ EdDSA, commitments, nullifiers, queries, SAS types
+└── solid-light  — Light Protocol CPI helpers (insert, revoke, verify root)
+
+@solid-protocol/ (TypeScript):
 ├── core      — WASM loader + QueryBuilder DSL
-├── light     — Light Protocol tree operations
-├── issuer    — Credential issuance pipeline
-├── holder    — Groth16 proof generation
+├── light     — Light Protocol tree operations (Photon Indexer)
+├── issuer    — Credential issuance + Light tree insertion
+├── holder    — Groth16 proof generation (snarkjs + Photon)
 └── verifier  — On-chain proof submission
 ```
 
@@ -106,5 +111,8 @@ The compound query circuit (`compound_query.circom`) has 8 steps:
 1. **Separate BJJ Keys** — BJJ identity is independent from Solana wallet. Enables multi-device use.
 2. **Rust-First Crypto** — All primitives in Rust, compiled to WASM. No JS crypto.
 3. **DAO Governance** — Full stake/vote/slash. No multisig shortcuts.
-4. **Light Protocol** — Compressed Merkle trees for 100x storage savings.
+4. **Light Protocol (dual-layer)** — TS SDK for client operations + Rust `solid-light` crate for on-chain CPI.
 5. **Circomlib Compatible** — All Poseidon/EdDSA matches circomlib bit-for-bit.
+6. **SAS Data Layer** — Credentials mapped to SAS attestations via CPI types.
+7. **Bloom Filter Nullifiers** — O(1) anti-replay with 100K capacity. Light Protocol tree as upgrade path.
+8. **Separate VK Storage** — Verification key decoupled from verifier config for large circuit support.

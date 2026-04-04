@@ -1,0 +1,23 @@
+{
+  "name": "solid-protocol-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "E2E scripts and deployment management for SolID Protocol",
+  "scripts": {
+    "init-onchain": "tsx scripts/initialize.ts",
+    "issue": "tsx scripts/issue.ts",
+    "prove": "tsx scripts/prove.ts",
+    "link-all": "npm link ./ts-sdk/packages/core ./ts-sdk/packages/issuer ./ts-sdk/packages/holder ./ts-sdk/packages/verifier ./ts-sdk/packages/light"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "@coral-xyz/anchor": "^0.30.1",
+    "snarkjs": "^0.7.4",
+    "ffjavascript": "^0.2.63"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "typescript": "^5.3.0",
+    "@types/node": "^20.11.0"
+  }
+}

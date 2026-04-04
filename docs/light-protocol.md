@@ -104,12 +104,37 @@ const rpc = createLightRpc({
 });
 ```
 
+## On-Chain CPI (Rust)
+
+For trustless verification, the on-chain programs CPI into Light Protocol directly:
+
+```rust
+use solid_light::cpi_helpers;
+use solid_light::credential_tree::CompressedCredential;
+
+// Build credential data for compressed account
+let data = cpi_helpers::build_insert_credential_data(
+    commitment,     // Poseidon commitment
+    schema_hash,    // Schema identifier
+    issuer_pubkey,  // Issuer Solana pubkey
+)?;
+
+// Verify state root matches on-chain tree
+let is_valid = cpi_helpers::verify_state_root_matches(
+    &tree_account_data,
+    &merkle_root_from_proof,
+);
+```
+
+**Why CPI matters:** Without on-chain CPI, Merkle root verification is client-trusted. With CPI, the verifier program reads the actual state root from Light Protocol's tree account, making the system trustless end-to-end.
+
 ## Dependencies
 
-| Package | Version | Purpose |
-|---|---|---|
-| `@lightprotocol/stateless.js` | ^0.17.0 | Compressed account operations |
-| `@lightprotocol/compressed-token` | ^0.17.0 | Token compression (future: staking) |
+| Package | Language | Version | Purpose |
+|---|---|---|---|
+| `solid-light` | Rust | 0.1.0 | On-chain CPI helpers |
+| `@lightprotocol/stateless.js` | TypeScript | ^0.17.0 | Client-side compressed account operations |
+| `@lightprotocol/compressed-token` | TypeScript | ^0.17.0 | Token compression (future: staking) |
 
 ## Circuit Compatibility
 

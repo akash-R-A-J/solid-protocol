@@ -46,13 +46,18 @@ template PredicateEvaluator() {
     // op=4 (GTE)  → gte
     // op=5 (LT)   → isLt
     // op=6 (LTE)  → lte
-    result <== opIs[0].out * 1
-             + opIs[1].out * isEq.out
-             + opIs[2].out * ne
-             + opIs[3].out * isGt.out
-             + opIs[4].out * gte
-             + opIs[5].out * isLt.out
-             + opIs[6].out * lte;
+
+    // Each product must be its own constraint (R1CS allows one multiplication per constraint)
+    signal prod0 <== opIs[0].out * 1;           // NOOP → 1
+    signal prod1 <== opIs[1].out * isEq.out;    // EQ
+    signal prod2 <== opIs[2].out * ne;           // NE
+    signal prod3 <== opIs[3].out * isGt.out;    // GT
+    signal prod4 <== opIs[4].out * gte;          // GTE
+    signal prod5 <== opIs[5].out * isLt.out;    // LT
+    signal prod6 <== opIs[6].out * lte;          // LTE
+
+    // Sum is now purely linear (no multiplications) → valid R1CS
+    result <== prod0 + prod1 + prod2 + prod3 + prod4 + prod5 + prod6;
 }
 
 /// Select a field value from attestation data by index.

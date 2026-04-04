@@ -20,6 +20,7 @@ pub mod error;
 pub mod nullifier;
 pub mod poseidon;
 pub mod query;
+pub mod sas;
 pub mod schema;
 
 pub use error::SolidError;

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/solid-core",
+    "crates/solid-light",
     "programs/zk-verifier",
     "programs/issuer-registry",
     "programs/schema-registry",
@@ -27,3 +28,8 @@ rand = "0.8"
 hex = "0.4"
 thiserror = "1.0"
 anchor-lang = "0.30.1"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

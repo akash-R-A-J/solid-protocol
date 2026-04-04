@@ -2,10 +2,12 @@
   "name": "@solid-protocol/sdk",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@10.0.0",
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "turbo run build",
-    "test": "turbo run test",
+    "build": "npm run build --workspaces --if-present",
+    "build:turbo": "turbo run build",
+    "test": "npm run test --workspaces --if-present",
     "lint": "turbo run lint"
   },
   "devDependencies": {
