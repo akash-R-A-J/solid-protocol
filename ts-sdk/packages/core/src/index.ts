@@ -25,6 +25,9 @@ export interface CompoundQuery {
   compoundLogic: 'AND' | 'OR';
   verifierNonce: Uint8Array;
   expirationTimestamp: number;
+  // Phase 3.1: Global State Signals
+  globalRoot?: Uint8Array;
+  revocationNonce?: bigint;
 }
 
 export interface Predicate {
@@ -126,6 +129,16 @@ export function unlockIdentity(identityJson: string, passphrase: string): Uint8A
   return new Uint8Array(wasmModule.unlockIdentity(identityJson, passphrase));
 }
 
+export function deriveKey(masterKey: Uint8Array, context: Uint8Array): Uint8Array {
+  ensureInit();
+  return new Uint8Array(wasmModule.deriveKey(masterKey, context));
+}
+
+export function computeIdentityState(pubKeyX: Uint8Array, pubKeyY: Uint8Array, revocationNonce: bigint): Uint8Array {
+  ensureInit();
+  return new Uint8Array(wasmModule.computeIdentityState(pubKeyX, pubKeyY, revocationNonce));
+}
+
 // ─── Query Builder ─────────────────────────────────────────────────────────
 
 const OP_MAP = { 'NOOP': 0, 'EQ': 1, 'NE': 2, 'GT': 3, 'GTE': 4, 'LT': 5, 'LTE': 6 } as const;
@@ -156,6 +169,13 @@ export class QueryBuilder {
 
   nonce(n: Uint8Array): this { this._nonce = n; return this; }
   expiration(ts: number): this { this._expiration = ts; return this; }
+  
+  // Phase 3.1: Global State
+  globalRoot(root: Uint8Array): this { this._globalRoot = root; return this; }
+  revocationNonce(nonce: bigint): this { this._revocationNonce = nonce; return this; }
+
+  private _globalRoot?: Uint8Array;
+  private _revocationNonce?: bigint;
 
   build(): CompoundQuery {
     if (this._predicates.length === 0 || this._predicates.length > 4) {
@@ -192,6 +212,9 @@ export class QueryBuilder {
       compoundLogic: q.compoundLogic === 'AND' ? 0 : 1,
       verifierNonce: q.verifierNonce,
       expirationTimestamp: q.expirationTimestamp,
+      // Phase 3.1: Global State
+      globalRoot: q.globalRoot ?? new Uint8Array(32),
+      revocationNonce: q.revocationNonce ?? 0n,
     };
   }
 }

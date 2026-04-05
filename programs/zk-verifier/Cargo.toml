@@ -19,3 +19,6 @@ default = []
 [dependencies]
 anchor-lang = { workspace = true, features = ["init-if-needed"] }
 groth16-solana = "0.2"
+light-hasher = "5.0.0"
+light-sdk = "0.4.0"
+solid-light = { path = "../../crates/solid-light" }

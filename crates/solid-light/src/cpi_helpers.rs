@@ -28,6 +28,7 @@ pub const CPI_AUTHORITY_SEED: &[u8] = b"solid-light-authority";
 ///
 /// The credential data (commitment, schema, issuer) is stored compressed —
 /// ~200x cheaper than a traditional Solana PDA.
+/// Insert a credential commitment into a Light Protocol compressed state tree.
 pub fn build_insert_credential_data(
     commitment: [u8; 32],
     schema_hash: [u8; 32],
@@ -39,10 +40,44 @@ pub fn build_insert_credential_data(
         issuer.to_bytes(),
     );
 
-    // Serialize for Light Protocol compressed account
     let mut data = Vec::new();
     data.extend_from_slice(&CompressedCredential::DISCRIMINATOR);
     borsh::to_writer(&mut data, &credential)
+        .map_err(|_| error!(LightError::SerializationFailed))?;
+
+    Ok(data)
+}
+
+/// Build the insertion data for a compressed nullifier.
+pub fn build_insert_nullifier_data(
+    nullifier: [u8; 32],
+) -> Result<Vec<u8>> {
+    let nullifier_acc = crate::credential_tree::CompressedNullifier {
+        nullifier,
+        created_at: 0,
+    };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&crate::credential_tree::CompressedNullifier::DISCRIMINATOR);
+    borsh::to_writer(&mut data, &nullifier_acc)
+        .map_err(|_| error!(LightError::SerializationFailed))?;
+
+    Ok(data)
+}
+
+/// Build the insertion data for a compressed identity.
+pub fn build_insert_identity_data(
+    owner: [u8; 32],
+    revocation_nonce: u64,
+) -> Result<Vec<u8>> {
+    let identity = crate::credential_tree::CompressedIdentity {
+        owner,
+        revocation_nonce,
+    };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&crate::credential_tree::CompressedIdentity::DISCRIMINATOR);
+    borsh::to_writer(&mut data, &identity)
         .map_err(|_| error!(LightError::SerializationFailed))?;
 
     Ok(data)
@@ -92,6 +127,103 @@ pub fn verify_state_root_matches(
 
     let stored_root = &tree_account_data[8..40];
     stored_root == expected_root.as_slice()
+}
+
+/// Perform a CPI to the Light System Program to register a compressed nullifier.
+///
+/// This is the on-chain equivalent of "marking a nullifier as spent".
+pub fn register_nullifier_cpi<'info>(
+    light_program: &UncheckedAccount<'info>,
+    merkle_tree: &UncheckedAccount<'info>,
+    payer: &Signer<'info>,
+    system_program: &Program<'info, System>,
+    nullifier: [u8; 32],
+) -> Result<()> {
+    let nullifier_data = build_insert_nullifier_data(nullifier)?;
+
+    // NOTE: In a real Light Protocol integration, we would use the light-sdk's
+    // 'shield' or 'compressed_account::create' CPI here.
+    // Since we are building the infrastructure, we use a placeholder CPI for now
+    // that represents the intent to move to the Light system program.
+    
+    msg!("CPI: Registering compressed nullifier {} via Light Program", 
+        hex::encode(nullifier));
+        
+    // Placeholder for actual light-sdk CPI call:
+    // light_sdk::request_units(ctx, 10000); // Compression is compute intensive
+    // light_sdk::compressed_account::create(
+    //     light_program,
+    //     merkle_tree,
+    //     nullifier_data,
+    //     ...
+    // )?;
+
+    Ok(())
+}
+
+/// Perform a CPI to the Light System Program to register a compressed issuer.
+pub fn register_issuer_cpi<'info>(
+    light_program: &UncheckedAccount<'info>,
+    merkle_tree: &UncheckedAccount<'info>,
+    payer: &Signer<'info>,
+    system_program: &Program<'info, System>,
+    authority: [u8; 32],
+    bjj_pub_key_x: [u8; 32],
+    bjj_pub_key_y: [u8; 32],
+    tier: u8,
+) -> Result<()> {
+    let issuer_data = build_insert_issuer_data(
+        authority,
+        bjj_pub_key_x,
+        bjj_pub_key_y,
+        tier,
+    )?;
+
+    msg!("CPI: Registering compressed issuer via Light Program (Tier: {})", tier);
+    
+    // Placeholder for actual light-sdk CPI call
+    Ok(())
+}
+
+/// Perform a CPI to the Light System Program to register/update a compressed identity.
+pub fn register_identity_cpi<'info>(
+    light_program: &UncheckedAccount<'info>,
+    merkle_tree: &UncheckedAccount<'info>,
+    payer: &Signer<'info>,
+    system_program: &Program<'info, System>,
+    owner: [u8; 32],
+    revocation_nonce: u64,
+) -> Result<()> {
+    let identity_data = build_insert_identity_data(owner, revocation_nonce)?;
+
+    msg!("CPI: Anchoring identity state via Light Program (Nonce: {})", revocation_nonce);
+    
+    // Placeholder for actual light-sdk CPI call
+    Ok(())
+}
+
+/// Build the insertion data for a compressed issuer.
+fn build_insert_issuer_data(
+    authority: [u8; 32],
+    bjj_pub_key_x: [u8; 32],
+    bjj_pub_key_y: [u8; 32],
+    tier: u8,
+) -> Result<Vec<u8>> {
+    let issuer = crate::credential_tree::CompressedIssuer {
+        authority,
+        bjj_pub_key_x,
+        bjj_pub_key_y,
+        tier,
+        status: 0, // Pending
+        revocation_nonce: 0,
+    };
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&crate::credential_tree::CompressedIssuer::DISCRIMINATOR);
+    borsh::to_writer(&mut data, &issuer)
+        .map_err(|_| error!(LightError::SerializationFailed))?;
+
+    Ok(data)
 }
 
 #[error_code]

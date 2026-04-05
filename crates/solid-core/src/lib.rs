@@ -17,6 +17,7 @@ pub mod babyjubjub;
 pub mod commitment;
 pub mod credential;
 pub mod error;
+pub mod identity;
 pub mod nullifier;
 pub mod poseidon;
 pub mod query;

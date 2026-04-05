@@ -147,6 +147,34 @@ pub fn unlock_identity(identity_json: &str, passphrase: &str) -> Result<Vec<u8>,
     Ok(key.to_vec())
 }
 
+/// Phase 1.1: Derive a deterministic sub-key.
+#[wasm_bindgen(js_name = "deriveKey")]
+    let mut mk = [0u8; 32];
+    mk.copy_from_slice(master_key);
+    let mut ctx_arr = [0u8; 32];
+    ctx_arr.copy_from_slice(context);
+
+    let dk = solid_core::babyjubjub::derive_key(&mk, &ctx_arr)
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    Ok(dk.to_vec())
+}
+
+/// Phase 2.1: Compute identity state commitment.
+#[wasm_bindgen(js_name = "computeIdentityState")]
+pub fn compute_identity_state(pubkey_x: &[u8], pubkey_y: &[u8], revocation_nonce: u64) -> Result<Vec<u8>, JsError> {
+    let mut x = [0u8; 32];
+    x.copy_from_slice(pubkey_x);
+    let mut y = [0u8; 32];
+    y.copy_from_slice(pubkey_y);
+
+    let pk = solid_core::babyjubjub::BJJPublicKey { x, y };
+    let id_state = solid_core::identity::IdentityState::new(pk, revocation_nonce);
+    
+    let commitment = id_state.commitment()
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    Ok(commitment.to_vec())
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 fn to_arr32(slice: &[u8]) -> Result<[u8; 32], JsError> {

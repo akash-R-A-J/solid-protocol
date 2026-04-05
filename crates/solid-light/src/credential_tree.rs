@@ -56,3 +56,55 @@ impl CompressedCredential {
         1 // revoked
     }
 }
+
+/// A compressed nullifier leaf to prevent proof replay.
+///
+/// In the "Great Infra" design, nullifiers are stored in a dedicated Merkle tree.
+/// Each proof "shields" a nullifier; if the leaf already exists, the creation fails.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct CompressedNullifier {
+    /// The unique nullifier = Poseidon(masterKey, verifierAddress, schemaHash)
+    pub nullifier: [u8; 32],
+    pub created_at: i64,
+}
+
+impl CompressedNullifier {
+    pub const DISCRIMINATOR: [u8; 8] = *b"solidnul";
+    pub const fn size() -> usize { 8 + 32 + 8 }
+}
+
+/// A compressed identity state representing a user's self-sovereign identity.
+///
+/// Revocation happens by incrementing the revocation_nonce, which rotates
+/// the on-chain identityState and invalidates previous ZK proofs.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct CompressedIdentity {
+    /// The holder's Solana public key (authority)
+    pub owner: [u8; 32],
+    /// Incremented by the owner to revoke all previous credentials
+    pub revocation_nonce: u64,
+}
+
+impl CompressedIdentity {
+    pub const DISCRIMINATOR: [u8; 8] = *b"solidid_";
+    pub const fn size() -> usize { 8 + 32 + 8 }
+}
+
+/// A compressed issuer account representing a registered Trust Anchor.
+///
+/// In the Phase 2 "Neutral" design, all issuers stake the same amount,
+/// but their 'tier' is stored as metadata for dApp-layer filtering.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone)]
+pub struct CompressedIssuer {
+    pub authority: [u8; 32],
+    pub bjj_pub_key_x: [u8; 32],
+    pub bjj_pub_key_y: [u8; 32],
+    pub tier: u8, // 0=Community, 1=Enterprise, 2=Regulated, 3=Government
+    pub status: u8, // 0=Pending, 1=Approved, 2=Revoked
+    pub revocation_nonce: u64, // Used for issuer-level schema revocation (Phase 2.4)
+}
+
+impl CompressedIssuer {
+    pub const DISCRIMINATOR: [u8; 8] = *b"solidiss";
+    pub const fn size() -> usize { 8 + 32 + 32 + 32 + 1 + 1 + 8 }
+}

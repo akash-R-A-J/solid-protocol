@@ -30,6 +30,8 @@ const query = new QueryBuilder()
   .where(0, 'GTE', 21n)              // age >= 21
   .and(1, 'EQ', 840n)                // country_code == US (ISO 3166-1)
   .nonce(generateVerifierNonce())     // Fresh nonce (prevents replay)
+  .globalRoot(globalRoot)            // PHASE 3.1: Anchor to global state
+  .revocationNonce(0n)               // Identity revocation state
   .expiration(Date.now() / 1000 + 300) // 5 minute window
   .build();
 ```
@@ -65,6 +67,8 @@ app.post('/api/verify-callback', async (req, res) => {
       publicInputs: publicSignals,
       nullifier: new Uint8Array(nullifier),
     },
+    // Context for Phase 5.2 Root Verification
+    lightProgramId: LIGHT_PROTOCOL_PROGRAM_ID,
   });
 
   if (result.verified) {

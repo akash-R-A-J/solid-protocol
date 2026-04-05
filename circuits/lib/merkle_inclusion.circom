@@ -21,5 +21,7 @@ template MerkleInclusion(DEPTH) {
     smtVerifier.value <== leaf;
     smtVerifier.fnc <== 0; // 0 = inclusion proof
 
-    verified <== 1;
+    // CRITICAL FIX: Constrain output to 1 to ensure inclusion is verified
+    smtVerifier.out === 1;
+    verified <== smtVerifier.out;
 }

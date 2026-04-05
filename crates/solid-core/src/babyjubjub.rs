@@ -68,6 +68,17 @@ pub struct BJJKeypair {
     pub public_key: BJJPublicKey,
 }
 
+impl BJJKeypair {
+    /// Create a keypair from an existing private key (used for derived keys).
+    pub fn from_private_key(private_key: [u8; 32]) -> Result<Self> {
+        let public_key = derive_public_key(&private_key)?;
+        Ok(Self {
+            private_key,
+            public_key,
+        })
+    }
+}
+
 // ─── Internal Conversion Helpers ───────────────────────────────────────────
 
 /// Convert Fq (BJJ base field = BN254 scalar field) to 32 bytes LE.
@@ -145,6 +156,14 @@ pub fn derive_public_key(private_key: &[u8; 32]) -> Result<BJJPublicKey> {
     }
     let pk_point = base8().mul_bigint(sk.into_bigint()).into_affine();
     Ok(affine_to_pubkey(&pk_point))
+}
+
+/// Phase 1.1: Derive a deterministic sub-key from a master key and context.
+/// 
+/// credentialKey = Poseidon(masterKey, schemaHash)
+/// nullifierKey  = Poseidon(masterKey, verifierAddress)
+pub fn derive_key(master_key: &[u8; 32], context: &[u8; 32]) -> Result<[u8; 32]> {
+    poseidon::hash_bytes(&[*master_key, *context])
 }
 
 // ─── EdDSA-Poseidon Signing ───────────────────────────────────────────────

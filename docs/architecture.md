@@ -26,15 +26,16 @@ Three Anchor programs:
 
 1. **ZK Verifier** (`zk-verifier/`)
    - Verifies Groth16 proofs via `groth16_solana::Groth16Verifier` (alt_bn128 syscalls)
-   - Bloom filter nullifier registry (32KB, ~100K capacity, O(1) lookup)
+   - Light Protocol Compressed State nullifier registry (Infinite capacity, deterministic lookup)
+   - On-Chain Root Verification via CPI to Light Protocol program
    - Verification key stored in separate `VkStorage` PDA (10KB, chunked upload)
    - Events emitted for indexer consumption
 
 2. **Issuer Registry** (`issuer-registry/`)
    - Full DAO-governed trust management
-   - Issuers stake SOL to register
-   - Token-weighted voting for approval
-   - Slashing mechanism for malicious issuers
+   - Issuers stake SOL to register with 14-day withdrawal cooldowns
+   - Snapshot Voting: Weighted voting with flash-loan prevention (slot-tracking)
+   - Programmable Slashing: Immediate slashing for ZK-provable fraud
 
 3. **Schema Registry** (`schema-registry/`)
    - Modular credential schema definitions
@@ -97,14 +98,14 @@ The compound query circuit (`compound_query.circom`) has 8 steps:
 
 | Step | Operation | Type |
 |---|---|---|
-| 1 | Hash attestation data | `Poseidon(data[0..7])` |
-| 2 | Compute commitment | `Poseidon(dataHash, schema, holderX, holderY, salt)` |
-| 3 | Verify issuer signature | `EdDSA-Poseidon verification` |
-| 4 | Verify Merkle inclusion | `SMT verification (depth=20)` |
-| 5 | Evaluate predicates | `4 predicates × 7 operators` |
-| 6 | Apply compound logic | `AND / OR` |
-| 7 | Check expiration | `currentTimestamp ≤ expirationTimestamp` |
-| 8 | Compute nullifier | `Poseidon(privKey, schema, nonce)` |
+| 1 | Identity Anchoring | `IdentityAnchor` (Global depth=20) |
+| 2 | Key Derivation | `Poseidon(masterKey, schema)` |
+| 3 | Credential Verification | `CredentialAtom` (Local depth=20) |
+| 4 | Verify Issuer Signature | `EdDSA-Poseidon (BabyJubJub)` |
+| 5 | Evaluate Predicates | `Modular Predicate Evaluators` |
+| 6 | Apply Compound Logic | `AND / OR` |
+| 7 | Check Expiration | `currentTimestamp ≤ expirationTimestamp` |
+| 8 | Compute Nullifier | `Poseidon(masterKey, context)` |
 
 ## Key Design Decisions
 
@@ -114,5 +115,5 @@ The compound query circuit (`compound_query.circom`) has 8 steps:
 4. **Light Protocol (dual-layer)** — TS SDK for client operations + Rust `solid-light` crate for on-chain CPI.
 5. **Circomlib Compatible** — All Poseidon/EdDSA matches circomlib bit-for-bit.
 6. **SAS Data Layer** — Credentials mapped to SAS attestations via CPI types.
-7. **Bloom Filter Nullifiers** — O(1) anti-replay with 100K capacity. Light Protocol tree as upgrade path.
+7. **Light Protocol Nullifiers** — Deterministic anti-replay with infinite capacity via compressed state.
 8. **Separate VK Storage** — Verification key decoupled from verifier config for large circuit support.

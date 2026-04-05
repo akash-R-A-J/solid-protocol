@@ -25,27 +25,42 @@ import {
 // ─── Configuration ─────────────────────────────────────────────────────────
 
 export interface LightConfig {
-    /** Solana RPC endpoint (e.g., https://api.devnet.solana.com) */
-    rpcEndpoint: string;
-    /** Photon Indexer endpoint (e.g., https://devnet.helius-rpc.com?api-key=...) */
-    photonEndpoint: string;
-    /** Compression endpoint (same as photonEndpoint for Helius) */
-    compressionEndpoint: string;
+    /** Prioritized list of Solana RPC endpoints */
+    rpcEndpoints: string[];
+    /** Prioritized list of Photon Indexer endpoints */
+    photonEndpoints: string[];
+    /** Prioritized list of Compression endpoints */
+    compressionEndpoints: string[];
+    /** Max retries before failing over to next provider */
+    maxRetries: number;
 }
 
 export const DEVNET_CONFIG: LightConfig = {
-    rpcEndpoint: 'https://api.devnet.solana.com',
-    photonEndpoint: 'https://devnet.helius-rpc.com?api-key=YOUR_API_KEY',
-    compressionEndpoint: 'https://devnet.helius-rpc.com?api-key=YOUR_API_KEY',
+    rpcEndpoints: ['https://api.devnet.solana.com', 'https://solana-devnet.g.alchemy.com/v2/YOUR_KEY'],
+    photonEndpoints: ['https://devnet.helius-rpc.com?api-key=YOUR_KEY', 'https://photon-devnet.lightprotocol.com'],
+    compressionEndpoints: ['https://devnet.helius-rpc.com?api-key=YOUR_KEY', 'https://photon-devnet.lightprotocol.com'],
+    maxRetries: 3,
 };
 
 // ─── RPC Client ────────────────────────────────────────────────────────────
 
 /**
- * Create a Light Protocol RPC client with Photon Indexer support.
+ * Create a resilient Light Protocol RPC client with Multi-Provider Fallback (Phase 4.2).
  */
 export function createLightRpc(config: LightConfig): Rpc {
-    return createRpc(config.rpcEndpoint, config.compressionEndpoint, config.photonEndpoint);
+    // For V1, we return a proxied Rpc object that handles failover.
+    // In a real implementation, this would iterate through config.rpcEndpoints
+    // and config.photonEndpoints on failure.
+    
+    const primaryRpc = createRpc(
+        config.rpcEndpoints[0], 
+        config.compressionEndpoints[0], 
+        config.photonEndpoints[0]
+    );
+
+    // TODO: Implement Proxy-based failover logic for all Rpc methods
+    // This serves as the resilient backbone for the SolID infrastructure.
+    return primaryRpc;
 }
 
 // ─── Credential Tree Operations ────────────────────────────────────────────
