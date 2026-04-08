@@ -44,12 +44,15 @@ pub mod issuer_registry {
         bjj_pub_key_y: [u8; 32],
         tier: IssuerTier,
     ) -> Result<()> {
-        let registry = &ctx.accounts.registry_config;
-        
-        // PHASE 2.2: NEUTRAL FLAT STAKING (SEC-14)
-        // All issuers now meet the same minimum stake requirement,
-        // eliminating tiered centralization risks.
-        let stake_amount = registry.min_stake_lamports;
+        // PHASE 5: TIERED STAKING (Risk 3 Mitigation)
+        // Graduated skin-in-the-game based on authority level.
+        let stake_multiplier = match tier {
+            IssuerTier::Community => 1,
+            IssuerTier::Enterprise => 10,
+            IssuerTier::Regulated => 5,
+            IssuerTier::Government => 0, // Government is exempt from SOL stake
+        };
+        let stake_amount = registry.min_stake_lamports * stake_multiplier;
 
         // Transfer stake from issuer to registry vault
         if stake_amount > 0 {
@@ -89,29 +92,42 @@ pub mod issuer_registry {
     }
 
     /// Vote on a pending issuer.
-    /// SEC-02: Voting power is derived from the voter's token balance.
+    /// SEC-23: Flash-loan protection. Voting power is derived from staked tokens
+    /// that have been held for at least 100 slots to prevent one-block hacks.
     pub fn vote_on_issuer(ctx: Context<VoteOnIssuer>, approve: bool) -> Result<()> {
-        let voter_tokens = ctx.accounts.voter_token_account.amount;
-        require!(voter_tokens > 0, ErrorCode::NoVotingPower);
+        let staker = &ctx.accounts.staker_account;
+        let now_slot = Clock::get()?.slot;
+
+        // SEC-23: Ensure stake is at least 100 slots old
+        require!(
+            now_slot >= staker.last_stake_slot + 100,
+            ErrorCode::StakeTooNew
+        );
+
+        let voter_weight = staker.amount_staked;
+        require!(voter_weight > 0, ErrorCode::NoVotingPower);
 
         let issuer = &mut ctx.accounts.issuer_account;
         let vote_record = &mut ctx.accounts.vote_record;
 
         if approve {
-            issuer.votes_for += voter_tokens;
+            issuer.votes_for += voter_weight;
         } else {
-            issuer.votes_against += voter_tokens;
+            issuer.votes_against += voter_weight;
         }
 
         vote_record.voter = ctx.accounts.voter.key();
         vote_record.issuer = issuer.key();
-        vote_record.weight = voter_tokens;
-        vote_record.approve = approve;
+        vote_record.weight = voter_weight;
+        vote_record.approved = approve;
+        vote_record.has_voted = true;
 
-        msg!("Voted: {} with weight {}", if approve { "Approve" } else { "Reject" }, voter_tokens);
+        msg!("Voted: {} with weight {} (Stake from slot {})", 
+            if approve { "Approve" } else { "Reject" }, voter_weight, staker.last_stake_slot);
 
-        // Auto-approve if threshold reached (example logic)
-        if issuer.votes_for >= 1_000_000 {
+        // Auto-approve if threshold reached
+        let registry = &ctx.accounts.registry_config;
+        if issuer.votes_for >= 1_000_000 { // This would be a config-driven threshold in prod
             issuer.status = IssuerStatus::Approved;
         }
 
@@ -451,12 +467,22 @@ pub struct RegisterIssuer<'info> {
 
 #[derive(Accounts)]
 pub struct VoteOnIssuer<'info> {
+    #[account(seeds = [b"registry-config"], bump)]
+    pub registry_config: Account<'info, RegistryConfig>,
     #[account(mut)]
     pub issuer_account: Account<'info, IssuerAccount>,
     #[account(
         init, payer = voter,
-    pub issuer_account: Account<'info, IssuerAccount>,
-    pub authority: Signer<'info>,
+        space = 8 + 32 + 32 + 1 + 8 + 1 + 1,
+        seeds = [b"vote", issuer_account.key().as_ref(), voter.key().as_ref()],
+        bump
+    )]
+    pub vote_record: Account<'info, VoteRecord>,
+    #[account(seeds = [b"staker", voter.key().as_ref()], bump)]
+    pub staker_account: Account<'info, StakerAccount>,
+    #[account(mut)]
+    pub voter: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

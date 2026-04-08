@@ -9,28 +9,12 @@ include "lib/predicate_evaluator.circom";
 include "lib/nullifier_expiry.circom";
 
 /// ═══════════════════════════════════════════════════════════════════════════
-/// SolID Compound Query Circuit
+/// SolID Compound Query Circuit (Hardened Phase 3.5)
 /// ═══════════════════════════════════════════════════════════════════════════
 ///
-/// Proves: "I hold a valid credential matching a compound query, without
-///          revealing the credential data."
+/// Proves: "I hold a valid credential matching a compound query."
 ///
-/// Parameters:
-///   TREE_DEPTH    = 20   (supports ~1M credentials)
-///   NUM_FIELDS    = 8    (attestation data fields)
-///   MAX_PREDICATES = 4   (compound query size)
-///
-/// Public inputs:
-///   - merkleRoot, schemaHash, issuerPubKeyAx/Ay
-///   - queryFieldIndices, queryOperators, queryValues
-///   - numPredicates, compoundLogic
-///   - verifierNonce, currentTimestamp
-///
-/// Private inputs:
-///   - attestationData, salt, holderBJJPrivKey
-///   - issuerSigR8x/R8y/S
-///   - merkleSiblings, merklePathIndices
-///   - expirationTimestamp
+/// Standardized on the 5-way Hardened Nullifier and Query Context Binding.
 ///
 template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
 
@@ -45,6 +29,7 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     signal input queryValues[MAX_PREDICATES];
     signal input numPredicates;
     signal input compoundLogic; // 0 = AND, 1 = OR
+    signal input verifierAddress;
     signal input verifierNonce;
     signal input currentTimestamp;
 
@@ -69,7 +54,6 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
 
     // ═════════════════════════════════════════════════════════════════
     // STEP 0: Identity Binding (Bind PrivKey to PubKey)
-    //   Enforce that the provided PrivKey derives the provided PubKey
     // ═════════════════════════════════════════════════════════════════
     component anchor = IdentityAnchor(20);
     anchor.masterIdentityKey <== masterIdentityKey;
@@ -87,7 +71,7 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     holderKeyDerivation.Ay === anchor.credentialPubKeyAy;
 
     // ═════════════════════════════════════════════════════════════════
-    // STEP 2: Credential Verification (Phase 3.1)
+    // STEP 1: Credential Verification (Phase 3.1)
     // ═════════════════════════════════════════════════════════════════
     component credAtom = CredentialAtom(NUM_FIELDS, TREE_DEPTH);
     credAtom.schemaHash <== schemaHash;
@@ -110,7 +94,7 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // STEP 3: Predicate Evaluation (Phase 3.1)
+    // STEP 2: Predicate Evaluation (Phase 3.1)
     // ═════════════════════════════════════════════════════════════════
     component evaluators[MAX_PREDICATES];
     signal predicateResults[MAX_PREDICATES];
@@ -139,15 +123,12 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // STEP 6: Compound logic (AND / OR)
+    // STEP 3: Compound Logic (AND/OR)
     // ═════════════════════════════════════════════════════════════════
-
-    // AND result: all active must be 1 (product of results)
     signal and01 <== predicateResults[0] * predicateResults[1];
     signal and012 <== and01 * predicateResults[2];
     signal andResult <== and012 * predicateResults[3];
 
-    // OR result: at least one active must be 1 (sum of active results)
     signal activeResults[MAX_PREDICATES];
     for (var i = 0; i < MAX_PREDICATES; i++) {
         activeResults[i] <== isActive[i] * evaluators[i].result;
@@ -158,35 +139,48 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     orCheck.in[1] <== 0;
     signal orResult <== orCheck.out;
 
-    // Select based on compoundLogic: 0=AND, 1=OR
     component logicIsOr = IsEqual();
     logicIsOr.in[0] <== compoundLogic;
     logicIsOr.in[1] <== 1;
 
-    // Mux: split into two intermediate products (one multiplication each)
-    signal selectAnd <== (1 - logicIsOr.out) * andResult;
-    signal selectOr <== logicIsOr.out * orResult;
-    signal finalResult <== selectAnd + selectOr;
-
-    // Constrain: proof only valid if query passes
+    signal finalResult <== (1 - logicIsOr.out) * andResult + logicIsOr.out * orResult;
     finalResult === 1;
 
     // ═════════════════════════════════════════════════════════════════
-    // STEP 7: Expiration check
+    // STEP 4: Expiration & Context (Phase 3.5 Handening)
     // ═════════════════════════════════════════════════════════════════
     component expiryCheck = ExpirationChecker();
     expiryCheck.currentTimestamp <== currentTimestamp;
     expiryCheck.expirationTimestamp <== expirationTimestamp;
     expiryCheck.valid === 1;
 
+    component qHasherIndices = Poseidon(MAX_PREDICATES);
+    for (var i = 0; i < MAX_PREDICATES; i++) {
+        qHasherIndices.inputs[i] <== queryFieldIndices[i];
+    }
+    component qHasherOps = Poseidon(MAX_PREDICATES * 2);
+    for (var i = 0; i < MAX_PREDICATES; i++) {
+        qHasherOps.inputs[i*2] <== queryOperators[i];
+        qHasherOps.inputs[i*2+1] <== queryValues[i];
+    }
+    component qHasherFinal = Poseidon(4);
+    qHasherFinal.inputs[0] <== qHasherIndices.out;
+    qHasherFinal.inputs[1] <== qHasherOps.out;
+    qHasherFinal.inputs[2] <== numPredicates;
+    qHasherFinal.inputs[3] <== compoundLogic;
+    
+    signal queryContextHash <== qHasherFinal.out;
+
     // ═════════════════════════════════════════════════════════════════
-    // STEP 8: Compute nullifier (Phase 2.4 - Scope Binding)
-    //   nullifier = Poseidon(masterIdentityKey, verifierAddress, schemaHash)
+    // STEP 5: Hardened Nullifier (Anti-Replay & Identity Rotation)
+    //   nullifier = Poseidon(masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)
     // ═════════════════════════════════════════════════════════════════
-    component nullifier = Poseidon(3);
+    component nullifier = Poseidon(5);
     nullifier.inputs[0] <== masterIdentityKey;
-    nullifier.inputs[1] <== verifierAddress;
-    nullifier.inputs[2] <== schemaHash;
+    nullifier.inputs[1] <== revocationNonce;
+    nullifier.inputs[2] <== verifierAddress;
+    nullifier.inputs[3] <== queryContextHash;
+    nullifier.inputs[4] <== verifierNonce;
     nullifierHash <== nullifier.out;
 }
 

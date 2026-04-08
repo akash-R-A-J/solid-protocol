@@ -1,10 +1,43 @@
-use wasm_bindgen::prelude::*;
-use serde::{Serialize, Deserialize};
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
+}
+
+// ─── Phase 3: WASM Memory Bridge (Zero-Copy) ──────────────────────────────
+// A static buffer that JS can write to directly via 'WebAssembly.Memory'.
+// Prevents high-frequency copying overhead for bulk hashing operations.
+static SHARED_BUFFER: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(vec![0u8; 1024 * 64])); // 64KB initial
+
+#[wasm_bindgen(js_name = "getSharedBufferPointer")]
+pub fn get_shared_buffer_pointer() -> *const u8 {
+    let buffer = SHARED_BUFFER.lock().unwrap();
+    buffer.as_ptr()
+}
+
+#[wasm_bindgen(js_name = "resizeSharedBuffer")]
+pub fn resize_shared_buffer(new_size: usize) {
+    let mut buffer = SHARED_BUFFER.lock().unwrap();
+    buffer.resize(new_size, 0);
+}
+
+#[wasm_bindgen(js_name = "poseidonHashShared")]
+pub fn poseidon_hash_shared(len: usize) -> Result<Vec<u8>, JsError> {
+    let buffer = SHARED_BUFFER.lock().unwrap();
+    if len > buffer.len() || len % 32 != 0 {
+        return Err(JsError::new("Invalid shared buffer length or alignment"));
+    }
+    
+    let chunks: Vec<[u8; 32]> = buffer[..len].chunks_exact(32)
+        .map(|c| { let mut arr = [0u8; 32]; arr.copy_from_slice(c); arr })
+        .collect();
+        
+    let hash = solid_core::poseidon::hash_bytes(&chunks)
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    Ok(hash.to_vec())
 }
 
 // ─── Poseidon Hash ─────────────────────────────────────────────────────────

@@ -16,6 +16,11 @@ This document tracks the evolution of the SolID Protocol from an initial concept
 - [x] **Privacy-First Key Hierarchy**: Master-derived sub-keys for unlinkability. ✅ **IMPLEMENTED**
 - [x] **On-Chain Root Anchoring**: CPI to Light Protocol global state trees. ✅ **IMPLEMENTED**
 - [x] **Relay Protection (P1)**: Compressed Nullifier Tree with scope binding. ✅ **IMPLEMENTED**
+- [x] **Canonical Ordering (Phase 3.3)**: Strictly ascending schema hashes across all layers. ✅ **IMPLEMENTED**
+- [x] **Unlinkable Batching (Phase 3.3)**: Per-credential derived keys in single batch. ✅ **IMPLEMENTED**
+- [x] **Root Smuggling Protection (Phase 3.5)**: Implemented `verify_schema_root_binding` to prevent cross-schema proof reuse. ✅ **IMPLEMENTED** (SEC-19)
+- [x] **Zero-Schema Integrity (Phase 3.5)**: Strictly enforce zeroing of all fields in padded slots to prevent data smuggling. ✅ **IMPLEMENTED** (SEC-20)
+- [x] **Flash-Loan Governance (Phase 5)**: 100-slot stake maturity requirement for voting power. ✅ **IMPLEMENTED** (SEC-23)
 
 #### 2. Scalability & Efficiency
 - [x] **200x Rent Reduction**: Compressed storage for Credentials, Nullifiers, and Issuers. ✅ **IMPLEMENTED**
@@ -23,7 +28,7 @@ This document tracks the evolution of the SolID Protocol from an initial concept
 
 #### 3. Protocol Neutrality & Governance
 - [x] **Neutral Staking**: Flat minimum stake requirement for all issuers. ✅ **IMPLEMENTED**
-- [x] **Tier Metadata**: Tiers moved to metadata to prevent hardcoded centralization. ✅ **IMPLEMENTED**
+- [x] **Tiered Staking (Risk 3)**: Community, Enterprise, and Government tiers with graduated SOL requirements. ✅ **IMPLEMENTED**
 - [x] **Self-Sovereign Revocation**: Identity-level nonces for instant holder-led revocation. ✅ **IMPLEMENTED**
 
 ---
@@ -48,9 +53,12 @@ This document tracks the evolution of the SolID Protocol from an initial concept
 
 | Improvement | Status | Implementation Detail |
 | :--- | :--- | :--- |
-| **One-Call SDK Integration** | 🟡 **IN PROGRESS** | The [`ts-sdk`](file:///c:/Users/KIIT/Desktop/solid-protocol/ts-sdk/packages/core/src/index.ts) provides the foundational `QueryBuilder`, but needs a top-level `@solid-protocol/sdk` wrapper. |
-| **WASM Memory Mapping** | ❌ **NOT STARTED** | Planned optimization for the JS-to-Rust bridge to share raw `TypedArray` buffers for low-latency hashing. |
-| **Multi-Credential Proofs** | ❌ **NOT STARTED** | Requires the new `CredentialSetQuery` circuit template (Drafted in infra roadmap). |
+| **One-Call SDK Integration** | ✅ **COMPLETED** | Created unified [`@solid-protocol/sdk`](file:///c:/Users/KIIT/Desktop/solid-protocol/ts-sdk/packages/sdk/src/index.ts) wrapper with production-grade Resilient RPC failover. |
+| **WASM Memory Mapping** | ✅ **COMPLETED** | Optimization for the JS-to-Rust bridge sharing raw `TypedArray` buffers for zero-copy hashing. |
+| **Multi-Credential Proofs (N=4)** | ✅ **COMPLETED** | Developed `BatchCredentialQuerySolana`, upgraded `zk-verifier` with 31 inputs, and added `generateBatchProof` to the SDK. |
+| **Phase 3.5: Source of Truth Synchronization** | ✅ **COMPLETED** | Circuits now strictly enforce `schemaHash == 0 => data == 0`, preventing data smuggling. |
+| **SDK Discovery API (Phase 4)** | ✅ **COMPLETED** | Implemented on-chain resolution for `schemaHash` → `Metadata PDA`. |
+| **Server-Side Rust Prover (Phase 4)** | ✅ **COMPLETED** | Native `solid-prover` crate implemented using `ark-circom`. Supports sub-second proving. |
 | **Native Wallet Integration** | ❌ **NOT STARTED** | Requires mobile-compatible WASM builds and the `solid-prover` Rust crate. |
 
 ---

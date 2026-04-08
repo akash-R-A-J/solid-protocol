@@ -31,6 +31,7 @@ export interface CompoundQuery {
 }
 
 export interface Predicate {
+  credentialIndex: number;
   fieldIndex: number;
   operator: 'NOOP' | 'EQ' | 'NE' | 'GT' | 'GTE' | 'LT' | 'LTE';
   value: bigint;
@@ -61,9 +62,18 @@ export function poseidonHash(fields: bigint[]): Uint8Array {
 
 export function poseidonHashBytes(inputs: Uint8Array[]): Uint8Array {
   ensureInit();
-  const flat = new Uint8Array(inputs.length * 32);
-  inputs.forEach((inp, i) => flat.set(inp, i * 32));
-  return new Uint8Array(wasmModule.poseidonHashBytes(flat));
+  const totalLen = inputs.length * 32;
+  
+  // SEC-18: High-Performance Zero-Copy Path (Phase 3)
+  // We write directly into the shared WASM buffer to avoid overhead.
+  wasmModule.resizeSharedBuffer(totalLen);
+  const ptr = wasmModule.getSharedBufferPointer();
+  const memory = wasmModule.memory.buffer; // The underlying WebAssembly.Memory
+  
+  const bufferView = new Uint8Array(memory, ptr, totalLen);
+  inputs.forEach((inp, i) => bufferView.set(inp, i * 32));
+  
+  return new Uint8Array(wasmModule.poseidonHashShared(totalLen));
 }
 
 // ─── BabyJubJub ────────────────────────────────────────────────────────────
@@ -107,13 +117,15 @@ export function computeCommitment(
 }
 
 export function computeNullifier(
-  holderPrivateKey: Uint8Array,
-  schemaHash: Uint8Array,
+  masterKey: Uint8Array,
+  revocationNonce: bigint,
+  verifierAddress: Uint8Array,
+  queryContextHash: Uint8Array,
   verifierNonce: Uint8Array,
 ): Uint8Array {
   ensureInit();
-  return new Uint8Array(wasmModule.computeNullifier(
-    holderPrivateKey, schemaHash, verifierNonce,
+  return new Uint8Array(wasmModule.computeHardenedNullifier(
+    masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce,
   ));
 }
 
@@ -143,78 +155,135 @@ export function computeIdentityState(pubKeyX: Uint8Array, pubKeyY: Uint8Array, r
 
 const OP_MAP = { 'NOOP': 0, 'EQ': 1, 'NE': 2, 'GT': 3, 'GTE': 4, 'LT': 5, 'LTE': 6 } as const;
 
+export interface MultiCredentialQuery {
+  schemaHashes: Uint8Array[]; // Exactly 4
+  predicates: Predicate[];    // 1-4
+  compoundLogic: 'AND' | 'OR';
+  verifierAddress: Uint8Array;
+  verifierNonce: Uint8Array;
+  expirationTimestamp: number;
+  globalRoot: Uint8Array;
+  queryContextHash: Uint8Array;
+}
+
 export class QueryBuilder {
-  private _schemaHash: Uint8Array = new Uint8Array(32);
+  private _schemaHashes: Uint8Array[] = Array(4).fill(new Uint8Array(32));
   private _predicates: Predicate[] = [];
   private _logic: 'AND' | 'OR' = 'AND';
+  private _verifierAddr: Uint8Array = new Uint8Array(32);
   private _nonce: Uint8Array = new Uint8Array(32);
   private _expiration: number = 0;
+  private _globalRoot: Uint8Array = new Uint8Array(32);
+  private _revocationNonce: bigint = 0n;
 
-  schema(hash: Uint8Array): this { this._schemaHash = hash; return this; }
+  schemas(hashes: Uint8Array[]): this { 
+    hashes.forEach((h, i) => { if (i < 4) this._schemaHashes[i] = h; });
+    return this; 
+  }
 
-  where(fieldIndex: number, op: Predicate['operator'], value: bigint): this {
-    this._predicates.push({ fieldIndex, operator: op, value });
+  where(credIndex: number, fieldIndex: number, op: Predicate['operator'], value: bigint): this {
+    this._predicates.push({ credentialIndex: credIndex, fieldIndex, operator: op, value });
     return this;
   }
 
-  and(fieldIndex: number, op: Predicate['operator'], value: bigint): this {
-    this._logic = 'AND';
-    return this.where(fieldIndex, op, value);
-  }
-
-  or(fieldIndex: number, op: Predicate['operator'], value: bigint): this {
-    this._logic = 'OR';
-    return this.where(fieldIndex, op, value);
-  }
-
-  nonce(n: Uint8Array): this { this._nonce = n; return this; }
-  expiration(ts: number): this { this._expiration = ts; return this; }
-  
-  // Phase 3.1: Global State
+  verifier(addr: Uint8Array): this { this._verifierAddr = addr; return this; }
   globalRoot(root: Uint8Array): this { this._globalRoot = root; return this; }
   revocationNonce(nonce: bigint): this { this._revocationNonce = nonce; return this; }
+  nonce(n: Uint8Array): this { this._nonce = n; return this; }
+  expiration(ts: number): this { this._expiration = ts; return this; }
 
-  private _globalRoot?: Uint8Array;
-  private _revocationNonce?: bigint;
+  /**
+   * SEC-13: Compute Query Context Hash
+   * Prevents "Query Malleability" by binding the proof to specific predicates.
+   */
+  private _computeContextHash(): Uint8Array {
+    const credIndices = new BigUint64Array(4).fill(0n);
+    const fieldIndices = new BigUint64Array(4).fill(0n);
+    const ops = new BigUint64Array(4).fill(0n);
+    const vals = new BigUint64Array(4).fill(0n);
 
-  build(): CompoundQuery {
+    this._predicates.forEach((p, i) => {
+      credIndices[i] = BigInt(p.credentialIndex);
+      fieldIndices[i] = BigInt(p.fieldIndex);
+      ops[i] = BigInt(OP_MAP[p.operator]);
+      vals[i] = p.value;
+    });
+
+    const hIndices = poseidonHash([...credIndices, ...fieldIndices]);
+    const hOps = poseidonHash([...ops, ...vals]);
+    
+    return poseidonHashBytes([
+        hIndices, 
+        hOps, 
+        new Uint8Array(new BigUint64Array([BigInt(this._predicates.length)]).buffer),
+        new Uint8Array(new BigUint64Array([this._logic === 'AND' ? 0n : 1n]).buffer)
+    ]);
+  }
+
+  build(): MultiCredentialQuery {
     if (this._predicates.length === 0 || this._predicates.length > 4) {
       throw new Error('Query must have 1-4 predicates');
     }
+    // SEC-20: Enforce canonical ordering in SDK
+    for (let i = 0; i < 3; i++) {
+        const h1 = this._schemaHashes[i];
+        const h2 = this._schemaHashes[i+1];
+        if (h2.some(b => b !== 0)) {
+            let isSmaller = false;
+            for (let j = 0; j < 32; j++) {
+                if (h1[j] < h2[j]) { isSmaller = true; break; }
+                if (h1[j] > h2[j]) throw new Error('Schema hashes must be strictly ascending (SEC-20)');
+            }
+            if (!isSmaller) throw new Error('Schema hashes must be strictly ascending (SEC-20)');
+        }
+    }
+
     return {
-      schemaHash: this._schemaHash,
+      schemaHashes: this._schemaHashes,
       predicates: this._predicates,
       compoundLogic: this._logic,
+      verifierAddress: this._verifierAddr,
       verifierNonce: this._nonce,
       expirationTimestamp: this._expiration,
+      globalRoot: this._globalRoot,
+      queryContextHash: this._computeContextHash(),
     };
   }
 
-  /** Convert to circuit public input format */
+  /** Convert to circuit public inputs (Solana verifier expects 31 inputs) */
   toCircuitInputs() {
     const q = this.build();
-    const fieldIndices = Array(4).fill(0);
-    const operators = Array(4).fill(0);
-    const values = Array(4).fill(0n);
+    
+    const queryCredIndices = Array(4).fill(0);
+    const queryFieldIndices = Array(4).fill(0);
+    const queryOperators = Array(4).fill(0);
+    const queryValues = Array(4).fill(0n);
 
     q.predicates.forEach((p, i) => {
-      fieldIndices[i] = p.fieldIndex;
-      operators[i] = OP_MAP[p.operator];
-      values[i] = p.value;
+      queryCredIndices[i] = p.credentialIndex || 0;
+      queryFieldIndices[i] = p.fieldIndex;
+      queryOperators[i] = OP_MAP[p.operator];
+      queryValues[i] = p.value;
     });
 
     return {
-      schemaHash: q.schemaHash,
-      queryFieldIndices: fieldIndices,
-      queryOperators: operators,
-      queryValues: values,
+      // Index 0: Nullifier
+      nullifierHash: new Uint8Array(32), 
+      // Indices 1-6: State & Roots
+      globalRoot: q.globalRoot,
+      merkleRoots: Array(4).fill(new Uint8Array(32)),
+      schemaHashes: q.schemaHashes,
+      // Indices 7-30: Query Context
+      queryCredentialIndices: queryCredIndices,
+      queryFieldIndices,
+      queryOperators,
+      queryValues,
       numPredicates: q.predicates.length,
       compoundLogic: q.compoundLogic === 'AND' ? 0 : 1,
+      // Index 31-33: Contextual Nonces
+      verifierAddress: q.verifierAddress,
       verifierNonce: q.verifierNonce,
-      expirationTimestamp: q.expirationTimestamp,
-      // Phase 3.1: Global State
-      globalRoot: q.globalRoot ?? new Uint8Array(32),
-      revocationNonce: q.revocationNonce ?? 0n,
+      currentTimestamp: Math.floor(Date.now() / 1000),
     };
   }
 }

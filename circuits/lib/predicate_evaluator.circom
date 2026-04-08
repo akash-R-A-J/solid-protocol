@@ -79,3 +79,34 @@ template FieldSelector(NUM_FIELDS) {
     }
     value <== acc;
 }
+
+/// Select a field value from a batch of credentials by credentialIndex and fieldIndex.
+/// Phase 3.1: Composable Identity.
+template BatchFieldSelector(NUM_CREDS, NUM_FIELDS) {
+    signal input data[NUM_CREDS][NUM_FIELDS];
+    signal input credIndex;
+    signal input fieldIndex;
+    signal output value;
+
+    component selectors[NUM_CREDS];
+    component credIs[NUM_CREDS];
+    signal mux[NUM_CREDS];
+
+    for (var i = 0; i < NUM_CREDS; i++) {
+        selectors[i] = FieldSelector(NUM_FIELDS);
+        for (var j = 0; j < NUM_FIELDS; j++) {
+            selectors[i].data[j] <== data[i][j];
+        }
+        selectors[i].index <== fieldIndex;
+
+        credIs[i] = IsEqual();
+        credIs[i].in[0] <== credIndex;
+        credIs[i].in[1] <== i;
+
+        mux[i] <== credIs[i].out * selectors[i].value;
+    }
+
+    signal sum01 <== mux[0] + mux[1];
+    signal sum23 <== mux[2] + mux[3];
+    value <== sum01 + sum23;
+}

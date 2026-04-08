@@ -1,0 +1,22 @@
+{
+  "name": "@solid-protocol/sdk",
+  "version": "0.1.0",
+  "description": "Unified high-level entry point for SolID Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@solid-protocol/core": "workspace:*",
+    "@solid-protocol/holder": "workspace:*",
+    "@solid-protocol/verifier": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

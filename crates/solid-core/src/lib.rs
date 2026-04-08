@@ -12,12 +12,16 @@
 //!
 //! All cryptographic functions produce outputs identical to circomlib, ensuring
 //! proofs generated off-chain verify correctly in on-chain Groth16 verification.
+/// Protocol-wide architectural constants
+pub const MAX_CREDENTIALS: usize = 4;
+pub const NUM_FIELDS: usize = 8;
+pub const TREE_DEPTH: usize = 20;
 
 pub mod babyjubjub;
 pub mod commitment;
 pub mod credential;
 pub mod error;
-pub mod identity;
+pub mod multi_cred;
 pub mod nullifier;
 pub mod poseidon;
 pub mod query;

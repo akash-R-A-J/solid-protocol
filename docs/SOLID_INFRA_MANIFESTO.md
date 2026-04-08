@@ -42,4 +42,11 @@ To become a standard, SolID must integrate with the "Gatekeepers" of Solana:
 
 ## 5. Why is this needed? (The Problem/Solution)
 **The Problem**: Currently, "Identity" on Solana is either completely public (NFTs/SNS) or centralized (relying on a specific API). Proving you are "Over 18" currently requires showing your birthday.
-**The Solution**: SolID allows you to prove "Condition X is True" without revealing "Data Y". It is the only protocol in the ecosystem combining **Registry Modularization** with **Native Solana ZK-Syscalls**.
+**The Solution**: SolID allows you to prove "Condition X is True" without revealing "Data Y". It is the only protocol in the ecosystem combining **Registry Modularization**, **Native Solana ZK-Syscalls**, and **Multi-Credential Composable Querying (N=4)**.
+
+| Feature | Infrastructure Baseline |
+|---|---|
+| **Privacy** | 2-Layer Merkle SMT (Light Protocol) + Anchor Nonce. |
+| **Composability** | Single ZK proof for predicates across up to 4 independent issuers. |
+| **Security** | Circuit-level Identity Binding + Mandatory Scope Nonces. |
+| **Rent** | 200x reduction via ZK-Compressed Stateless Storage. |

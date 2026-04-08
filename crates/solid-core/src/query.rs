@@ -66,6 +66,8 @@ pub enum CompoundLogic {
 /// A single query predicate: "field[index] <operator> value"
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Predicate {
+    /// Index of the credential in the batch (0..MAX_CREDENTIALS-1) (Phase 3.1)
+    pub credential_index: u8,
     /// Index of the attestation data field (0..NUM_FIELDS-1)
     pub field_index: u8,
     /// Comparison operator
@@ -75,8 +77,8 @@ pub struct Predicate {
 }
 
 impl Predicate {
-    pub fn new(field_index: u8, operator: Operator, value: u64) -> Self {
-        Self { field_index, operator, value }
+    pub fn new(credential_index: u8, field_index: u8, operator: Operator, value: u64) -> Self {
+        Self { credential_index, field_index, operator, value }
     }
 
     /// Evaluate this predicate against attestation data.
@@ -163,6 +165,87 @@ impl CompoundQuery {
         self.expiration_timestamp = timestamp;
         self
     }
+}
+
+/// A multi-credential query: up to 4 predicates across up to 4 different credentials.
+///
+/// Phase 3.1: Composable Identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultiCredentialQuery {
+    /// Schema identifiers for each credential in the batch (must be exactly 4)
+    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+    /// Active predicates (1-4)
+    pub predicates: Vec<Predicate>,
+    /// How to combine predicates
+    pub compound_logic: CompoundLogic,
+    /// Verifier-scoped nonce
+    pub verifier_nonce: [u8; 32],
+    /// Expiration timestamp
+    pub expiration_timestamp: u64,
+    /// Shared master global root for all credentials
+    pub global_root: [u8; 32],
+}
+
+impl MultiCredentialQuery {
+    pub fn new(
+        schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+        compound_logic: CompoundLogic,
+        verifier_nonce: [u8; 32],
+        global_root: [u8; 32],
+    ) -> Self {
+        Self {
+            schema_hashes,
+            predicates: Vec::new(),
+            compound_logic,
+            verifier_nonce,
+            expiration_timestamp: 0,
+            global_root,
+        }
+    }
+
+    pub fn add_predicate(&mut self, predicate: Predicate) -> crate::error::Result<()> {
+        if self.predicates.len() >= crate::MAX_CREDENTIALS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Maximum {} predicates per query",
+                crate::MAX_CREDENTIALS
+            )));
+        }
+        if (predicate.credential_index as usize) >= crate::MAX_CREDENTIALS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Credential index must be < {}, got {}",
+                crate::MAX_CREDENTIALS,
+                predicate.credential_index
+            )));
+        }
+        if (predicate.field_index as usize) >= crate::NUM_FIELDS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Field index must be < {}, got {}",
+                crate::NUM_FIELDS,
+                predicate.field_index
+            )));
+        }
+        self.predicates.push(predicate);
+        Ok(())
+    }
+
+    pub fn with_expiration(mut self, timestamp: u64) -> Self {
+        self.expiration_timestamp = timestamp;
+        self
+    }
+}
+
+pub struct CircuitMultiQueryInputs {
+    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+    pub query_credential_indices: [u8; crate::MAX_CREDENTIALS],
+    pub query_field_indices: [u8; crate::MAX_CREDENTIALS],
+    pub query_operators: [u8; crate::MAX_CREDENTIALS],
+    pub query_values: [u64; crate::MAX_CREDENTIALS],
+    pub num_predicates: u8,
+    pub compound_logic: u8,
+    pub verifier_nonce: [u8; 32],
+    pub expiration_timestamp: u64,
+    pub global_root: [u8; 32],
+}
 
     /// Evaluate the compound query against attestation data (for testing / client-side validation).
     pub fn evaluate(&self, attestation_data: &[u64]) -> bool {

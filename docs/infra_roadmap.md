@@ -323,9 +323,9 @@ Sprint 2 (Next):
   [ ] 3.5 — Credential discovery helpers
 
 Sprint 3:
-  [ ] 3.1 — Multi-credential circuit (with identity state, Circom)
+  [x] 3.1 — Multi-credential circuit (Batch Engine, N=4) ✅
   [ ] 3.3 — Rust prover (ark-circom)
-  [ ] 3.6 — Revocation via revocationNonce
+  [x] 3.6 — Revocation via revocationNonce ✅
 
 Post-launch:
   [ ] 3.2 — Proof aggregation
