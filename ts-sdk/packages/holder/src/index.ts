@@ -11,10 +11,16 @@
 import {
   initWasm,
   computeNullifier,
+  computeIdentityCommitment,
+  poseidonHash,
+  poseidonHashBytes,
   type CompoundQuery,
   type MultiCredentialQuery,
   MAX_CREDENTIALS,
+  MAX_PREDICATES,
   NUM_FIELDS,
+  PROGRAM_IDS,
+  OP_MAP,
 } from '@solid-protocol/core';
 import {
   createLightRpc,
@@ -22,13 +28,14 @@ import {
   type LightConfig,
   DEVNET_CONFIG,
 } from '@solid-protocol/light';
+import { PublicKey } from '@solana/web3.js';
 
 // @ts-ignore — snarkjs doesn't have perfect types
 import * as snarkjs from 'snarkjs';
 import { Buffer } from 'buffer';
 
-/** Verifier Program ID for SolID Protocol */
-const ID_BYTES = new Uint8Array([/* ... FhtEvsU ... bytes */]);
+/** Verifier Program ID, derived from @solid-protocol/core (single source of truth). */
+const VERIFIER_ID_BYTES = new PublicKey(PROGRAM_IDS.zkVerifier).toBytes();
 
 export interface StoredCredential {
   schemaHash: Uint8Array;
@@ -83,10 +90,15 @@ export async function generateProof(
 ): Promise<ProofResult> {
   await initWasm();
 
-  // Step 1: Compute nullifier via WASM
+  // Compute the queryContextHash inline (mirrors circuit Step 4).
+  const queryContextHash = computeQueryContextHash(query);
+
+  // Step 1: Compute hardened nullifier via WASM (5-arg).
   const nullifier = computeNullifier(
     credential.holderPrivateKey,
-    credential.schemaHash,
+    query.revocationNonce ?? 0n,
+    VERIFIER_ID_BYTES,
+    queryContextHash,
     query.verifierNonce,
   );
 
@@ -100,16 +112,13 @@ export async function generateProof(
   console.log(`  Leaf index: ${merkleProof.leafIndex}`);
 
   // Step 3: Build circuit input
-  const queryFieldIndices = Array(4).fill(0);
-  const queryOperators = Array(4).fill(0);
-  const queryValues = Array(4).fill('0');
-  const OP_MAP: Record<string, number> = {
-    NOOP: 0, EQ: 1, NE: 2, GT: 3, GTE: 4, LT: 5, LTE: 6,
-  };
+  const queryFieldIndices = Array(MAX_PREDICATES).fill(0);
+  const queryOperators = Array(MAX_PREDICATES).fill(0);
+  const queryValues = Array(MAX_PREDICATES).fill('0');
 
   query.predicates.forEach((p: any, i: number) => {
     queryFieldIndices[i] = p.fieldIndex;
-    queryOperators[i] = OP_MAP[p.operator];
+    queryOperators[i] = OP_MAP[p.operator as keyof typeof OP_MAP];
     queryValues[i] = p.value.toString();
   });
 
@@ -233,7 +242,7 @@ export async function generateBatchProof(
     numPredicates: query.predicates.length,
     compoundLogic: query.compound_logic === 'AND' ? 0 : 1,
     
-    verifierAddress: bufToDecimal(ID_BYTES), // verifier program ID
+    verifierAddress: bufToDecimal(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifier_nonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
 
@@ -256,9 +265,6 @@ export async function generateBatchProof(
   };
 
   // 5. Map predicates to circuit arrays & REMAP indices
-  const OP_MAP: Record<string, number> = {
-    NOOP: 0, EQ: 1, NE: 2, GT: 3, GTE: 4, LT: 5, LTE: 6,
-  };
   query.predicates.forEach((p: any, i: number) => {
     // SEC-20: Use the indexMap to find the new sorted position of the credential
     const remappedIndex = indexMap.get(p.credentialIndex);
@@ -267,7 +273,7 @@ export async function generateBatchProof(
     }
     circuitInput.queryCredentialIndices[i] = remappedIndex;
     circuitInput.queryFieldIndices[i] = p.fieldIndex;
-    circuitInput.queryOperators[i] = OP_MAP[p.operator];
+    circuitInput.queryOperators[i] = OP_MAP[p.operator as keyof typeof OP_MAP];
     circuitInput.queryValues[i] = p.value.toString();
   });
 
@@ -357,16 +363,30 @@ function bigintToBytes32(n: bigint): Uint8Array {
 }
 
 /**
- * Compute the Poseidon(Ax, Ay, nonce) identity commitment.
- * Phase 2.1: Identity State.
+ * Compute `queryContextHash = Poseidon(schemaHash, fieldIndices|operators|values, numPredicates, compoundLogic, expirationTimestamp)`.
+ *
+ * Mirrors Step 4 of `circuits/compound_query.circom`, giving the verifier a
+ * stable, scope-binding identifier for the exact query that produced the proof.
  */
-function computeIdentityCommitment(
-    ax: Uint8Array,
-    ay: Uint8Array,
-    nonce: bigint
-): Uint8Array {
-    // This calls the WASM poseidon implementation via core
-    // For now, we'll assume it's exported from @solid-protocol/core
-    // return poseidonHash([ax, ay, nonce]);
-    return new Uint8Array(32); // Placeholder for WASM call
+function computeQueryContextHash(query: CompoundQuery): Uint8Array {
+  const inputs: bigint[] = [];
+  inputs.push(bytesToBigInt(query.schemaHash));
+
+  for (let i = 0; i < MAX_PREDICATES; i++) {
+    const p = query.predicates[i];
+    inputs.push(p ? BigInt(p.fieldIndex) : 0n);
+    inputs.push(p ? BigInt(OP_MAP[p.operator as keyof typeof OP_MAP]) : 0n);
+    inputs.push(p ? BigInt(p.value) : 0n);
+  }
+  inputs.push(BigInt(query.predicates.length));
+  inputs.push(BigInt(query.compoundLogic === 'AND' ? 0 : 1));
+  inputs.push(BigInt(query.expirationTimestamp ?? 0));
+
+  return poseidonHashBytes(inputs);
+}
+
+function bytesToBigInt(buf: Uint8Array): bigint {
+  let r = 0n;
+  for (let i = buf.length - 1; i >= 0; i--) r = r * 256n + BigInt(buf[i]);
+  return r;
 }

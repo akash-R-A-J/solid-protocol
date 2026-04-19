@@ -167,86 +167,7 @@ impl CompoundQuery {
     }
 }
 
-/// A multi-credential query: up to 4 predicates across up to 4 different credentials.
-///
-/// Phase 3.1: Composable Identity.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MultiCredentialQuery {
-    /// Schema identifiers for each credential in the batch (must be exactly 4)
-    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
-    /// Active predicates (1-4)
-    pub predicates: Vec<Predicate>,
-    /// How to combine predicates
-    pub compound_logic: CompoundLogic,
-    /// Verifier-scoped nonce
-    pub verifier_nonce: [u8; 32],
-    /// Expiration timestamp
-    pub expiration_timestamp: u64,
-    /// Shared master global root for all credentials
-    pub global_root: [u8; 32],
-}
-
-impl MultiCredentialQuery {
-    pub fn new(
-        schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
-        compound_logic: CompoundLogic,
-        verifier_nonce: [u8; 32],
-        global_root: [u8; 32],
-    ) -> Self {
-        Self {
-            schema_hashes,
-            predicates: Vec::new(),
-            compound_logic,
-            verifier_nonce,
-            expiration_timestamp: 0,
-            global_root,
-        }
-    }
-
-    pub fn add_predicate(&mut self, predicate: Predicate) -> crate::error::Result<()> {
-        if self.predicates.len() >= crate::MAX_CREDENTIALS {
-            return Err(crate::SolidError::InvalidInput(format!(
-                "Maximum {} predicates per query",
-                crate::MAX_CREDENTIALS
-            )));
-        }
-        if (predicate.credential_index as usize) >= crate::MAX_CREDENTIALS {
-            return Err(crate::SolidError::InvalidInput(format!(
-                "Credential index must be < {}, got {}",
-                crate::MAX_CREDENTIALS,
-                predicate.credential_index
-            )));
-        }
-        if (predicate.field_index as usize) >= crate::NUM_FIELDS {
-            return Err(crate::SolidError::InvalidInput(format!(
-                "Field index must be < {}, got {}",
-                crate::NUM_FIELDS,
-                predicate.field_index
-            )));
-        }
-        self.predicates.push(predicate);
-        Ok(())
-    }
-
-    pub fn with_expiration(mut self, timestamp: u64) -> Self {
-        self.expiration_timestamp = timestamp;
-        self
-    }
-}
-
-pub struct CircuitMultiQueryInputs {
-    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
-    pub query_credential_indices: [u8; crate::MAX_CREDENTIALS],
-    pub query_field_indices: [u8; crate::MAX_CREDENTIALS],
-    pub query_operators: [u8; crate::MAX_CREDENTIALS],
-    pub query_values: [u64; crate::MAX_CREDENTIALS],
-    pub num_predicates: u8,
-    pub compound_logic: u8,
-    pub verifier_nonce: [u8; 32],
-    pub expiration_timestamp: u64,
-    pub global_root: [u8; 32],
-}
-
+impl CompoundQuery {
     /// Evaluate the compound query against attestation data (for testing / client-side validation).
     pub fn evaluate(&self, attestation_data: &[u64]) -> bool {
         if self.predicates.is_empty() {
@@ -285,6 +206,100 @@ pub struct CircuitMultiQueryInputs {
     }
 }
 
+/// A multi-credential query: up to 4 predicates across up to 4 different credentials.
+///
+/// Phase 3.1: Composable Identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MultiCredentialQuery {
+    /// Schema identifiers for each credential in the batch (must be exactly 4)
+    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+    /// Active predicates (1-4)
+    pub predicates: Vec<Predicate>,
+    /// How to combine predicates
+    pub compound_logic: CompoundLogic,
+    /// Verifier program address (for nullifier scope-binding — SEC-13)
+    pub verifier_address: [u8; 32],
+    /// Verifier-scoped nonce
+    pub verifier_nonce: [u8; 32],
+    /// Expiration timestamp
+    pub expiration_timestamp: u64,
+    /// Shared master global root for all credentials
+    pub global_root: [u8; 32],
+    /// Current timestamp to test expiration against (set at proof time)
+    pub current_timestamp: u64,
+}
+
+impl MultiCredentialQuery {
+    pub fn new(
+        schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+        compound_logic: CompoundLogic,
+        verifier_address: [u8; 32],
+        verifier_nonce: [u8; 32],
+        global_root: [u8; 32],
+    ) -> Self {
+        Self {
+            schema_hashes,
+            predicates: Vec::new(),
+            compound_logic,
+            verifier_address,
+            verifier_nonce,
+            expiration_timestamp: 0,
+            global_root,
+            current_timestamp: 0,
+        }
+    }
+
+    pub fn add_predicate(&mut self, predicate: Predicate) -> crate::error::Result<()> {
+        if self.predicates.len() >= crate::MAX_CREDENTIALS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Maximum {} predicates per query",
+                crate::MAX_CREDENTIALS
+            )));
+        }
+        if (predicate.credential_index as usize) >= crate::MAX_CREDENTIALS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Credential index must be < {}, got {}",
+                crate::MAX_CREDENTIALS,
+                predicate.credential_index
+            )));
+        }
+        if (predicate.field_index as usize) >= crate::NUM_FIELDS {
+            return Err(crate::SolidError::InvalidInput(format!(
+                "Field index must be < {}, got {}",
+                crate::NUM_FIELDS,
+                predicate.field_index
+            )));
+        }
+        self.predicates.push(predicate);
+        Ok(())
+    }
+
+    pub fn with_expiration(mut self, timestamp: u64) -> Self {
+        self.expiration_timestamp = timestamp;
+        self
+    }
+
+    pub fn with_current_timestamp(mut self, timestamp: u64) -> Self {
+        self.current_timestamp = timestamp;
+        self
+    }
+}
+
+pub struct CircuitMultiQueryInputs {
+    pub schema_hashes: [[u8; 32]; crate::MAX_CREDENTIALS],
+    pub query_credential_indices: [u8; crate::MAX_CREDENTIALS],
+    pub query_field_indices: [u8; crate::MAX_CREDENTIALS],
+    pub query_operators: [u8; crate::MAX_CREDENTIALS],
+    pub query_values: [u64; crate::MAX_CREDENTIALS],
+    pub num_predicates: u8,
+    pub compound_logic: u8,
+    pub verifier_address: [u8; 32],
+    pub verifier_nonce: [u8; 32],
+    pub expiration_timestamp: u64,
+    pub global_root: [u8; 32],
+    pub current_timestamp: u64,
+}
+
 /// Circuit-ready public input representation.
 ///
 /// All arrays are padded to MAX_PREDICATES. Unused slots have operator=0 (NOOP).
@@ -319,8 +334,8 @@ mod tests {
     fn test_compound_and() {
         let data = [21u64, 840, 1, 0, 0, 0, 0, 0]; // age=21, country=840
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, Operator::Gte, 21)).unwrap(); // age >= 21
-        q.add_predicate(Predicate::new(1, Operator::Eq, 840)).unwrap(); // country == US
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap(); // age >= 21
+        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840)).unwrap(); // country == US
         assert!(q.evaluate(&data));
 
         let data_fail = [18u64, 840, 1, 0, 0, 0, 0, 0]; // age=18
@@ -330,8 +345,8 @@ mod tests {
     #[test]
     fn test_compound_or() {
         let mut q = CompoundQuery::new_or([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, Operator::Gte, 21)).unwrap();
-        q.add_predicate(Predicate::new(1, Operator::Eq, 840)).unwrap();
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap();
+        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840)).unwrap();
 
         assert!(q.evaluate(&[18, 840, 0, 0, 0, 0, 0, 0])); // age<21 but country=US
         assert!(!q.evaluate(&[18, 100, 0, 0, 0, 0, 0, 0])); // both fail
@@ -340,16 +355,16 @@ mod tests {
     #[test]
     fn test_max_predicates_enforced() {
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
-        for i in 0..4 {
-            q.add_predicate(Predicate::new(i, Operator::Eq, 1)).unwrap();
+        for i in 0..4u8 {
+            q.add_predicate(Predicate::new(0, i, Operator::Eq, 1)).unwrap();
         }
-        assert!(q.add_predicate(Predicate::new(4, Operator::Eq, 1)).is_err());
+        assert!(q.add_predicate(Predicate::new(0, 4, Operator::Eq, 1)).is_err());
     }
 
     #[test]
     fn test_circuit_inputs_padding() {
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, Operator::Gte, 21)).unwrap();
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap();
         let ci = q.to_circuit_inputs();
         assert_eq!(ci.num_predicates, 1);
         assert_eq!(ci.query_operators[0], Operator::Gte as u8);

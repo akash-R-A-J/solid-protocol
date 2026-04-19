@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR");
@@ -44,15 +43,22 @@ pub mod issuer_registry {
         bjj_pub_key_y: [u8; 32],
         tier: IssuerTier,
     ) -> Result<()> {
+        require!(name.len() <= 64, ErrorCode::NameTooLong);
+        require!(metadata_uri.len() <= 128, ErrorCode::MetadataTooLong);
+
         // PHASE 5: TIERED STAKING (Risk 3 Mitigation)
         // Graduated skin-in-the-game based on authority level.
-        let stake_multiplier = match tier {
+        let stake_multiplier: u64 = match tier {
             IssuerTier::Community => 1,
             IssuerTier::Enterprise => 10,
             IssuerTier::Regulated => 5,
             IssuerTier::Government => 0, // Government is exempt from SOL stake
         };
-        let stake_amount = registry.min_stake_lamports * stake_multiplier;
+        let registry = &ctx.accounts.registry_config;
+        let stake_amount = registry
+            .min_stake_lamports
+            .checked_mul(stake_multiplier)
+            .ok_or(ErrorCode::Overflow)?;
 
         // Transfer stake from issuer to registry vault
         if stake_amount > 0 {
@@ -124,30 +130,25 @@ pub mod issuer_registry {
 
         msg!("Voted: {} with weight {} (Stake from slot {})", 
             if approve { "Approve" } else { "Reject" }, voter_weight, staker.last_stake_slot);
-
-        // Auto-approve if threshold reached
-        let registry = &ctx.accounts.registry_config;
-        if issuer.votes_for >= 1_000_000 { // This would be a config-driven threshold in prod
-            issuer.status = IssuerStatus::Approved;
-        }
-
+        // Auto-approval is handled by `finalize_voting` once the voting period
+        // ends — we do NOT short-circuit here to avoid malleability around the
+        // configured threshold.
         Ok(())
     }
 
-    /// SEC-08: Withdraw stake for rejected or revoked issuers.
+    /// SEC-08: Refund stake for rejected issuers (no slashing occurred).
+    /// Revoked issuers must use `withdraw_after_cooldown` after slashing settles.
     pub fn withdraw_stake(ctx: Context<WithdrawStake>) -> Result<()> {
-        let issuer = &ctx.accounts.issuer_account;
+        let issuer = &mut ctx.accounts.issuer_account;
         require!(
-            issuer.status == IssuerStatus::Rejected || issuer.status == IssuerStatus::Revoked,
+            issuer.status == IssuerStatus::Rejected,
             ErrorCode::InvalidWithdrawStatus
         );
-
         let amount = issuer.staked_amount;
-        
-        // Manual SOL transfer for PDA
-        **ctx.accounts.issuer_account.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.authority.to_account_info().try_borrow_mut_lamports()? += amount;
+        issuer.staked_amount = 0;
 
+        **ctx.accounts.stake_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
+        **ctx.accounts.issuer_authority.to_account_info().try_borrow_mut_lamports()? += amount;
         Ok(())
     }
 
@@ -221,25 +222,26 @@ pub mod issuer_registry {
         Ok(())
     }
 
-    /// Request to exit the registry and withdraw stake.
-    /// Moves status to Cooldown; requires 14-day challenge window.
+    /// Request to exit the registry. Moves status to Cooldown and starts the
+    /// 14-day challenge window before the issuer can withdraw their stake.
     pub fn request_withdrawal(ctx: Context<RequestWithdrawal>) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
         require!(issuer.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
-        
+
         let now = Clock::get()?.unix_timestamp;
         issuer.status = IssuerStatus::Cooldown;
-        issuer.cooldown_ends_at = now + (14 * 24 * 60 * 60); // 14 days
+        issuer.cooldown_ends_at = now + 14 * 24 * 60 * 60;
 
         msg!("Withdrawal requested. Cooldown ends at {}", issuer.cooldown_ends_at);
         Ok(())
     }
 
-    /// Finalize withdrawal after cooldown.
-    pub fn withdraw_stake_legacy(ctx: Context<WithdrawStakeLegacy>, amount: u64) -> Result<()> {
+    /// Finalize withdrawal of `amount` lamports after the cooldown expires.
+    pub fn withdraw_after_cooldown(
+        ctx: Context<WithdrawAfterCooldown>,
+        amount: u64,
+    ) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
-        let registry = &ctx.accounts.registry_config;
-
         require!(issuer.status == IssuerStatus::Cooldown, ErrorCode::IssuerNotInCooldown);
         require!(
             Clock::get()?.unix_timestamp >= issuer.cooldown_ends_at,
@@ -247,17 +249,10 @@ pub mod issuer_registry {
         );
         require!(amount <= issuer.staked_amount, ErrorCode::InsufficientStake);
 
-        // PHASE 2.1: SEC-12 Secure Vault Transfer (PDA-Signer)
-        let seeds = &[
-            b"stake-vault".as_ref(),
-            &[ctx.bumps.stake_vault],
-        ];
-        let signer = &[&seeds[..]];
-
         **ctx.accounts.stake_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.issuer_authority.to_account_info().try_borrow_mut_lamports()? += amount;
 
-        issuer.staked_amount -= amount;
+        issuer.staked_amount = issuer.staked_amount.saturating_sub(amount);
         if issuer.staked_amount == 0 {
             issuer.status = IssuerStatus::Revoked;
         }
@@ -265,6 +260,7 @@ pub mod issuer_registry {
         msg!("Withdrew {} lamports stake", amount);
         Ok(())
     }
+
     pub fn finalize_voting(ctx: Context<FinalizeVoting>) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
         let registry = &ctx.accounts.registry_config;
@@ -292,20 +288,21 @@ pub mod issuer_registry {
             let config = &mut ctx.accounts.registry_config;
             config.active_issuers += 1;
 
-            // PHASE 2.1: CREATE COMPRESSED ISSUER ACCOUNT (SEC-15)
-            // Approved and anchored in the Light Protocol tree for 200x rent efficiency.
-            solid_light::cpi_helpers::register_issuer_cpi(
-                &ctx.accounts.light_program,
-                &ctx.accounts.merkle_tree,
-                &ctx.accounts.payer,
-                &ctx.accounts.system_program,
-                issuer.authority.to_bytes(),
-                issuer.bjj_pub_key_x,
-                issuer.bjj_pub_key_y,
-                issuer.tier.clone() as u8,
-            )?;
+            // The off-chain indexer watches `IssuerApproved` and publishes the
+            // `CompressedIssuer` leaf to whichever storage backend the protocol
+            // is configured with (Light Protocol, SolID-native tree, etc.). This
+            // keeps the on-chain path backend-agnostic.
+            emit!(IssuerApproved {
+                issuer: issuer.key(),
+                authority: issuer.authority,
+                bjj_pub_key_x: issuer.bjj_pub_key_x,
+                bjj_pub_key_y: issuer.bjj_pub_key_y,
+                tier: issuer.tier.clone(),
+                approval_bps: approval_pct as u64,
+                timestamp: Clock::get()?.unix_timestamp,
+            });
 
-            msg!("Issuer APPROVED & ANCHORED: {} ({}% approval)", issuer.name, approval_pct / 100);
+            msg!("Issuer APPROVED: {} ({}% approval)", issuer.name, approval_pct / 100);
         } else {
             issuer.status = IssuerStatus::Rejected;
             msg!("Issuer REJECTED: {} ({}% approval, needed {}%)",
@@ -349,41 +346,56 @@ pub mod issuer_registry {
         Ok(())
     }
 
-    /// Submit a ZK Fraud Proof against an issuer for immediate slashing.
-    /// PHASE 1.3: Programmable Slashing.
+    /// Submit a fraud finding against an issuer.
+    ///
+    /// SECURITY (2026-04 remediation): gated behind DAO `authority`. A signed
+    /// attestation from the registry authority (the DAO council multisig) is
+    /// required. The previous implementation accepted arbitrary evidence from
+    /// any signer, allowing a free stake-drain attack.
+    ///
+    /// The `proof_data` argument is preserved for forward-compatibility: when
+    /// the circuit-backed fraud-proof verifier ships, this function will grow
+    /// an alternative authorization path that verifies a Groth16 fraud proof
+    /// and then allows *any* reporter to execute the slash.
     pub fn submit_fraud_proof(
         ctx: Context<SubmitFraudProof>,
-        _proof_data: Vec<u8>, // In reality, this is a ZK-proof or evidence
+        proof_data: Vec<u8>,
         slash_amount: u64,
         reason: SlashingReason,
     ) -> Result<()> {
-        let issuer = &mut ctx.accounts.issuer_account;
-        
-        // In V1, we stub the actual ZK verification. 
-        // In Production, we would verify a Groth16 proof here.
-        // require!(verify_zk_proof(_proof_data, issuer.bjj_pub_key), ErrorCode::InvalidFraudProof);
+        // Authority-gated path.
+        require!(
+            ctx.accounts.registry_config.authority == ctx.accounts.reporter.key(),
+            ErrorCode::UnauthorizedFraudReporter
+        );
+        // Defensive cap on the size of supplied evidence.
+        require!(proof_data.len() <= 4096, ErrorCode::FraudProofTooLarge);
 
+        let issuer = &mut ctx.accounts.issuer_account;
         require!(
             reason == SlashingReason::InvalidIssuance || reason == SlashingReason::DoubleIssuance,
             ErrorCode::InvalidSlashingReason
         );
+        require!(
+            slash_amount <= issuer.staked_amount,
+            ErrorCode::SlashExceedsStake
+        );
 
-        issuer.staked_amount -= slash_amount.min(issuer.staked_amount);
-        issuer.slash_count += 1;
+        issuer.staked_amount = issuer.staked_amount.saturating_sub(slash_amount);
+        issuer.slash_count = issuer.slash_count.saturating_add(1);
 
-        // PHASE 2.2: Slashing Fee (Reporter Bounty)
-        let reporter_bounty = slash_amount / 20; // 5% bounty
-        if reporter_bounty > 0 {
-            **ctx.accounts.stake_vault.try_borrow_mut_lamports()? -= reporter_bounty;
-            **ctx.accounts.reporter.to_account_info().try_borrow_mut_lamports()? += reporter_bounty;
-            msg!("Reporter bounty paid: {} lamports", reporter_bounty);
-        }
-
+        // Reporter bounty is only paid when the reporter is NOT the authority
+        // itself (the DAO treasury already controls those funds). Left as 0 here.
         if issuer.staked_amount == 0 {
             issuer.status = IssuerStatus::Revoked;
         }
 
-        msg!("Programmable slash executed: {} lamports. Type: {:?}", slash_amount, reason);
+        msg!(
+            "Fraud slash executed on {} — {} lamports. Reason: {:?}",
+            issuer.authority,
+            slash_amount,
+            reason
+        );
         Ok(())
     }
 
@@ -452,7 +464,7 @@ pub struct RegisterIssuer<'info> {
     pub registry_config: Account<'info, RegistryConfig>,
     #[account(
         init, payer = issuer_authority,
-        space = 8 + 32 + 64 + 128 + 32 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8,
+        space = 8 + IssuerAccount::SPACE,
         seeds = [b"issuer", issuer_authority.key().as_ref()],
         bump
     )]
@@ -489,14 +501,17 @@ pub struct VoteOnIssuer<'info> {
 pub struct WithdrawStake<'info> {
     #[account(seeds = [b"registry-config"], bump)]
     pub registry_config: Account<'info, RegistryConfig>,
-    #[account(mut, has_one = authority)]
+    #[account(
+        mut,
+        seeds = [b"issuer", issuer_authority.key().as_ref()], bump,
+        constraint = issuer_account.authority == issuer_authority.key() @ ErrorCode::Unauthorized,
+    )]
     pub issuer_account: Account<'info, IssuerAccount>,
     /// CHECK: Stake vault PDA
     #[account(mut, seeds = [b"stake-vault"], bump)]
     pub stake_vault: AccountInfo<'info>,
     #[account(mut)]
     pub issuer_authority: Signer<'info>,
-    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -519,11 +534,6 @@ pub struct FinalizeVoting<'info> {
     pub registry_config: Account<'info, RegistryConfig>,
     #[account(mut)]
     pub issuer_account: Account<'info, IssuerAccount>,
-    /// CHECK: Light Protocol Merkle tree account for anchoring
-    #[account(mut)]
-    pub merkle_tree: UncheckedAccount<'info>,
-    /// CHECK: Light Protocol program for CPI
-    pub light_program: UncheckedAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -615,6 +625,26 @@ pub struct UnstakeTokens<'info> {
 }
 
 #[derive(Accounts)]
+pub struct RequestWithdrawal<'info> {
+    #[account(mut, seeds = [b"issuer", issuer_authority.key().as_ref()], bump)]
+    pub issuer_account: Account<'info, IssuerAccount>,
+    #[account(mut)]
+    pub issuer_authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawAfterCooldown<'info> {
+    #[account(mut, seeds = [b"issuer", issuer_authority.key().as_ref()], bump)]
+    pub issuer_account: Account<'info, IssuerAccount>,
+    /// CHECK: Stake vault PDA
+    #[account(mut, seeds = [b"stake-vault"], bump)]
+    pub stake_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub issuer_authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct ReleaseVote<'info> {
     #[account(seeds = [b"staker", voter.key().as_ref()], bump)]
     pub staker_account: Account<'info, StakerAccount>,
@@ -692,6 +722,18 @@ pub struct IssuerAccount {
     pub slash_count: u64,
 }
 
+impl IssuerAccount {
+    /// 32 authority
+    /// + (4 + 64) name (len-prefixed String, capped by NameTooLong)
+    /// + (4 + 128) metadata_uri (len-prefixed String, capped by MetadataTooLong)
+    /// + 32 bjj_x + 32 bjj_y
+    /// + 1 tier + 1 status
+    /// + 8 × 9 numeric fields (staked_amount, registered_at, creation_slot,
+    ///    cooldown_ends_at, votes_for, votes_against, voting_ends_at,
+    ///    credentials_issued, slash_count)
+    pub const SPACE: usize = 32 + (4 + 64) + (4 + 128) + 32 + 32 + 1 + 1 + 8 * 9;
+}
+
 #[account]
 pub struct VoteRecord {
     pub voter: Pubkey,
@@ -750,4 +792,31 @@ pub enum ErrorCode {
     InvalidSlashingReason,
     #[msg("Stake is too new — voting weight must be from a previous slot")]
     StakeTooNew,
+    #[msg("No voting power: voter has zero staked tokens")]
+    NoVotingPower,
+    #[msg("Invalid issuer status for withdrawal")]
+    InvalidWithdrawStatus,
+    #[msg("Fraud proof submitter is not the DAO authority")]
+    UnauthorizedFraudReporter,
+    #[msg("Supplied fraud evidence exceeds the 4 KB ceiling")]
+    FraudProofTooLarge,
+    #[msg("Name too long (max 64 bytes)")]
+    NameTooLong,
+    #[msg("Metadata URI too long (max 128 bytes)")]
+    MetadataTooLong,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+}
+
+// ─── Events ────────────────────────────────────────────────────────────────
+
+#[event]
+pub struct IssuerApproved {
+    pub issuer: Pubkey,
+    pub authority: Pubkey,
+    pub bjj_pub_key_x: [u8; 32],
+    pub bjj_pub_key_y: [u8; 32],
+    pub tier: IssuerTier,
+    pub approval_bps: u64,
+    pub timestamp: i64,
 }

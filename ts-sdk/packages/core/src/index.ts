@@ -6,6 +6,25 @@
  * NO crypto is reimplemented in TypeScript — everything calls WASM.
  */
 
+/** Protocol-wide constants mirrored from `crates/solid-core/src/lib.rs`. */
+export const MAX_CREDENTIALS = 4;
+export const MAX_PREDICATES = 4;
+export const NUM_FIELDS = 8;
+export const TREE_DEPTH = 20;
+
+/** Canonical SolID program IDs. Kept as base58 strings so JS doesn't
+ *  need the Solana web3 package just to import types. */
+export const PROGRAM_IDS = {
+  zkVerifier: 'BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2',
+  issuerRegistry: 'CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR',
+  schemaRegistry: 'DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT',
+} as const;
+
+/** Operator encoding matches `crates/solid-core/src/query.rs#Operator`. */
+export const OP_MAP = {
+  NOOP: 0, EQ: 1, NE: 2, GT: 3, GTE: 4, LT: 5, LTE: 6,
+} as const;
+
 // Re-export types
 export interface BJJKeypair {
   private_key: Uint8Array;
@@ -116,6 +135,13 @@ export function computeCommitment(
   ));
 }
 
+/**
+ * Compute the hardened nullifier:
+ *   `nullifier = Poseidon(masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)`
+ *
+ * Produces bytes bit-compatible with `solid_core::nullifier::compute_nullifier`
+ * and the Circom `batch_credential_query.circom` Step 5.
+ */
 export function computeNullifier(
   masterKey: Uint8Array,
   revocationNonce: bigint,
@@ -127,6 +153,19 @@ export function computeNullifier(
   return new Uint8Array(wasmModule.computeHardenedNullifier(
     masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce,
   ));
+}
+
+/**
+ * Compute the identity-state commitment that anchors a master identity in the
+ * global state tree:
+ *   `identityState = Poseidon(pubKeyX, pubKeyY, revocationNonce)`
+ */
+export function computeIdentityCommitment(
+  pubKeyX: Uint8Array,
+  pubKeyY: Uint8Array,
+  revocationNonce: bigint,
+): Uint8Array {
+  return computeIdentityState(pubKeyX, pubKeyY, revocationNonce);
 }
 
 // ─── Identity ──────────────────────────────────────────────────────────────
@@ -152,8 +191,6 @@ export function computeIdentityState(pubKeyX: Uint8Array, pubKeyY: Uint8Array, r
 }
 
 // ─── Query Builder ─────────────────────────────────────────────────────────
-
-const OP_MAP = { 'NOOP': 0, 'EQ': 1, 'NE': 2, 'GT': 3, 'GTE': 4, 'LT': 5, 'LTE': 6 } as const;
 
 export interface MultiCredentialQuery {
   schemaHashes: Uint8Array[]; // Exactly 4

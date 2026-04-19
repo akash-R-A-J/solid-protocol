@@ -10,6 +10,5 @@ crate-type = ["lib"]
 
 [dependencies]
 anchor-lang = { workspace = true }
-light-sdk = "0.4.0"
-light-hasher = "5.0.0"
+borsh = "0.10"
 hex = "0.4"

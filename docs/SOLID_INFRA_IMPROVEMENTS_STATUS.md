@@ -1,93 +1,120 @@
 # SolID Protocol — Infrastructure Improvements & Implementation Status
 
-This document tracks the evolution of the SolID Protocol from an initial concept to a production-grade identity primitive for the Solana ecosystem. It serves as the definitive status record for all architectural hardening and performance optimizations.
+> **Last updated:** 2026-04-19 (post-remediation)
+> Companion docs: [`SOLID_DEEP_AUDIT_2026_04.md`](./SOLID_DEEP_AUDIT_2026_04.md) (pre-fix), [`SOLID_POST_REMEDIATION_AUDIT_2026_04.md`](./SOLID_POST_REMEDIATION_AUDIT_2026_04.md), [`SOLID_FINAL_AUDIT_2026_04.md`](./SOLID_FINAL_AUDIT_2026_04.md), [`DEPLOYMENT_AND_TESTING.md`](./DEPLOYMENT_AND_TESTING.md).
+
+This document tracks the evolution of SolID from concept to production-grade
+identity primitive for Solana. It is the authoritative status record.
+
+---
+
+## 0. Build & test health
+
+| Gate | Status | Command |
+|---|---|---|
+| Rust workspace compiles | ✅ | `cargo check --workspace` → exit 0, warnings only |
+| Cross-language vectors agree | ✅ | `cargo run --example gen_vectors -p solid-core && ts-node tests/vectors/check_vectors.ts` |
+| `anchor build` | ✅ | All three programs compile under Anchor 0.30.1 |
+| Circuits compile | 🟡 | Compile fine; full Groth16 setup requires the 2¹⁶ powers-of-tau file (see `DEPLOYMENT_AND_TESTING.md`) |
+| TS SDK builds | ✅ | `pnpm -r build` clean |
 
 ---
 
 ## 1. Security & Cryptographic Integrity
 
-| Improvement | Status | Implementation Detail |
-| :--- | :--- | :--- |
-| **Identity Binding (P0)** | ✅ **IMPLEMENTED** | The [`compound_query.circom`](file:///c:/Users/KIIT/Desktop/solid-protocol/circuits/compound_query.circom) circuit uses `BabyPbk` to bind the holder's private key to the public coordinates. |
-### 🏛️ Consolidated Infrastructure Improvements
-
-#### 1. Security & Cryptographic Integrity
-- [x] **Identity Binding (P0)**: Enforces circuit-level BabyPbk binding. ✅ **IMPLEMENTED**
-- [x] **Privacy-First Key Hierarchy**: Master-derived sub-keys for unlinkability. ✅ **IMPLEMENTED**
-- [x] **On-Chain Root Anchoring**: CPI to Light Protocol global state trees. ✅ **IMPLEMENTED**
-- [x] **Relay Protection (P1)**: Compressed Nullifier Tree with scope binding. ✅ **IMPLEMENTED**
-- [x] **Canonical Ordering (Phase 3.3)**: Strictly ascending schema hashes across all layers. ✅ **IMPLEMENTED**
-- [x] **Unlinkable Batching (Phase 3.3)**: Per-credential derived keys in single batch. ✅ **IMPLEMENTED**
-- [x] **Root Smuggling Protection (Phase 3.5)**: Implemented `verify_schema_root_binding` to prevent cross-schema proof reuse. ✅ **IMPLEMENTED** (SEC-19)
-- [x] **Zero-Schema Integrity (Phase 3.5)**: Strictly enforce zeroing of all fields in padded slots to prevent data smuggling. ✅ **IMPLEMENTED** (SEC-20)
-- [x] **Flash-Loan Governance (Phase 5)**: 100-slot stake maturity requirement for voting power. ✅ **IMPLEMENTED** (SEC-23)
-
-#### 2. Scalability & Efficiency
-- [x] **200x Rent Reduction**: Compressed storage for Credentials, Nullifiers, and Issuers. ✅ **IMPLEMENTED**
-- [x] **Stateless Verification**: Use of Light Protocol inclusion proofs instead of PDAs. ✅ **IMPLEMENTED**
-
-#### 3. Protocol Neutrality & Governance
-- [x] **Neutral Staking**: Flat minimum stake requirement for all issuers. ✅ **IMPLEMENTED**
-- [x] **Tiered Staking (Risk 3)**: Community, Enterprise, and Government tiers with graduated SOL requirements. ✅ **IMPLEMENTED**
-- [x] **Self-Sovereign Revocation**: Identity-level nonces for instant holder-led revocation. ✅ **IMPLEMENTED**
+| Improvement | Status | Notes |
+|---|---|---|
+| Identity Binding (P0) | ✅ | `compound_query.circom` binds holder private key via `BabyPbk` |
+| Privacy-First Key Hierarchy | ✅ | Master-derived, per-scope sub-keys |
+| Commitment formula parity | ✅ | Rust / Circom / WASM all compute `Poseidon(dataHash, schemaHash, Ax, Ay, salt)`; cross-language vectors in `tests/vectors/` |
+| Hardened Nullifier (5-arg) | ✅ | `Poseidon(masterKey, revNonce, verifier, queryHash, verifierNonce)` across all layers |
+| Anti-Replay (atomic) | ✅ | **PDA-per-nullifier** in `zk-verifier`. Replay = `init` fails = tx reverts. |
+| Schema ↔ Root Binding | ✅ | `verify_schema_root_binding` parses `SchemaTreeBinding` PDA (discriminator + root equality); no more `return true` |
+| Canonical Ordering (SEC-20) | ✅ | Strictly ascending schema hashes enforced in both `multi_cred.rs` and `programs/zk-verifier/src/lib.rs` |
+| Zero-Schema Integrity | ✅ | Circuit uses `enabled = 1 - isZero(schemaHash)` to bypass signature/Merkle checks for padded slots |
+| Fraud-Proof Slashing | ✅ | `submit_fraud_proof` is authority-gated, ≤ 4 KB evidence, no reporter bounty (no DoS vector) |
+| Paused / Authority Transfer | ✅ | `zk-verifier::set_paused`, `zk-verifier::transfer_authority` |
+| Flash-Loan Governance | ✅ | 100-slot stake maturity in `issuer-registry::vote_on_issuer` |
 
 ---
 
-## 3. Decentralized Trust & Governance (Status Check)
-*The system is now 100% synchronized between source code and documentation for the P0 Hardening Phase.*
+## 2. Scalability & Efficiency
 
-### 🔍 Comprehensive Second Audit (Phase 1 Summary)
-1.  **Mathematical Continuity**: ✅ Verified. WASM/JS layer derives keys that match the `IdentityAnchor` expectations.
-2.  **Logical Non-Malleability**: ✅ Verified. Instruction arguments (nullifier, root) are cross-checked against ZK public inputs.
-3.  **Governance Soundness**: ✅ Verified. Voting weight is derived from on-chain tokens, not user input.
-4.  **CPI Security**: ✅ Verified. Root check uses the `solid-light` helper for tree head validation.
-
----
-
-# Implementation Strategy: No-Regression, No-Workaround
-*This section remains the "Source of Truth" for all future Tier 3 developments.*
+| Improvement | Status | Notes |
+|---|---|---|
+| Compressed credential leaves | 🟡 | On-chain verifier is backend-agnostic. TS `@solid-protocol/light` wraps `@lightprotocol/stateless.js`; the insert path still needs to attach the 36-byte credential tuple as the compressed-account payload (tracked as R-2 in the final audit). |
+| Stateless verification | ✅ | Verifier consumes Merkle roots via PDAs; no per-credential on-chain account |
+| Event-driven indexer hand-off | ✅ | `IssuerApproved` etc. events drive off-chain compressed-state writes instead of a fabricated CPI |
 
 ---
 
-## 4. Developer & User Experience (DX/UX)
+## 3. Decentralized Trust & Governance
 
-| Improvement | Status | Implementation Detail |
-| :--- | :--- | :--- |
-| **One-Call SDK Integration** | ✅ **COMPLETED** | Created unified [`@solid-protocol/sdk`](file:///c:/Users/KIIT/Desktop/solid-protocol/ts-sdk/packages/sdk/src/index.ts) wrapper with production-grade Resilient RPC failover. |
-| **WASM Memory Mapping** | ✅ **COMPLETED** | Optimization for the JS-to-Rust bridge sharing raw `TypedArray` buffers for zero-copy hashing. |
-| **Multi-Credential Proofs (N=4)** | ✅ **COMPLETED** | Developed `BatchCredentialQuerySolana`, upgraded `zk-verifier` with 31 inputs, and added `generateBatchProof` to the SDK. |
-| **Phase 3.5: Source of Truth Synchronization** | ✅ **COMPLETED** | Circuits now strictly enforce `schemaHash == 0 => data == 0`, preventing data smuggling. |
-| **SDK Discovery API (Phase 4)** | ✅ **COMPLETED** | Implemented on-chain resolution for `schemaHash` → `Metadata PDA`. |
-| **Server-Side Rust Prover (Phase 4)** | ✅ **COMPLETED** | Native `solid-prover` crate implemented using `ark-circom`. Supports sub-second proving. |
-| **Native Wallet Integration** | ❌ **NOT STARTED** | Requires mobile-compatible WASM builds and the `solid-prover` Rust crate. |
+| Feature | Status | Notes |
+|---|---|---|
+| DAO voting (tokens, not wallets) | ✅ | `stake_tokens` → `vote_on_issuer` with Quadratic weighting |
+| Approve/Reject lifecycle | ✅ | `finalize_voting` emits `IssuerApproved`; no hardcoded auto-approval |
+| Cooldown withdrawal (14 d) | ✅ | `request_withdrawal` → `withdraw_after_cooldown` |
+| Rejected-issuer refund | ✅ | `withdraw_stake` for rejected issuers (no dead-code duplicate) |
+| Tiered Staking (Community/Enterprise/Regulated/Government) | ✅ | `register_issuer` with `checked_mul` overflow guard |
 
 ---
 
-## 5. Ecosystem Interoperability
+## 4. Developer & User Experience
 
-| Improvement | Status | Implementation Detail |
-| :--- | :--- | :--- |
-| **W3C VC Translation Layer** | ❌ **NOT STARTED** | Future mapping of SAS fields to standard JSON-LD W3C Verifiable Credentials. |
-| **Indexer API (Helius/Triton)** | ❌ **NOT STARTED** | Standardization of identity-rich APIs for indexing the `CredentialVerified` events. |
+| Improvement | Status | Notes |
+|---|---|---|
+| `@solid-protocol/core` single source of truth | ✅ | Exports `MAX_CREDENTIALS`, `MAX_PREDICATES`, `NUM_FIELDS`, `TREE_DEPTH`, `PROGRAM_IDS`, `OP_MAP`, `computeIdentityCommitment`, `computeNullifier` |
+| `@solid-protocol/holder` | ✅ | Real 5-arg nullifier + proper `queryContextHash`; no placeholder bytes |
+| `@solid-protocol/verifier` | ✅ | Real `buildVerifyBatchProofIx` + `verifyOnChain` sending a confirmed tx; `checkIssuerStatus` reads `IssuerAccount` PDA |
+| `@solid-protocol/light` | 🟡 | Merkle-proof fetch is real; full insert/revoke payload wiring pending (honest labels in file header) |
+| `@solid-protocol/sdk` (one-call) | ✅ | Unified wrapper with resilient RPC failover |
+| WASM zero-copy Poseidon | ✅ | `poseidonHashShared` path |
+| Multi-credential batch (N=4) | ✅ | `generateBatchProof` with 31 public inputs |
+| Native wallet integration | ⭕ | Not started |
+| `solid-prover` (native Rust prover) | ✅ | Builds standalone via `cargo build --manifest-path crates/solid-prover/Cargo.toml`; excluded from default workspace because `ark-circom 0.5.0-alpha` pins an incompatible `num-bigint` |
 
 ---
 
-# Implementation Strategy: No-Regression, No-Workaround
+## 5. Cross-language contract
 
-To move this roadmap forward without introducing logical flaws or performance regressions, the following principles MUST be followed:
+- **Rust-generated reference vectors:** `tests/vectors/commitment_and_nullifier.json`
+- **TS verifier:** `tests/vectors/check_vectors.ts` (`✔ commitment matches`, `✔ nullifier matches`)
+- **Circom:** witness generation consumes the same hex in `circuits/tests/` (add vectors test-bench next iteration).
 
-### 1. Mathematical Consistency (Crate-First)
-All cryptographic logic (Poseidon round counts, BabyJubJub parameters, key derivation) must be defined in the [`solid-core`](file:///c:/Users/KIIT/Desktop/solid-protocol/crates/solid-core) Rust crate **first**. The Circom circuits and Solana programs must import/consume these constants to ensure a single source of truth.
+---
 
-### 2. Full Constraint Enforcement
-Never use "Symbolic Logic" (Placeholders). If a system claims "On-chain Anchoring," the verifier program **MUST** perform a CPI to the Light Protocol tree to verify the root. If a circuit claims "Identity Binding," the private key **MUST** be derived or constrained in-circuit. **Workarounds are technical debt that compromises user identity.**
+## 6. Ecosystem interoperability
 
-### 3. Versioned State Evolution
-As we move from Bloom Filters to SMTs, account structures must use **Explicit Versioning** in the Anchor discriminators. This allows for smooth "No-Regression" upgrades where old nullifiers remain valid while new users benefit from the scalable infra.
+| Feature | Status |
+|---|---|
+| Solana Attestation Service (SAS) data availability | ✅ — SolID is the computation layer over SAS data |
+| W3C VC translation | ⭕ Not started |
+| Indexer APIs (Helius / Triton) | 🟡 Events exist (`CredentialVerified`, `IssuerApproved`); no hosted indexer adapter yet |
 
-### 4. Shared Test Vectors
-We utilize a shared `tests/` suite where a single YAML vector (containing credentials and queries) is run against:
-1.  The Rust Core `evaluate()` function.
-2.  The Local Circom witness generator.
-3.  The Solana program `verify_proof` instruction.
-Matching results across all three layers is the only way to guarantee a 100% consistent infrastructure.
+---
+
+## 7. Remaining work (residual gaps)
+
+| ID | Scope | Notes |
+|---|---|---|
+| R-2 | TS `@solid-protocol/light` insert path | Attach the 36-byte `(commitment, schemaHash, issuer, nonce)` tuple as compressed-account data; or swap the backend to `spl-account-compression` — the on-chain verifier is agnostic. |
+| R-3 | Per-credential revocation circuit | Add `revocationRoot` public input to `compound_query.circom` and a non-membership check. |
+| R-6 | `solid-prover` dep pin | Track `ark-circom` for a release that relaxes the `num-bigint = 0.4.3` exact-version pin. |
+| R-7 | W3C VC translation layer | Bidirectional mapping to JSON-LD Verifiable Credentials. |
+| R-8 | Native mobile wallet build | Requires a `wasm-pack` `web` target + React Native bridge. |
+
+---
+
+## 8. Implementation principles (unchanged; still binding)
+
+1. **Mathematical consistency crate-first.** All cryptographic logic lives in
+   `solid-core`; circuits and programs consume it, never redefine it.
+2. **Full constraint enforcement, no placeholders.** A function that claims a
+   check must perform the check. This was violated in the pre-remediation
+   tree (`return true;`) and has been closed.
+3. **Versioned state evolution.** Account discriminators are explicit so
+   tomorrow's schema migrations do not invalidate today's PDAs.
+4. **Shared test vectors.** The `tests/vectors/` directory is the only place
+   byte-level cryptographic truth is declared; Rust, TS, and Circom consume
+   it; CI enforces equality.

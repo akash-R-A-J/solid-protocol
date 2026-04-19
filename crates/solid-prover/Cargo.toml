@@ -1,4 +1,4 @@
-ve [package]
+[package]
 name = "solid-prover"
 version.workspace = true
 edition.workspace = true

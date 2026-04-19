@@ -3,12 +3,16 @@ resolver = "2"
 members = [
     "crates/solid-core",
     "crates/solid-light",
-    "crates/solid-prover",
     "programs/zk-verifier",
     "programs/issuer-registry",
     "programs/schema-registry",
     "wasm",
 ]
+# `solid-prover` is an off-chain utility that pulls `ark-circom`, whose
+# `num-bigint = 0.4.3` hard-pin conflicts with `groth16-solana`'s `num-bigint`
+# version in the on-chain graph. It lives outside the default workspace and is
+# built standalone via `cargo build --manifest-path crates/solid-prover/Cargo.toml`.
+exclude = ["crates/solid-prover"]
 
 [workspace.package]
 version = "0.1.0"

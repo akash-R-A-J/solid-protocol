@@ -1,17 +1,26 @@
-include "poseidon.circom";
-include "merkle_inclusion.circom";
-include "signature_verifier.circom";
+pragma circom 2.1.0;
+
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/eddsaposeidon.circom";
+include "./merkle_inclusion.circom";
 
 /// Phase 3.1: CredentialAtom
-/// Verifies one credential + Merkle inclusion + Identity binding.
+/// Verifies one credential: commitment integrity + issuer signature + Merkle inclusion.
+///
+/// Canonical commitment formula (matches `crates/solid-core/src/commitment.rs`):
+///   dataHash   = Poseidon(data[0], ..., data[N-1])
+///   commitment = Poseidon(dataHash, schemaHash, holderAx, holderAy, salt)
+///
+/// The circuit outputs `attestationHash` = `commitment` so the upstream circuit
+/// (batch_credential_query) can Merkle-verify inclusion with the same leaf.
 template CredentialAtom(NUM_FIELDS, TREE_DEPTH) {
-    // Public Inputs
+    // Public inputs
     signal input schemaHash;
     signal input merkleRoot;
     signal input issuerPubKeyAx;
     signal input issuerPubKeyAy;
 
-    // Private Inputs
+    // Private inputs
     signal input attestationData[NUM_FIELDS];
     signal input salt;
     signal input holderBJJPubKeyAx;
@@ -22,34 +31,60 @@ template CredentialAtom(NUM_FIELDS, TREE_DEPTH) {
     signal input merkleSiblings[TREE_DEPTH];
     signal input merklePathIndices[TREE_DEPTH];
 
-    // Out: The message hash (attestation commitment) for downstream evaluation
+    // If the slot is a zero-schema placeholder, we bypass signature / Merkle checks.
+    // `enabled = 1 - isZero(schemaHash)`.
+    component schemaIsZero = IsZero();
+    schemaIsZero.in <== schemaHash;
+    signal enabled;
+    enabled <== 1 - schemaIsZero.out;
+
+    // Output: commitment (leaf value)
     signal output attestationHash;
 
-    // 1. Compute attestation commitment: Poseidon(data, salt, holderPubKey)
-    component dataHasher = Poseidon(NUM_FIELDS + 3);
+    // Step 1: dataHash = Poseidon(data[0..N-1])
+    component dataHasher = Poseidon(NUM_FIELDS);
     for (var i = 0; i < NUM_FIELDS; i++) {
         dataHasher.inputs[i] <== attestationData[i];
     }
-    dataHasher.inputs[NUM_FIELDS] <== salt;
-    dataHasher.inputs[NUM_FIELDS+1] <== holderBJJPubKeyAx;
-    dataHasher.inputs[NUM_FIELDS+2] <== holderBJJPubKeyAy;
-    attestationHash <== dataHasher.out;
+    signal dataHash;
+    dataHash <== dataHasher.out;
 
-    // 2. Verify Issuer Signature
-    component sigVerifier = SignatureVerifier();
-    sigVerifier.pubKeyX <== issuerPubKeyAx;
-    sigVerifier.pubKeyY <== issuerPubKeyAy;
-    sigVerifier.R8x <== issuerSigR8x;
-    sigVerifier.R8y <== issuerSigR8y;
-    sigVerifier.S <== issuerSigS;
-    sigVerifier.M <== attestationHash;
+    // Step 2: commitment = Poseidon(dataHash, schemaHash, holderAx, holderAy, salt)
+    component commitHasher = Poseidon(5);
+    commitHasher.inputs[0] <== dataHash;
+    commitHasher.inputs[1] <== schemaHash;
+    commitHasher.inputs[2] <== holderBJJPubKeyAx;
+    commitHasher.inputs[3] <== holderBJJPubKeyAy;
+    commitHasher.inputs[4] <== salt;
+    attestationHash <== commitHasher.out;
 
-    // 3. Verify Merkle Inclusion
+    // Step 3: Verify issuer signature over the commitment (circomlib EdDSAPoseidonVerifier).
+    component sigVerifier = EdDSAPoseidonVerifier();
+    sigVerifier.enabled <== enabled;
+    sigVerifier.Ax      <== issuerPubKeyAx;
+    sigVerifier.Ay      <== issuerPubKeyAy;
+    sigVerifier.R8x     <== issuerSigR8x;
+    sigVerifier.R8y     <== issuerSigR8y;
+    sigVerifier.S       <== issuerSigS;
+    sigVerifier.M       <== attestationHash;
+
+    // Step 4: Merkle inclusion in the schema-scoped credential tree.
+    // Uses a binary Merkle tree (matches Light Protocol indexed tree semantics).
     component inclusion = MerkleInclusion(TREE_DEPTH);
-    inclusion.leaf <== attestationHash;
-    inclusion.root <== merkleRoot;
+    inclusion.enabled <== enabled;
+    inclusion.leaf    <== attestationHash;
+    inclusion.root    <== merkleRoot;
     for (var i = 0; i < TREE_DEPTH; i++) {
-        inclusion.siblings[i] <== merkleSiblings[i];
+        inclusion.siblings[i]    <== merkleSiblings[i];
         inclusion.pathIndices[i] <== merklePathIndices[i];
     }
+}
+
+template IsZero() {
+    signal input in;
+    signal output out;
+    signal inv;
+    inv <-- in != 0 ? 1 / in : 0;
+    out <== -in * inv + 1;
+    in * out === 0;
 }

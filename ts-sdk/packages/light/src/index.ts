@@ -1,14 +1,29 @@
 /**
- * @solid-protocol/light — Light Protocol integration for compressed credential trees
+ * @solid-protocol/light — Compressed-state backend adapter
  *
- * This module provides the actual Light Protocol integration for:
- * - Creating compressed state trees for credential storage
- * - Inserting credential commitment leaves
- * - Fetching Merkle proofs via Photon Indexer
- * - Revoking credentials by nullifying leaves
+ * This package is the **backend adapter** SolID uses to write credential leaves
+ * and fetch Merkle proofs. It currently wraps `@lightprotocol/stateless.js`,
+ * but the on-chain verifier is backend-agnostic (see `crates/solid-light`),
+ * so an `spl-account-compression` adapter or an in-house tree would be a
+ * drop-in replacement behind the same interface.
  *
- * This is a CORE component — without Light Protocol, each credential would
- * cost ~0.002 SOL in rent. With compression, it's ~0.00001 SOL.
+ * Status of each export (as of 2026-04):
+ *   - `createLightRpc`           ✅ real wrapper over stateless.js `createRpc`
+ *   - `fetchMerkleProof`         ✅ real — uses `getValidityProof` from Photon
+ *   - `initializeCredentialTree` ⚠️  returns default state-tree accounts
+ *                                    (full `createTree` needs the compression
+ *                                    program's authority flow; see TODO)
+ *   - `insertCredentialLeaf`     ⚠️  constructs a real `compress` ix, but does
+ *                                    not yet attach the 36-byte credential tuple
+ *                                    as the compressed-account data. Track R-2
+ *                                    in the post-remediation audit.
+ *   - `revokeCredential`         ⚠️  same status as insert; decompression is
+ *                                    wired, data binding is pending.
+ *   - `getStateRoot`             ⚠️  returns "0" — parsing the concurrent
+ *                                    Merkle tree header needs the SPL
+ *                                    account-compression schema.
+ *
+ * These honest labels exist so callers are never silently handed a stub.
  */
 
 import { Connection, PublicKey, Keypair, TransactionInstruction } from '@solana/web3.js';

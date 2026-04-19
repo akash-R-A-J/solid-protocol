@@ -21,6 +21,7 @@ pub mod babyjubjub;
 pub mod commitment;
 pub mod credential;
 pub mod error;
+pub mod identity;
 pub mod multi_cred;
 pub mod nullifier;
 pub mod poseidon;
@@ -28,4 +29,10 @@ pub mod query;
 pub mod sas;
 pub mod schema;
 
-pub use error::SolidError;
+pub use babyjubjub::{BJJKeypair, BJJPublicKey, EdDSASignature};
+pub use credential::{Credential, CredentialBuilder};
+pub use error::{Result, SolidError};
+pub use query::{
+    CircuitMultiQueryInputs, CircuitQueryInputs, CompoundLogic, CompoundQuery,
+    MultiCredentialQuery, Operator, Predicate, MAX_FIELDS, MAX_PREDICATES,
+};
