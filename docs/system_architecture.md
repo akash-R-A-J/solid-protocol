@@ -1,13 +1,31 @@
 # SolID Protocol — System Architecture
 
 > **Private Onchain Identity Infrastructure for Solana**
-> SAS + ZK Compound Queries + Light Compression + DAO Trust Registry
+> SAS + ZK Compound Queries + SPL Account-Compression Merkle Trees + DAO Trust Registry
 
 > [!NOTE]
-> This document is the technical blueprint. It incorporates all finalized decisions from the [deep dive](file:///C:/Users/KIIT/.gemini/antigravity/brain/eb59111f-985d-4b4a-9a39-eb82b8c0c7e7/private_onchain_identity_deep_dive.md):
+> This document is the technical blueprint. It incorporates all finalized decisions from the [deep dive](./private_onchain_identity_deep_dive.md):
 > separate BabyJubJub key management, compound AND/OR queries, DAO-governed issuer registry, modular schema verticals, hackathon-first strategy.
 >
 > **Tech Stack**: Rust-first. Core crypto crate compiled to **WASM** for browser. TypeScript SDK is a thin wrapper over WASM. On-chain programs in Rust/Anchor. Circuits in Circom.
+
+> [!IMPORTANT]
+> **v0.2 amendment (2026-04-20) — SPL Account Compression migration.**
+> Every reference to "Light Protocol" / "Light Compression" / "Photon
+> Indexer" below describes the **v0.1 design**. In v0.2, the
+> compressed-state backend has been replaced with **SPL Account
+> Compression** (the same primitive that powers Metaplex Bubblegum cNFTs);
+> the on-chain verifier was already backend-agnostic, so the migration
+> required **no circuit changes, no trusted-setup redo, and no public-input
+> reordering**. The architectural layering, data flow, trust model, circuit
+> design, account discriminators, commitment / nullifier derivation, and
+> DAO governance in this document are all unchanged. Only the *owner of
+> the tree* (now the SPL AC program under an `issuer-registry` tree-authority
+> PDA) and the *client library* (`@solana/spl-account-compression`) have
+> moved. For the v0.2 delta, see:
+> - [`light-protocol.md`](./light-protocol.md) — now titled *"State Compression (SPL Account Compression)"*
+> - [`architecture.md`](./architecture.md) — v0.1 → v0.2 delta table
+> - [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md) — R-item closure
 
 ---
 

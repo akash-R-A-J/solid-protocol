@@ -1,5 +1,11 @@
 # SolID — Post-Remediation Audit (2026-04-19)
 
+> **HISTORICAL SNAPSHOT (2026-04-19).** Preserved verbatim. The residual
+> R-2 (SPL AC insert path) / R-3 (revocation SMT) / R-4 (`Box::leak`) /
+> R-5 (CI) / R-6 (prover workspace) items discussed below were closed in
+> v0.2 (2026-04-20). Current state:
+> [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md).
+
 **Auditor:** Senior Engineering Review, post-remediation pass
 **Scope:** Same as `SOLID_DEEP_AUDIT_2026_04.md`, re-run after fixes.
 

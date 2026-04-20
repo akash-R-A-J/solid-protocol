@@ -6,8 +6,8 @@ import {
   generateKeypair as coreGenerateKeypair
 } from '@solid-protocol/core';
 import { SOLID_CONFIG } from './config';
-import { ResilientLightClient } from './rpc';
-import { Connection, PublicKey, Transaction } from '@solana/web3.js';
+import { ResilientConnection } from './rpc';
+import { Connection, PublicKey } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
 import { Buffer } from 'buffer';
 
@@ -19,22 +19,32 @@ import { Buffer } from 'buffer';
  */
 export class SolID {
   private static _initialized = false;
-  private static _rpc: ResilientLightClient;
+  private static _rpc: ResilientConnection;
   private static _connection: Connection;
 
   /**
    * Initialize the SDK.
-   * Loads the WASM modules and sets up the resilient RPC client.
+   * Loads the WASM modules and sets up the resilient Solana RPC client.
+   * v0.2: No Photon/Light dependency — compressed state is read directly from
+   *       SPL Account Compression via standard `Connection.getAccountInfo`.
    */
   static async initialize(): Promise<void> {
     if (this._initialized) return;
     await initWasm();
-    
-    this._connection = new Connection(SOLID_CONFIG.SOLANA_RPC_URL);
-    this._rpc = new ResilientLightClient(SOLID_CONFIG.PHOTON_RPC_URLS);
-    
+
+    this._rpc = new ResilientConnection(SOLID_CONFIG.SOLANA_RPC_URLS, 'confirmed');
+    this._connection = this._rpc.connection;
+
     this._initialized = true;
-    console.log('SolID SDK: Initialized with Multi-Endpoint Failover (Risk 1 Mitigation)');
+  }
+
+  /** Expose the resilient Solana RPC client so downstream packages
+   *  (issuer/holder) can share the same endpoint pool + failover state. */
+  static get rpc(): ResilientConnection {
+    if (!this._initialized) {
+      throw new Error('SolID SDK: call SolID.initialize() before accessing rpc.');
+    }
+    return this._rpc;
   }
 
   /**

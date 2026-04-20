@@ -2,6 +2,17 @@
 
 > From **85% real protocol** to **Solana's Identity Layer**
 
+> **v0.2 amendment (2026-04-20).** The Tier-1.3 entry below describes the
+> v0.1 Light Protocol CPI path. In v0.2 the compressed-state backend was
+> migrated to **SPL Account Compression**; `issuer-registry::issue_credential`
+> now CPIs to `spl-account-compression::append` under a protocol-owned
+> `tree-authority` PDA. The thesis in §3.0 (Identity State Anchoring)
+> and the multi-credential / composable-proof strategy in §3.1 are
+> unchanged. Cross-reference the current state in
+> [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md)
+> and the migration details in [`light-protocol.md`](./light-protocol.md)
+> (now titled *"State Compression (SPL Account Compression)"*).
+
 ---
 
 ## ✅ Completed: Tier 1 + Tier 2

@@ -1,7 +1,48 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+    pubkey::Pubkey as SolPubkey,
+};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR");
+
+// ─── SPL Account Compression integration (R-2) ─────────────────────────────
+//
+// We integrate with SPL Account Compression by hand-rolling the `append` CPI
+// rather than importing the `spl-account-compression` crate.  Two reasons:
+//
+//   1. Dep-graph hygiene — SPL AC transitively pulls a large tree of
+//      `borsh`, `bytemuck`, and `solana-program` versions that often fight
+//      with Anchor's own pins.  A 40-byte instruction is not worth that risk.
+//   2. Upgrade resilience — the on-wire instruction (discriminator + 32-byte
+//      leaf + 3 accounts) has been stable since v0.4 of spl-account-compression
+//      and is unlikely to change.  Pinning the wire format in one place is
+//      easier to audit than pinning a transitive crate.
+//
+// Program IDs (same on mainnet, devnet, localnet):
+
+/// `cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK`
+pub mod spl_account_compression_id {
+    anchor_lang::declare_id!("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
+}
+
+/// `noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV`
+pub mod spl_noop_id {
+    anchor_lang::declare_id!("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
+}
+
+/// Anchor discriminator for `spl_account_compression::append`:
+/// `sha256("global:append")[..8]`.  Pinning here rather than recomputing on
+/// every call keeps the CPI allocation-free.
+pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] =
+    [0x95, 0x78, 0x12, 0xde, 0xec, 0xe1, 0x58, 0xcb];
+
+/// Seed for the PDA that signs `append` CPIs on behalf of the issuer.
+/// The PDA is unique per (schema_hash): one authority per tree.  This means
+/// a single schema's tree cannot be appended to by arbitrary callers.
+pub const TREE_AUTHORITY_SEED: &[u8] = b"tree-authority";
 
 /// DAO-Governed Issuer Registry — full decentralized trust management.
 ///
@@ -439,6 +480,128 @@ pub mod issuer_registry {
         msg!("Issuer REVOKED: {}", issuer.name);
         Ok(())
     }
+
+    // ─── Credential issuance (R-2) ────────────────────────────────────────
+
+    /// Publish a new credential commitment into the SPL Account-Compression
+    /// tree bound to `schema_hash`.
+    ///
+    /// Only an *Approved* issuer may call this.  The instruction:
+    ///   1. Bounds-checks the issuer and the supplied commitment.
+    ///   2. Builds the SPL AC `append` instruction by hand and invokes it
+    ///      with the `(b"tree-authority", schema_hash)` PDA signing as the
+    ///      tree authority.  SPL AC enforces that the caller IS that
+    ///      authority.
+    ///   3. Increments `issuer.credentials_issued` and emits the
+    ///      `CredentialIssued` event.
+    ///
+    /// What this instruction deliberately does NOT do:
+    ///   * It does not update `SchemaTreeBinding.current_root`.  That lives
+    ///     in `schema-registry` and is written by a separate
+    ///     `update_tree_root` call (either directly by the tree-authority
+    ///     keypair or by an indexer that watches `CredentialIssued`).  This
+    ///     split is what lets the on-chain path work with ANY SPL AC tree
+    ///     shape without parsing the concurrent-merkle-tree header on-chain.
+    ///   * It does not verify the off-chain EdDSA signature on the credential
+    ///     — that's a Circom-circuit concern at proof-generation time.
+    pub fn issue_credential(
+        ctx: Context<IssueCredential>,
+        schema_hash: [u8; 32],
+        commitment: [u8; 32],
+    ) -> Result<()> {
+        let issuer = &mut ctx.accounts.issuer_account;
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
+        // The issuer's authority must sign.
+        require_keys_eq!(
+            issuer.authority,
+            ctx.accounts.issuer_authority.key(),
+            ErrorCode::Unauthorized
+        );
+
+        // Reject the trivial (all-zero / all-one) commitments that can only
+        // be produced by mis-use of the SDK — every honest commitment is a
+        // Poseidon output and effectively collision-free with these patterns.
+        require!(
+            commitment != [0u8; 32] && commitment != [0xFFu8; 32],
+            ErrorCode::InvalidCommitment
+        );
+
+        // Derive and verify the tree-authority PDA.
+        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
+            &[TREE_AUTHORITY_SEED, schema_hash.as_ref()],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.tree_authority.key(),
+            tree_authority_key,
+            ErrorCode::InvalidTreeAuthority
+        );
+
+        // Build the SPL AC `append` instruction manually.
+        let mut ix_data = Vec::with_capacity(40);
+        ix_data.extend_from_slice(&SPL_AC_APPEND_DISCRIMINATOR);
+        ix_data.extend_from_slice(&commitment);
+
+        let spl_ac: SolPubkey = spl_account_compression_id::ID;
+        let spl_noop: SolPubkey = spl_noop_id::ID;
+        require_keys_eq!(
+            ctx.accounts.compression_program.key(),
+            spl_ac,
+            ErrorCode::InvalidCompressionProgram
+        );
+        require_keys_eq!(ctx.accounts.log_wrapper.key(), spl_noop, ErrorCode::InvalidNoopProgram);
+
+        let cpi_ix = Instruction {
+            program_id: spl_ac,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.merkle_tree.key(), false),
+                AccountMeta::new_readonly(tree_authority_key, true),
+                AccountMeta::new_readonly(spl_noop, false),
+            ],
+            data: ix_data,
+        };
+
+        let signer_seeds: &[&[u8]] = &[
+            TREE_AUTHORITY_SEED,
+            schema_hash.as_ref(),
+            &[tree_authority_bump],
+        ];
+        invoke_signed(
+            &cpi_ix,
+            &[
+                ctx.accounts.merkle_tree.to_account_info(),
+                ctx.accounts.tree_authority.to_account_info(),
+                ctx.accounts.log_wrapper.to_account_info(),
+                ctx.accounts.compression_program.to_account_info(),
+            ],
+            &[signer_seeds],
+        )?;
+
+        issuer.credentials_issued = issuer
+            .credentials_issued
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+
+        emit!(CredentialIssued {
+            issuer: issuer.authority,
+            schema_hash,
+            commitment,
+            merkle_tree: ctx.accounts.merkle_tree.key(),
+            slot: Clock::get()?.slot,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        msg!(
+            "CredentialIssued: issuer={} schema_hash[..4]={:?} tree={}",
+            issuer.authority,
+            &schema_hash[..4],
+            ctx.accounts.merkle_tree.key()
+        );
+        Ok(())
+    }
 }
 
 // ─── Account Contexts ──────────────────────────────────────────────────────
@@ -574,6 +737,47 @@ pub struct RevokeIssuer<'info> {
     pub issuer_account: Account<'info, IssuerAccount>,
     #[account(constraint = authority.key() == registry_config.authority @ ErrorCode::Unauthorized)]
     pub authority: Signer<'info>,
+}
+
+/// Accounts for `issue_credential`.
+///
+/// * `issuer_account`    — PDA recording the approved issuer; must match
+///                         `issuer_authority`.
+/// * `issuer_authority`  — signer (the issuer's Solana key).
+/// * `tree_authority`    — PDA `(b"tree-authority", schema_hash)` that SPL AC
+///                         will see as the authorized appender.  Signed by
+///                         this program via `invoke_signed`.
+/// * `merkle_tree`       — the concurrent-merkle-tree account owned by SPL AC.
+/// * `log_wrapper`       — `spl-noop` program.
+/// * `compression_program` — SPL Account Compression program.
+#[derive(Accounts)]
+#[instruction(schema_hash: [u8; 32], commitment: [u8; 32])]
+pub struct IssueCredential<'info> {
+    #[account(
+        mut,
+        seeds = [b"issuer", issuer_authority.key().as_ref()],
+        bump
+    )]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    pub issuer_authority: Signer<'info>,
+
+    /// CHECK: Derived + verified in-handler against
+    /// `(b"tree-authority", schema_hash)`.  The PDA is a signer via
+    /// `invoke_signed`; it never needs to be writable.
+    #[account(seeds = [TREE_AUTHORITY_SEED, schema_hash.as_ref()], bump)]
+    pub tree_authority: UncheckedAccount<'info>,
+
+    /// CHECK: SPL Account Compression tree account (writable).  Ownership and
+    /// shape are validated by the SPL AC program during CPI.
+    #[account(mut)]
+    pub merkle_tree: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_noop_id::ID`; validated in-handler.
+    pub log_wrapper: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
+    pub compression_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -806,6 +1010,14 @@ pub enum ErrorCode {
     MetadataTooLong,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("Credential commitment is degenerate (all-zero or all-one bytes)")]
+    InvalidCommitment,
+    #[msg("Derived tree-authority PDA does not match supplied account")]
+    InvalidTreeAuthority,
+    #[msg("Supplied compression_program account is not SPL Account Compression")]
+    InvalidCompressionProgram,
+    #[msg("Supplied log_wrapper account is not SPL Noop")]
+    InvalidNoopProgram,
 }
 
 // ─── Events ────────────────────────────────────────────────────────────────
@@ -818,5 +1030,23 @@ pub struct IssuerApproved {
     pub bjj_pub_key_y: [u8; 32],
     pub tier: IssuerTier,
     pub approval_bps: u64,
+    pub timestamp: i64,
+}
+
+/// Emitted on every successful `issue_credential`.
+///
+/// Off-chain indexers subscribe to this to:
+///   * Refresh the `SchemaTreeBinding` PDA via
+///     `schema_registry::update_tree_root` once the tree's new root is
+///     observable.
+///   * Populate a searchable holder-facing index of issued-credential
+///     metadata (without the credential plaintext).
+#[event]
+pub struct CredentialIssued {
+    pub issuer: Pubkey,
+    pub schema_hash: [u8; 32],
+    pub commitment: [u8; 32],
+    pub merkle_tree: Pubkey,
+    pub slot: u64,
     pub timestamp: i64,
 }

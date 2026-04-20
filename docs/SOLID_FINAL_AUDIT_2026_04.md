@@ -1,5 +1,13 @@
 # SolID Protocol — Final Comprehensive Audit (2026-04-19)
 
+> **HISTORICAL SNAPSHOT (2026-04-19).** Preserved verbatim as audit
+> record. The R-series residual blockers flagged below have since been
+> closed in v0.2 (2026-04-20) — most notably the SPL Account Compression
+> migration of the insert path, the `Box::leak` fix in
+> `zk-verifier::deserialize_vk`, the prover workspace split, and the
+> CI + Nix-pinned-toolchain additions. The current authoritative status
+> lives in [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md).
+
 **Auditor:** Senior engineering review, post-remediation + integration pass
 **Scope:** Whole repository — circuits, Rust crates, Anchor programs, TS SDK, WASM bridge, scripts, and docs.
 **Mandate:** Represent the system **as it actually exists today**, not as it once claimed to be.

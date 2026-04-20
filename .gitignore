@@ -1,10 +1,10 @@
 /target
 **/*.rs.bk
-Cargo.lock
 node_modules/
 dist/
 pkg/
 circuits/build/
+circuits/ptau/
 .vscode/
 .idea/
 *.swp
@@ -12,7 +12,23 @@ circuits/build/
 Thumbs.db
 .env
 
+# Flake-managed project-local toolchain cache (Solana CLI, Anchor,
+# circom, snarkjs, wasm-pack).  Repopulated by scripts/bootstrap.sh.
+.toolchain/
+
+# Nix build outputs
+result
+result-*
+
+# Tooling worktrees
+tools/solid-prover/target
+
 # SolID Research & Audit (Local Only)
 # docs/SOLID_INFRA_MANIFESTO.md
 # docs/SOLID_SECURITY_AUDIT.md
 # docs/SOLID_COMPREHENSIVE_REVIEW.md
+
+# IMPORTANT: Cargo.lock IS checked in.
+# The repo pins Cargo.lock at format v3 so anchor-cli 0.30.1 (which bundles a
+# pre-1.78 cargo in platform-tools) can parse it.  Regenerate with
+# `nix develop --command cargo generate-lockfile` if you need to refresh deps.

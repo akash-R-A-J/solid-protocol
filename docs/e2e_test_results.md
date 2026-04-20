@@ -1,6 +1,12 @@
 # SolID Protocol — E2E Test Results
 
 > Tracking end-to-end testing progress. Updated live as each step completes.
+>
+> **HISTORICAL SNAPSHOT.** This is the v0.1 (Light-backend) E2E attempt.
+> v0.2 ships a new E2E suite based on SPL Account Compression; see
+> [`DEPLOYMENT_AND_TESTING.md`](./DEPLOYMENT_AND_TESTING.md) for the
+> current canonical flow and `.github/workflows/ci.yml` for the
+> automated gates.
 
 **Environment:** Ubuntu (WSL), Solana devnet  
 **Date:** 2026-04-04

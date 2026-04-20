@@ -1,0 +1,321 @@
+name: ci
+
+# Every push / PR runs the full gate.  Jobs are designed to fail fast and to
+# surface the exact invariant that broke (no "see logs" black boxes).
+#
+# Toolchain is pinned by `flake.nix` + `scripts/bootstrap.sh` — neither CI nor
+# contributors install Solana/Anchor/circom/snarkjs/wasm-pack globally.  The
+# first job (`toolchain`) provisions `.toolchain/` into the cache and every
+# downstream job restores it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  SOLANA_VERSION: 1.18.22
+  ANCHOR_VERSION: 0.30.1
+  RUST_VERSION: 1.79.0
+  NODE_VERSION: 18
+  CIRCOM_VERSION: 2.1.9
+  SNARKJS_VERSION: 0.7.5
+  WASM_PACK_VERSION: 0.13.1
+
+jobs:
+  # ───────────────────────── 0. TOOLCHAIN ─────────────────────────
+  # Warm, cached toolchain.  Every other job depends on it.
+  toolchain:
+    name: toolchain (bootstrap)
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.key.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: key
+        run: |
+          echo "value=toolchain-${{ runner.os }}-${{ hashFiles('scripts/bootstrap.sh', 'flake.nix') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache .toolchain
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ steps.key.outputs.value }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+          target: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Bootstrap toolchain
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: bash scripts/bootstrap.sh
+
+      - name: Verify pinned versions
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          solana --version
+          anchor --version
+          circom --version
+          npx snarkjs --version || true
+          wasm-pack --version
+
+  # ───────────────────────── 1. FORMAT + CLIPPY ─────────────────────────
+  fmt-clippy:
+    name: fmt + clippy
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - name: cargo fmt (root workspace)
+        run: cargo fmt --all -- --check
+      - name: cargo fmt (solid-prover workspace)
+        working-directory: tools/solid-prover
+        run: cargo fmt --all -- --check
+      - name: cargo clippy (root workspace, non-BPF libs)
+        # Only lint the non-program crates here; programs are BPF-only and
+        # are linted by `anchor build` with proper cfg gating.
+        run: cargo clippy -p solid-core -p solid-light -- -D warnings
+      - name: cargo clippy (solid-prover)
+        working-directory: tools/solid-prover
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ───────────────────────── 2. RUST LIBRARY TESTS ─────────────────────────
+  rust:
+    name: rust (solid-core + solid-light)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Restore cargo caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+      - name: Lockfile is v3 (Anchor requirement)
+        run: head -5 Cargo.lock | grep -qE '^version = 3($|[[:space:]])'
+      - name: Build + test (solid-core, solid-light)
+        run: cargo test -p solid-core -p solid-light --no-fail-fast
+      - name: Unit tests for zk-verifier host code
+        # `zk-verifier` tests that don't need the BPF target (VkBuf parser
+        # tests, negate_g1_point, etc.).  BPF build is covered by the
+        # `anchor` job.
+        run: cargo test -p zk-verifier --lib --no-fail-fast
+
+  # ───────────────────────── 3. PROVER (separate workspace) ─────────────────────────
+  prover:
+    name: prover (tools/solid-prover)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Cache prover target
+        uses: actions/cache@v4
+        with:
+          path: tools/solid-prover/target
+          key: prover-${{ runner.os }}-${{ hashFiles('tools/solid-prover/Cargo.lock') }}
+      - name: Build + test prover
+        working-directory: tools/solid-prover
+        run: cargo test --no-fail-fast
+
+  # ───────────────────────── 4. ANCHOR BPF BUILD ─────────────────────────
+  anchor:
+    name: anchor build (BPF)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Build all three programs
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          anchor build --no-idl
+      - name: Emit IDLs (sanity — they must parse)
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          anchor idl build -p zk_verifier > /dev/null
+          anchor idl build -p issuer_registry > /dev/null
+          anchor idl build -p schema_registry > /dev/null
+
+  # ───────────────────────── 5. WASM BRIDGE ─────────────────────────
+  wasm:
+    name: wasm (solid-core → @solid-protocol/core)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Build wasm bridge
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          cd crates/solid-core
+          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
+
+  # ───────────────────────── 6. CIRCUITS (compile only) ─────────────────────────
+  circuits:
+    name: circuits (circom compile)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Compile every .circom file
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          mkdir -p target/circuits
+          for f in circuits/*.circom; do
+            echo "→ compiling $f"
+            circom "$f" --r1cs --sym -o target/circuits \
+              -l node_modules -l circuits/lib || exit 1
+          done
+      - name: Upload R1CS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1cs
+          path: target/circuits/
+
+  # ───────────────────────── 7. SDK (TypeScript) ─────────────────────────
+  sdk:
+    name: sdk (TypeScript build + unit tests)
+    needs: [toolchain, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ts-sdk/package-lock.json
+      # We need the wasm artifact from the `wasm` job.  Rebuild it here (fast,
+      # since the cargo registry is warm) to keep this job self-contained.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Rebuild wasm (nodejs target)
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          cd crates/solid-core
+          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
+      - name: Install workspace deps
+        working-directory: ts-sdk
+        run: npm ci
+      - name: Build all packages
+        working-directory: ts-sdk
+        run: npm run build
+      - name: Run SDK tests
+        working-directory: ts-sdk
+        run: npm test --workspaces --if-present
+
+  # ───────────────────────── 8. CROSS-LANGUAGE VECTORS ─────────────────────────
+  # The single most important invariant in the whole repo: Rust and
+  # TypeScript MUST agree bit-for-bit on the commitment + nullifier.  Any
+  # divergence (e.g. Poseidon constant drift, endianness regression)
+  # reports here, not in prod.
+  cross_language_vectors:
+    name: cross-language vectors (Rust ↔ TS)
+    needs: [rust, sdk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ts-sdk/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Regenerate Rust-side vectors
+        run: cargo run -p solid-core --example gen_vectors -- tests/vectors/commitment_and_nullifier.json
+      - name: Vectors unchanged (Rust is the source of truth)
+        run: git diff --exit-code -- tests/vectors/commitment_and_nullifier.json
+      - name: Build wasm + SDK
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          cd crates/solid-core
+          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
+          cd ../../ts-sdk && npm ci && npm run build
+      - name: Run TS-side vector check
+        working-directory: ts-sdk
+        run: npx ts-node --project ../tsconfig.json ../tests/vectors/check_vectors.ts
+
+  # ───────────────────────── 9. PROGRAM-ID CONSISTENCY ─────────────────────────
+  # Hard gate on the drift that previously blocked a devnet deploy:
+  # Anchor.toml ↔ `declare_id!` ↔ `deployments/*.json` must all agree.
+  program_id_consistency:
+    name: program-id consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run check_program_ids.py
+        run: python3 scripts/check_program_ids.py

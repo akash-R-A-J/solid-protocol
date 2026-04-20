@@ -1,8 +1,17 @@
 # SolID Protocol — Infrastructure Manifesto
 **The Private On-Chain Identity Layer for Solana**
 
+> **v0.2 amendment (2026-04-20).** The manifesto below was authored when
+> the compressed-state backend was Light Protocol. In v0.2 it has been
+> replaced with **SPL Account Compression** — the same primitive that
+> powers Metaplex Bubblegum. The thesis ("compression is how millions of
+> credentials become economically viable on Solana") and the layering
+> are unchanged; only the specific program-ID we CPI into has moved.
+> Every mention of "Light Protocol" below should be read as
+> "compressed-state backend" — currently SPL AC.
+
 ## 1. Executive Summary
-SolID is a modular identity infrastructure designed to bridge the gap between **Real-World Identity (KYC/Records)** and **On-Chain Privacy**. It serves as the "Computation & Proof" layer for the Solana ecosystem, specifically designed to integrate with the **Solana Attestation Service (SAS)** and **Light Protocol**.
+SolID is a modular identity infrastructure designed to bridge the gap between **Real-World Identity (KYC/Records)** and **On-Chain Privacy**. It serves as the "Computation & Proof" layer for the Solana ecosystem, specifically designed to integrate with the **Solana Attestation Service (SAS)** and a compressed-state backend (SPL Account Compression as of v0.2, formerly Light Protocol).
 
 ### Is this really Infrastructure?
 **Yes.** Unlike a standalone KYC app, SolID provides:

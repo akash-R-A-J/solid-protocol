@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/sdk",
-  "version": "0.1.0",
-  "description": "Unified high-level entry point for SolID Protocol",
+  "version": "0.2.0",
+  "description": "Unified high-level entry point for SolID Protocol (SPL-AC + Groth16)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -11,7 +11,12 @@
   "dependencies": {
     "@solid-protocol/core": "workspace:*",
     "@solid-protocol/holder": "workspace:*",
-    "@solid-protocol/verifier": "workspace:*"
+    "@solid-protocol/issuer": "workspace:*",
+    "@solid-protocol/light": "workspace:*",
+    "@solid-protocol/verifier": "workspace:*",
+    "@coral-xyz/anchor": "^0.30.1",
+    "@solana/web3.js": "^1.95.0",
+    "buffer": "^6.0.3"
   },
   "devDependencies": {
     "typescript": "^5.3.0"

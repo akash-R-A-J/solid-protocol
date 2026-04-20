@@ -1,60 +1,83 @@
-import { createRpc, LightRpc } from "@lightprotocol/stateless.js";
-
 /**
- * ResilientLightClient
- * 
- * A high-availability wrapper for Light Protocol's RPC.
- * Implements Priority Failover (Risk 1) to eliminate single points of failure.
+ * ResilientConnection
+ *
+ * v0.2 (2026-04 R-2 remediation):
+ *   The previous implementation wrapped `@lightprotocol/stateless.js`.
+ *   Since SolID now stores compressed credentials in SPL Account Compression
+ *   trees (readable via any standard Solana RPC) and no longer depends on
+ *   Photon, this wrapper provides priority-failover over a list of Solana
+ *   `Connection` endpoints instead.
+ *
+ *   Design goals:
+ *     - Zero dependency on Light Protocol / Photon (R-2).
+ *     - Sticky active endpoint: successful calls keep pinning to the same
+ *       RPC to preserve confirmation consistency across a session.
+ *     - Idempotent, side-effect-free failover: each attempt creates a fresh
+ *       `Connection` lazily and never mutates `this.activeIndex` until a
+ *       call succeeds.
  */
-export class ResilientLightClient {
-  private rpcs: string[];
-  private activeRpcIndex: number = 0;
-  private currentClient: LightRpc;
 
-  constructor(endpoints: string[]) {
+import { Connection, ConnectionConfig } from '@solana/web3.js';
+
+export class ResilientConnection {
+  private readonly endpoints: readonly string[];
+  private readonly config?: ConnectionConfig | string;
+  private activeIndex: number = 0;
+  private cached: Map<number, Connection> = new Map();
+
+  constructor(endpoints: string[], commitmentOrConfig?: ConnectionConfig | string) {
     if (endpoints.length === 0) {
-      throw new Error("ResilientLightClient: At least one endpoint is required.");
+      throw new Error('ResilientConnection: at least one endpoint is required.');
     }
-    this.rpcs = endpoints;
-    this.currentClient = createRpc(this.rpcs[0]);
+    this.endpoints = endpoints;
+    this.config = commitmentOrConfig;
   }
 
-  /**
-   * Execute an RPC call with automatic failover.
-   * If the primary indexer is down, it tries the secondaries in order.
-   */
-  async call<T>(fn: (client: LightRpc) => Promise<T>): Promise<T> {
-    let lastError: any;
+  /** Get the current active `Connection`.  Callers can use this for one-shot
+   *  RPC calls when they don't need failover (e.g., `getLatestBlockhash`
+   *  during transaction assembly).  For any call that must survive a node
+   *  outage, use {@link call} instead. */
+  get connection(): Connection {
+    return this.getOrCreate(this.activeIndex);
+  }
 
-    for (let i = 0; i < this.rpcs.length; i++) {
-        const attemptIndex = (this.activeRpcIndex + i) % this.rpcs.length;
-        const client = i === 0 ? this.currentClient : createRpc(this.rpcs[attemptIndex]);
+  /** Execute an RPC call with automatic priority failover.  Attempts the
+   *  current active endpoint first; on failure, walks the list in order.
+   *  When a failover succeeds, the active index is updated so that
+   *  subsequent calls pin to the newly healthy endpoint. */
+  async call<T>(fn: (connection: Connection) => Promise<T>): Promise<T> {
+    const total = this.endpoints.length;
+    let lastError: unknown;
 
-        try {
-            const result = await fn(client);
-            
-            // If this attempt succeeded and was a failover, update the active index
-            if (i > 0) {
-                this.activeRpcIndex = attemptIndex;
-                this.currentClient = client;
-                console.warn(`SolID SDK: Failover successful to ${this.rpcs[attemptIndex]}`);
-            }
-            
-            return result;
-        } catch (err: any) {
-            lastError = err;
-            console.error(`SolID SDK: RPC attempt ${attemptIndex + 1} failed: ${err.message}`);
-            // Continue to next endpoint...
+    for (let i = 0; i < total; i++) {
+      const attemptIndex = (this.activeIndex + i) % total;
+      const conn = this.getOrCreate(attemptIndex);
+      try {
+        const result = await fn(conn);
+        if (i > 0) {
+          this.activeIndex = attemptIndex;
         }
+        return result;
+      } catch (err) {
+        lastError = err;
+      }
     }
 
-    throw new Error(`SolID SDK: All RPC endpoints failed. Last error: ${lastError.message}`);
+    throw new Error(
+      `ResilientConnection: all ${total} endpoint(s) failed. Last error: ${
+        lastError instanceof Error ? lastError.message : String(lastError)
+      }`,
+    );
   }
 
-  /**
-   * Get the current active client for direct access.
-   */
-  get client(): LightRpc {
-    return this.currentClient;
+  private getOrCreate(index: number): Connection {
+    const cached = this.cached.get(index);
+    if (cached) return cached;
+    const conn =
+      typeof this.config === 'string' || this.config === undefined
+        ? new Connection(this.endpoints[index], this.config)
+        : new Connection(this.endpoints[index], this.config);
+    this.cached.set(index, conn);
+    return conn;
   }
 }

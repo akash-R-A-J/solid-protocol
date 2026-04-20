@@ -1,0 +1,7 @@
+# Pins the Rust toolchain for the `solid-prover` workspace only.
+# The main (programs) workspace relies on the top-level nix flake; this pin
+# exists so anyone running `cargo ...` directly inside `tools/solid-prover/`
+# gets a version that can parse this crate's dep closure.
+[toolchain]
+channel = "1.79.0"
+components = ["rustfmt", "clippy", "rust-src"]

@@ -1,32 +1,37 @@
 /**
  * @solid-protocol/holder — Proof generation for credential holders
  *
- * Full proof generation pipeline with Light Protocol:
- * 1. Fetch Merkle proof from Photon Indexer via @solid-protocol/light
- * 2. Prepare circuit inputs (private + public) via WASM
- * 3. Generate Groth16 proof via snarkjs
- * 4. Return proof ready for on-chain submission
+ * v0.2 (2026-04 R-2 remediation):
+ *   Migrated off the Light Protocol stateless client and onto
+ *   `@solid-protocol/light` v0.2 — which is now an SPL Account Compression
+ *   adapter.  Callers pass a `MerkleProofAdapter` (typically a
+ *   Helius-DAS-backed adapter in production, or a `LocalReplicaAdapter` for
+ *   tests/localnet) plus the credential's tree address.
+ *
+ * Pipeline:
+ *   1. Compute nullifier via WASM (Step 8 in circuit)
+ *   2. Fetch Merkle proof via the supplied adapter
+ *   3. Build the Circom circuit input (public + private)
+ *   4. Run `snarkjs.groth16.fullProve` for proof generation
+ *   5. Format the proof for `groth16-solana` on-chain verification
  */
 
 import {
   initWasm,
   computeNullifier,
   computeIdentityCommitment,
-  poseidonHash,
   poseidonHashBytes,
   type CompoundQuery,
   type MultiCredentialQuery,
   MAX_CREDENTIALS,
   MAX_PREDICATES,
-  NUM_FIELDS,
   PROGRAM_IDS,
   OP_MAP,
 } from '@solid-protocol/core';
 import {
-  createLightRpc,
   fetchMerkleProof as lightFetchMerkleProof,
-  type LightConfig,
-  DEVNET_CONFIG,
+  type MerkleProofAdapter,
+  type MerkleProof,
 } from '@solid-protocol/light';
 import { PublicKey } from '@solana/web3.js';
 
@@ -49,6 +54,14 @@ export interface StoredCredential {
   salt: Uint8Array;
   commitment: Uint8Array;
   expirationTimestamp: number;
+  /** SPL Account-Compression tree this credential was issued into. */
+  merkleTree: PublicKey;
+}
+
+/** Options that every proof-generation entrypoint requires. */
+export interface MerkleProofSource {
+  /** Adapter the holder uses to retrieve Merkle proofs for leaves.  Required. */
+  merkleProofAdapter: MerkleProofAdapter;
 }
 
 export interface ProofResult {
@@ -84,9 +97,7 @@ export async function generateProof(
     wasmPath: string;
     zkeyPath: string;
   },
-  options?: {
-    lightConfig?: LightConfig;
-  },
+  options: MerkleProofSource,
 ): Promise<ProofResult> {
   await initWasm();
 
@@ -102,10 +113,12 @@ export async function generateProof(
     query.verifierNonce,
   );
 
-  // Step 2: Fetch Merkle proof from Photon Indexer (Light Protocol)
-  const config = options?.lightConfig || DEVNET_CONFIG;
-  const rpc = createLightRpc(config);
-  const merkleProof = await lightFetchMerkleProof(rpc, credential.commitment);
+  // Step 2: Fetch Merkle proof from the supplied adapter.
+  const merkleProof: MerkleProof = await lightFetchMerkleProof(
+    options.merkleProofAdapter,
+    credential.merkleTree,
+    credential.commitment,
+  );
 
   console.log(`Merkle proof fetched!`);
   console.log(`  Root: ${merkleProof.root.slice(0, 16)}...`);
@@ -181,13 +194,12 @@ export async function generateBatchProof(
     wasmPath: string;
     zkeyPath: string;
   },
-  options?: {
-    lightConfig?: LightConfig;
+  options: MerkleProofSource & {
+    /** Address of the global-state tree (mirrored in `schema_registry::global_binding`). */
+    globalStateTree: PublicKey;
   },
 ): Promise<BatchProofResult> {
   await initWasm();
-  const config = options?.lightConfig || DEVNET_CONFIG;
-  const rpc = createLightRpc(config);
 
   // SEC-20: Canonical Ordering & Smart Sorting (Phase 3.2)
   // 1. Sort credentials with a stable sort to maintain predictability
@@ -214,19 +226,28 @@ export async function generateBatchProof(
       }
   }
 
-  // 4. Fetch Merkle proofs for ALL credentials in parallel
+  // 4. Fetch Merkle proofs for ALL credentials in parallel.
+  //    Each credential now carries its own `merkleTree` pubkey (the SPL
+  //    Account-Compression tree bound to its schema), so batch proofs can
+  //    span multiple schema-scoped trees in a single verification.
   const credentialProofs = await Promise.all(
-    sortedCredentials.map(c => lightFetchMerkleProof(rpc, c.commitment))
+    sortedCredentials.map(c =>
+      lightFetchMerkleProof(options.merkleProofAdapter, c.merkleTree, c.commitment),
+    ),
   );
 
-  // 2. Fetch the shared Global Identity proof
-  // In SolID, it is Poseidon(masterPK_x, masterPK_y, revocationNonce)
+  // 2. Fetch the shared Global Identity proof from the global-state tree.
+  //    In SolID, the identity leaf is Poseidon(masterPK_x, masterPK_y, revocationNonce).
   const identityCommitment = computeIdentityCommitment(
       masterPublicKey.x,
       masterPublicKey.y,
       revocationNonce
   );
-  const globalProof = await lightFetchMerkleProof(rpc, identityCommitment);
+  const globalProof = await lightFetchMerkleProof(
+    options.merkleProofAdapter,
+    options.globalStateTree,
+    identityCommitment,
+  );
 
   // 3. Build Batch Circuit Input (30+ signals)
   const circuitInput: any = {

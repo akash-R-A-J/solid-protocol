@@ -1,6 +1,11 @@
 # Circuit Design
 
 > Technical details of the compound query ZK circuit
+> **Last refreshed:** 2026-04-20 for v0.2 (SPL Account Compression).
+> The circuit contract is **unchanged** from v0.1 — only the backend
+> that stores the Merkle tree has moved from Light Protocol to SPL
+> Account Compression. The Merkle inputs (`root`, `siblings`, `pathIndices`)
+> are consumed identically; the adapter supplying them is pluggable.
 
 ## Circuit: `CompoundQuerySolana(20, 8, 4)`
 
@@ -17,7 +22,7 @@
 |---|---|---|
 | `CredentialHasher` | `lib/credential_hasher.circom` | `Poseidon(data[0..7])` |
 | `SignatureVerifier` | `lib/signature_verifier.circom` | EdDSA-Poseidon issuer sig verification |
-| `MerkleInclusion` | `lib/merkle_inclusion.circom` | SMT inclusion proof (Light Protocol tree) |
+| `MerkleInclusion` | `lib/merkle_inclusion.circom` | Inclusion proof against the schema-bound concurrent Merkle tree |
 | `PredicateEvaluator` | `lib/predicate_evaluator.circom` | Field comparison (7 operators) |
 | `FieldSelector` | `lib/predicate_evaluator.circom` | Mux to select field by index |
 | `NullifierComputer` | `lib/nullifier_expiry.circom` | `Poseidon(privKey, schema, nonce)` |
@@ -29,7 +34,7 @@
 
 | Signal | Type | Description |
 |---|---|---|
-| `merkleRoot` | Fr | Current Light Protocol state root |
+| `merkleRoot` | Fr | Current schema-bound Merkle tree root (SPL Account Compression) |
 | `schemaHash` | Fr | Schema identifier |
 | `issuerPubKeyAx` | Fr | Issuer BJJ public key X |
 | `issuerPubKeyAy` | Fr | Issuer BJJ public key Y |
@@ -68,7 +73,7 @@
 The circuit proves:
 1. ✅ Commitment = Poseidon(dataHash, schema, holderX, holderY, salt)
 2. ✅ Issuer signature is valid over the commitment
-3. ✅ Commitment exists in the Merkle tree (Light Protocol)
+3. ✅ Commitment exists in the schema-bound Merkle tree (SPL Account Compression)
 4. ✅ Attestation data satisfies the compound query
 5. ✅ Credential is not expired
 6. ✅ Nullifier is correctly computed (anti-replay)

@@ -1,12 +1,16 @@
 # Integration Guide
 
 > How to integrate SolID Protocol into your Solana dApp
+> **Last refreshed:** 2026-04-20 for v0.2 (SPL Account Compression).
 
 ## Overview
 
-SolID Protocol enables your dApp to verify user credentials privately. Users prove they meet requirements (age ≥ 21, country = US, etc.) without revealing raw data.
+SolID Protocol enables your dApp to verify user credentials privately.
+Users prove they meet requirements (age ≥ 21, country = US, etc.) without
+revealing raw data.
 
-**You only need `@solid-protocol/verifier`** — the holder handles proof generation on their side.
+**You only need `@solid-protocol/verifier`** — the holder handles proof
+generation on their side.
 
 ---
 
@@ -26,13 +30,13 @@ import { verifyOnChain, generateVerifierNonce } from '@solid-protocol/verifier';
 
 // Define what you need to verify
 const query = new QueryBuilder()
-  .schema(schemaHash)                 // Which credential schema
-  .where(0, 'GTE', 21n)              // age >= 21
-  .and(1, 'EQ', 840n)                // country_code == US (ISO 3166-1)
-  .nonce(generateVerifierNonce())     // Fresh nonce (prevents replay)
-  .globalRoot(globalRoot)            // PHASE 3.1: Anchor to global state
-  .revocationNonce(0n)               // Identity revocation state
-  .expiration(Date.now() / 1000 + 300) // 5 minute window
+  .schema(schemaHash)                  // Which credential schema
+  .where(0, 'GTE', 21n)                // age >= 21
+  .and(1, 'EQ', 840n)                  // country_code == US (ISO 3166-1)
+  .nonce(generateVerifierNonce())      // Fresh nonce (prevents replay)
+  .globalRoot(globalRoot)              // Current global-state-tree root
+  .revocationNonce(0n)                 // Identity revocation state
+  .expiration(Date.now() / 1000 + 300) // 5-minute window
   .build();
 ```
 
@@ -42,7 +46,7 @@ const query = new QueryBuilder()
 // Send via your app's communication channel (WebSocket, HTTP, QR code, etc.)
 const verificationRequest = {
   query,
-  verifierProgramId: 'YOUR_ZK_VERIFIER_PROGRAM_ID',
+  verifierProgramId: 'BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2', // zk-verifier
   callbackUrl: 'https://your-app.com/api/verify-callback',
 };
 
@@ -57,7 +61,6 @@ sendToHolder(verificationRequest);
 app.post('/api/verify-callback', async (req, res) => {
   const { proof, publicSignals, nullifier } = req.body;
 
-  // Submit to on-chain ZK verifier
   const result = await verifyOnChain(connection, payer, programId, {
     query,
     proofData: {
@@ -67,12 +70,12 @@ app.post('/api/verify-callback', async (req, res) => {
       publicInputs: publicSignals,
       nullifier: new Uint8Array(nullifier),
     },
-    // Context for Phase 5.2 Root Verification
-    lightProgramId: LIGHT_PROTOCOL_PROGRAM_ID,
+    // The verifier reads the SPL-AC tree root indirectly, through the
+    // schema-registry SchemaTreeBinding PDA that `query.schemaHash`
+    // points at. No Light Protocol context is required any more.
   });
 
   if (result.verified) {
-    // ✅ User meets requirements! Grant access.
     res.json({ status: 'approved', tx: result.transactionSignature });
   } else {
     res.json({ status: 'denied' });
@@ -102,7 +105,7 @@ await initWasm();
 // Generate encrypted BJJ identity (user sets passphrase)
 const identityJson = generateIdentity('user-passphrase');
 
-// Store identityJson securely (e.g., IndexedDB, encrypted file)
+// Store identityJson securely (e.g. IndexedDB, encrypted file)
 localStorage.setItem('solid-identity', identityJson);
 
 // Unlock when needed
@@ -111,22 +114,41 @@ const privateKey = unlockIdentity(identityJson, 'user-passphrase');
 
 ### Receive and Store Credentials
 
-```typescript
-// Credential comes from issuer after attestation
-const credential = await receiveFromIssuer();
+Credentials now carry their tree address so the holder can prove
+against multiple schema-scoped trees simultaneously in a batch proof:
 
-// Store locally (encrypted)
-const credentials = getStoredCredentials();
-credentials.push(credential);
-saveCredentials(credentials);
+```typescript
+import type { StoredCredential } from '@solid-protocol/holder';
+import { PublicKey } from '@solana/web3.js';
+
+const credential: StoredCredential = {
+  schemaHash,
+  attestationData: [21n, 840n, /* ... */],
+  issuerSignature: { r8_x, r8_y, s },
+  issuerPubKeyX,
+  issuerPubKeyY,
+  holderPubKeyX,
+  holderPubKeyY,
+  holderPrivateKey,
+  salt,
+  commitment,
+  expirationTimestamp: 1735689600,
+  merkleTree: new PublicKey(treePubkeyBase58), // <-- NEW in v0.2
+};
+
+saveCredential(credential);
 ```
 
 ### Generate Proof on Request
 
 ```typescript
 import { generateProof } from '@solid-protocol/holder';
+import { LocalReplicaAdapter } from '@solid-protocol/light';
+import { Connection } from '@solana/web3.js';
 
-// When verifier sends a query
+const connection = new Connection('https://api.devnet.solana.com', 'confirmed');
+const merkleProofAdapter = new LocalReplicaAdapter(connection);
+
 const result = await generateProof(
   query,
   credential,
@@ -134,10 +156,31 @@ const result = await generateProof(
     wasmPath: '/circuits/compound_query.wasm',
     zkeyPath: '/circuits/circuit_final.zkey',
   },
+  { merkleProofAdapter },
 );
 
-// Send proof back to verifier
 await sendToVerifier(result);
+```
+
+For **batch proofs** across multiple schemas:
+
+```typescript
+import { generateBatchProof } from '@solid-protocol/holder';
+import { deriveGlobalBinding } from '@solid-protocol/light';
+
+// The global-state tree address is the one bound in schema-registry.
+// Read it once per session from the GlobalStateBinding PDA.
+const [globalBinding] = deriveGlobalBinding();
+
+const batch = await generateBatchProof(
+  query,
+  credentials,                // up to 4, padded with zero placeholders
+  masterPrivateKey,
+  masterPublicKey,
+  revocationNonce,
+  { wasmPath, zkeyPath },
+  { merkleProofAdapter, globalStateTree: globalStateTreeAddress },
+);
 ```
 
 ---
@@ -149,13 +192,12 @@ If you're an issuing authority (hospital, government, university):
 ### Install
 
 ```bash
-npm install @solid-protocol/issuer @solid-protocol/core @solid-protocol/light
+npm install @solid-protocol/issuer @solid-protocol/light @solid-protocol/core
 ```
 
 ### Register as Issuer (DAO)
 
 ```typescript
-// 1. Register in issuer registry (stake SOL)
 await program.methods.registerIssuer(
   'Acme Hospital',
   'https://acme-hospital.com/metadata.json',
@@ -163,9 +205,29 @@ await program.methods.registerIssuer(
   bjjPubKeyY,
 ).accounts({ ... }).rpc();
 
-// 2. Wait for DAO voting period to pass
-// 3. Community votes on your registration
-// 4. After approval, you can issue credentials
+// Wait for the DAO voting period to pass, then:
+// await program.methods.finalizeVoting().accounts({ ... }).rpc();
+// => IssuerApproved event
+```
+
+### Create a Merkle Tree for Your Schema (one-time)
+
+Each schema that an issuer writes under needs an SPL Account Compression
+tree **once**, bound to the schema by `schema-registry::initialize_tree_binding`.
+
+```typescript
+import { createCredentialTree } from '@solid-protocol/light';
+
+const { treePubkey } = await createCredentialTree({
+  connection,
+  payer: issuerKeypair,
+  schemaHash,
+  maxDepth: 14,        // 16 384 credentials per tree
+  maxBufferSize: 64,
+});
+
+// schema-registry::initialize_tree_binding(schemaHash, treePubkey)
+// (authority = DAO or schema owner)
 ```
 
 ### Issue Credentials
@@ -173,21 +235,17 @@ await program.methods.registerIssuer(
 ```typescript
 import { issueCredential } from '@solid-protocol/issuer';
 
-const credential = await issueCredential(
-  issuerPrivateKey,
-  issuerPubKeyX,
-  issuerPubKeyY,
-  {
-    schemaHash: vaccineSchemaHash,
-    attestationData: [1n, 3n, 1711929600n, 1n, 4821n, 0n, 840n, 32n],
-    holderPubKeyX: holderPubX,
-    holderPubKeyY: holderPubY,
-  },
-  { payer: issuerKeypair },
-);
+await issueCredential({
+  connection,
+  issuerAuthority: issuerKeypair,
+  schemaHash,
+  commitment,          // 32-byte Poseidon commitment (from @solid-protocol/core)
+  merkleTree: treePubkey,
+});
 
-// Deliver to holder (encrypted channel)
-await deliverToHolder(credential, holderWalletPubkey);
+// Under the hood this calls issuer-registry::issue_credential, which CPIs
+// to spl-account-compression::append under an issuer-registry-owned
+// `tree-authority` PDA.  Emits a CredentialIssued event.
 ```
 
 ---
@@ -216,4 +274,5 @@ See [Schema Reference](schemas.md) for field details.
 | `LT` | 5 | `dose_number < 5` |
 | `LTE` | 6 | `compliance_score <= 100` |
 
-Compound queries support up to **4 predicates** combined with **AND** or **OR** logic.
+Compound queries support up to **4 predicates** combined with **AND** or
+**OR** logic.

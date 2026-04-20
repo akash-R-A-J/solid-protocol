@@ -1,19 +1,22 @@
 {
   "name": "@solid-protocol/issuer",
-  "version": "0.1.0",
-  "description": "Credential issuance SDK with Light Protocol tree insertion",
+  "version": "0.2.0",
+  "description": "Credential issuance SDK. Wraps `issuer-registry::issue_credential` (SPL Account Compression append with PDA-signed tree authority).",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "jest",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@solid-protocol/core": "0.1.0",
-    "@solid-protocol/light": "0.1.0",
-    "@solana/web3.js": "^1.95.0"
+    "@solid-protocol/light": "0.2.0",
+    "@solana/web3.js": "^1.95.0",
+    "bn.js": "^5.2.1"
   },
   "devDependencies": {
+    "@types/bn.js": "^5.1.5",
     "typescript": "^5.3.0"
   }
 }

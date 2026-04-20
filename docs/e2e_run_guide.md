@@ -2,6 +2,17 @@
 
 > Run the complete Private Onchain Identity system on Solana devnet.  
 > **No local servers required.** Everything runs client-side — programs are on devnet, crypto runs in WASM/Node.js.
+>
+> **v0.2 amendment (2026-04-20).** Commands and SDK snippets in this
+> guide were written against v0.1 (Light Protocol backend). The
+> conceptual flow — issue → fetch Merkle proof → generate Groth16 →
+> verify on-chain — is unchanged. For the v0.2 (SPL Account Compression)
+> command-by-command flow, **use [`DEPLOYMENT_AND_TESTING.md`](./DEPLOYMENT_AND_TESTING.md)
+> as the authoritative runbook**; treat this document as background
+> narrative. Key renames for v0.2:
+> - `@solid-protocol/light` no longer wraps `@lightprotocol/stateless.js`; it is a pure SPL AC adapter.
+> - Photon Indexer is optional (pluggable `MerkleProofAdapter` — Helius DAS or `LocalReplicaAdapter` for tests).
+> - Credential issuance goes through `issuer-registry::issue_credential` (on-chain CPI), not an off-chain insert.
 
 ---
 

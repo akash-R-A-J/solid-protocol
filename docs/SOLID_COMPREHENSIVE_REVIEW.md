@@ -1,8 +1,12 @@
 # SolID Protocol — Comprehensive System Review & Audit
 
-> **Status**: [REVIEW ONLY]  
-> **Date**: April 4, 2026  
+> **Status**: [REVIEW ONLY — HISTORICAL]
+> **Date**: April 4, 2026
 > **Source of Truth**: Commit-level analysis of `programs/`, `circuits/`, `crates/`, and `ts-sdk/`.
+>
+> **v0.2 note (2026-04-20).** This review is preserved as a historical
+> record of the v0.1 system. For the current state of every finding,
+> see [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md).
 
 ---
 

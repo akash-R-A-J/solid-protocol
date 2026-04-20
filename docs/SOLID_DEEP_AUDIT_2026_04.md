@@ -1,5 +1,14 @@
 # SolID — Deep Comprehensive Audit (2026-04-19)
 
+> **HISTORICAL SNAPSHOT — pre-remediation.** This document is preserved
+> verbatim as the audit trail. For the current state of each finding,
+> see [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md)
+> (updated 2026-04-20). All residual blockers called out below
+> (R-2 SPL AC insert path, R-3 revocation, R-4 `Box::leak`, R-5 CI,
+> R-6 prover workspace, R-9 toolchain brittleness) have been closed or
+> scheduled; see the status doc for per-item resolution and commit
+> references.
+
 **Auditor:** Senior Engineering Review, pre-remediation snapshot  
 **Scope:** Entire workspace — circuits, Rust crates, Anchor programs, TS SDK, WASM, scripts, docs  
 **Goal:** Identify every logical flaw, vulnerability, incomplete implementation, and cross-layer mismatch blocking an end-to-end, production-grade bring-up.

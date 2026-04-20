@@ -1,6 +1,12 @@
 # SolID Protocol — Security Audit Report
 **Comprehensive Technical Review & Vulnerability Assessment**
 
+> **HISTORICAL SNAPSHOT.** Findings here were remediated through
+> v0.1 → v0.2. Current security posture is tracked in
+> [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md)
+> (§1 "Security & Cryptographic Integrity") and the v0.2 additions in
+> [`REVOCATION_DESIGN.md`](./REVOCATION_DESIGN.md).
+
 ## 1. Audit Overview
 - **Scope**: Rust Programs (Anchor), Circom Circuits, WASM Crypto Core, TS SDK.
 - **Methodology**: Static Analysis, Logic Flow Review, Cryptographic Soundness Check.

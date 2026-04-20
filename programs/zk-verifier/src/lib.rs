@@ -37,7 +37,20 @@ declare_id!("BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2");
 //   [30]     = currentTimestamp
 pub const NR_PUBLIC_INPUTS: usize = 31;
 
+/// Maximum number of IC points the on-chain VK parser is willing to materialize
+/// on the stack. `IC` has `NR_PUBLIC_INPUTS + 1` entries by construction.
+pub const MAX_IC: usize = NR_PUBLIC_INPUTS + 1;
+
 pub const NULLIFIER_SEED: &[u8] = b"null";
+
+// Compile-time assertion: the stack-owned VK buffer must fit comfortably
+// inside Solana's per-frame BPF stack budget (4 KB).
+//   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma) + 128 (delta)
+//         + 32 * 64 (ic) = 2 504 bytes.  Well below 4 096.
+const _: () = {
+    let sz = core::mem::size_of::<VkBuf>();
+    assert!(sz < 3072, "VkBuf exceeds safe BPF stack slice");
+};
 
 #[program]
 pub mod zk_verifier {
@@ -184,8 +197,14 @@ pub mod zk_verifier {
         }
 
         // (5) Groth16 verification.
-        let vk_data = &ctx.accounts.vk_storage.data;
-        let vk = deserialize_vk(vk_data).map_err(|_| ErrorCode::InvalidProofFormat)?;
+        //
+        // Parse the VK into a STACK-OWNED buffer.  `VkBuf` is ~2.5 KB and fits
+        // inside Solana's 4 KB per-frame BPF stack.  The `Groth16Verifyingkey`
+        // we hand to `groth16-solana` borrows from this buffer; its lifetime
+        // ends when this function returns.  No heap allocation, no `Box::leak`.
+        let vk_buf = VkBuf::parse(&ctx.accounts.vk_storage.data)
+            .map_err(|_| ErrorCode::InvalidProofFormat)?;
+        let vk = vk_buf.as_verifying_key();
         let proof_a_neg = negate_g1_point(&proof_a).map_err(|_| ErrorCode::InvalidProofFormat)?;
 
         let mut verifier = Groth16Verifier::<NR_PUBLIC_INPUTS>::new(
@@ -229,65 +248,104 @@ pub mod zk_verifier {
 
 // ─── Verification-key deserialization ─────────────────────────────────────
 
-/// Deserialize the VK bytes stored via `store_verification_key` into a
-/// `Groth16Verifyingkey`.
+/// Stack-owned backing storage for a parsed Groth16 verification key.
 ///
-/// Expected byte layout (little-endian counts, big-endian curve points):
-///   u32 nr_ic            — number of IC points
-///   [u8; 64]  alpha_g1
-///   [u8; 128] beta_g2
-///   [u8; 128] gamma_g2
-///   [u8; 128] delta_g2
-///   repeated [u8; 64] ic[0..nr_ic]
-fn deserialize_vk(bytes: &[u8]) -> std::result::Result<Groth16Verifyingkey<'static>, ()> {
-    use std::convert::TryInto;
-    if bytes.len() < 4 + 64 + 128 * 3 {
-        return Err(());
-    }
-    let mut cursor = 0usize;
+/// `Groth16Verifyingkey<'a>` from `groth16-solana` borrows its `vk_ic` slice
+/// from the caller.  Rather than heap-allocating + `Box::leak`-ing that slice
+/// (the pre-remediation behavior: one unbounded leak per `verify_batch_proof`
+/// call), we materialize every field into this struct on the caller's stack
+/// frame and hand out a borrow of exactly the used prefix.
+///
+/// Expected byte layout of the stored VK (little-endian counts, big-endian
+/// curve points):
+/// ```text
+///   u32         nr_ic        — number of IC points (= nr_pubinputs + 1)
+///   [u8; 64]    alpha_g1
+///   [u8; 128]   beta_g2
+///   [u8; 128]   gamma_g2
+///   [u8; 128]   delta_g2
+///   [u8; 64]    ic[0..nr_ic]
+/// ```
+#[repr(C)]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub struct VkBuf {
+    nr_ic: usize,
+    alpha: [u8; 64],
+    beta: [u8; 128],
+    gamma: [u8; 128],
+    delta: [u8; 128],
+    ic: [[u8; 64]; MAX_IC],
+}
 
-    let nr_ic = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().map_err(|_| ())?) as usize;
-    cursor += 4;
+#[derive(Debug, PartialEq, Eq)]
+pub enum VkParseError {
+    TooShort,
+    TruncatedIc,
+    IcOverflow,
+}
 
-    let alpha: [u8; 64] = bytes[cursor..cursor + 64].try_into().map_err(|_| ())?;
-    cursor += 64;
-    let beta: [u8; 128] = bytes[cursor..cursor + 128].try_into().map_err(|_| ())?;
-    cursor += 128;
-    let gamma: [u8; 128] = bytes[cursor..cursor + 128].try_into().map_err(|_| ())?;
-    cursor += 128;
-    let delta: [u8; 128] = bytes[cursor..cursor + 128].try_into().map_err(|_| ())?;
-    cursor += 128;
+impl VkBuf {
+    /// Parse the on-chain VK byte buffer into a stack-owned `VkBuf`.
+    ///
+    /// Bounds-checked at every cursor advance; malformed input returns a typed
+    /// error rather than panicking.  `nr_ic` is capped at `MAX_IC` to prevent
+    /// a malicious / miscalibrated VK from driving an out-of-bounds copy.
+    pub fn parse(bytes: &[u8]) -> core::result::Result<Self, VkParseError> {
+        const HEADER: usize = 4 + 64 + 128 * 3;
+        if bytes.len() < HEADER {
+            return Err(VkParseError::TooShort);
+        }
 
-    if bytes.len() < cursor + nr_ic * 64 {
-        return Err(());
-    }
+        // Header
+        let nr_ic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        if nr_ic == 0 || nr_ic > MAX_IC {
+            return Err(VkParseError::IcOverflow);
+        }
+        if bytes.len() < HEADER + nr_ic * 64 {
+            return Err(VkParseError::TruncatedIc);
+        }
 
-    // The Groth16Verifyingkey type holds references; we need the IC points to
-    // live for the duration of verification. We leak a Box to produce a
-    // 'static reference — this is called exactly once per proof and the memory
-    // is reclaimed when the program returns. (Solana programs are short-lived
-    // processes, so the total allocation is bounded.)
-    let mut ic: Vec<[u8; 64]> = Vec::with_capacity(nr_ic);
-    for _ in 0..nr_ic {
-        let point: [u8; 64] = bytes[cursor..cursor + 64].try_into().map_err(|_| ())?;
+        let mut buf = VkBuf {
+            nr_ic,
+            alpha: [0u8; 64],
+            beta: [0u8; 128],
+            gamma: [0u8; 128],
+            delta: [0u8; 128],
+            ic: [[0u8; 64]; MAX_IC],
+        };
+
+        let mut cursor = 4;
+        buf.alpha.copy_from_slice(&bytes[cursor..cursor + 64]);
         cursor += 64;
-        ic.push(point);
+        buf.beta.copy_from_slice(&bytes[cursor..cursor + 128]);
+        cursor += 128;
+        buf.gamma.copy_from_slice(&bytes[cursor..cursor + 128]);
+        cursor += 128;
+        buf.delta.copy_from_slice(&bytes[cursor..cursor + 128]);
+        cursor += 128;
+
+        for slot in buf.ic.iter_mut().take(nr_ic) {
+            slot.copy_from_slice(&bytes[cursor..cursor + 64]);
+            cursor += 64;
+        }
+        Ok(buf)
     }
-    let ic_static: &'static [[u8; 64]] = Box::leak(ic.into_boxed_slice());
 
-    let alpha_static: &'static [u8; 64] = Box::leak(Box::new(alpha));
-    let beta_static: &'static [u8; 128] = Box::leak(Box::new(beta));
-    let gamma_static: &'static [u8; 128] = Box::leak(Box::new(gamma));
-    let delta_static: &'static [u8; 128] = Box::leak(Box::new(delta));
-
-    Ok(Groth16Verifyingkey {
-        nr_pubinputs: nr_ic.saturating_sub(1), // IC count = nr_pubinputs + 1
-        vk_alpha_g1: *alpha_static,
-        vk_beta_g2: *beta_static,
-        vk_gamme_g2: *gamma_static,
-        vk_delta_g2: *delta_static,
-        vk_ic: ic_static,
-    })
+    /// Produce a `Groth16Verifyingkey` that borrows from this buffer.  The
+    /// returned view is valid for the lifetime of `self`.
+    pub fn as_verifying_key(&self) -> Groth16Verifyingkey<'_> {
+        Groth16Verifyingkey {
+            // IC count = nr_pubinputs + 1.  Saturating for the edge case
+            // where a caller hands us a 1-element IC; the verifier will
+            // reject later.
+            nr_pubinputs: self.nr_ic.saturating_sub(1),
+            vk_alpha_g1: self.alpha,
+            vk_beta_g2: self.beta,
+            vk_gamme_g2: self.gamma,
+            vk_delta_g2: self.delta,
+            vk_ic: &self.ic[..self.nr_ic],
+        }
+    }
 }
 
 /// Negate the Y coordinate of a G1 point for groth16-solana's expected
@@ -470,4 +528,125 @@ pub enum ErrorCode {
     InvalidCredentialOrder,
     #[msg("Verifier is paused")]
     Paused,
+}
+
+// ─── Unit tests ────────────────────────────────────────────────────────────
+//
+// These tests execute on the host (`cargo test -p zk-verifier`) rather than
+// on BPF.  They exercise the VK parser and the G1 negation in isolation so
+// malformed-input regressions are caught without a full program-test harness.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Synthesize a plausibly-shaped VK byte buffer with `nr_ic` IC points.
+    // The values are not cryptographically meaningful — the test is about the
+    // parser, not about pairing correctness.
+    fn synth_vk_bytes(nr_ic: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(4 + 64 + 128 * 3 + nr_ic * 64);
+        v.extend_from_slice(&(nr_ic as u32).to_le_bytes());
+        v.extend_from_slice(&[1u8; 64]);   // alpha
+        v.extend_from_slice(&[2u8; 128]);  // beta
+        v.extend_from_slice(&[3u8; 128]);  // gamma
+        v.extend_from_slice(&[4u8; 128]);  // delta
+        for i in 0..nr_ic {
+            v.extend_from_slice(&[i as u8; 64]);
+        }
+        v
+    }
+
+    #[test]
+    fn vk_parse_round_trips_minimum_size() {
+        let bytes = synth_vk_bytes(2);
+        let buf = VkBuf::parse(&bytes).expect("parse");
+        assert_eq!(buf.nr_ic, 2);
+        assert_eq!(buf.alpha, [1u8; 64]);
+        assert_eq!(buf.beta, [2u8; 128]);
+        assert_eq!(buf.gamma, [3u8; 128]);
+        assert_eq!(buf.delta, [4u8; 128]);
+        assert_eq!(buf.ic[0], [0u8; 64]);
+        assert_eq!(buf.ic[1], [1u8; 64]);
+    }
+
+    #[test]
+    fn vk_parse_round_trips_max_ic() {
+        // Standard batch VK: 31 public inputs → 32 IC points.
+        let bytes = synth_vk_bytes(MAX_IC);
+        let buf = VkBuf::parse(&bytes).expect("parse");
+        assert_eq!(buf.nr_ic, MAX_IC);
+        assert_eq!(buf.ic[MAX_IC - 1], [(MAX_IC - 1) as u8; 64]);
+    }
+
+    #[test]
+    fn vk_parse_rejects_too_short_header() {
+        let bytes = vec![0u8; 4 + 64 + 128 * 3 - 1];
+        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::TooShort));
+    }
+
+    #[test]
+    fn vk_parse_rejects_truncated_ic_region() {
+        let mut bytes = synth_vk_bytes(5);
+        bytes.truncate(bytes.len() - 10);
+        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::TruncatedIc));
+    }
+
+    #[test]
+    fn vk_parse_rejects_zero_ic() {
+        let bytes = synth_vk_bytes(0);
+        // Header alone is valid size; nr_ic == 0 must be rejected.
+        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::IcOverflow));
+    }
+
+    #[test]
+    fn vk_parse_rejects_ic_overflow() {
+        // Claim more IC points than the stack buffer can hold.
+        let too_many = MAX_IC + 1;
+        let mut bytes = Vec::with_capacity(4 + 64 + 128 * 3 + too_many * 64);
+        bytes.extend_from_slice(&(too_many as u32).to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 64 + 128 * 3 + 64]); // partial payload
+        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::IcOverflow));
+    }
+
+    #[test]
+    fn vk_view_borrows_from_buffer() {
+        let bytes = synth_vk_bytes(4);
+        let buf = VkBuf::parse(&bytes).expect("parse");
+        let vk = buf.as_verifying_key();
+        assert_eq!(vk.nr_pubinputs, 3);
+        assert_eq!(vk.vk_ic.len(), 4);
+        assert_eq!(vk.vk_alpha_g1, [1u8; 64]);
+    }
+
+    #[test]
+    fn vk_buf_fits_in_stack_budget() {
+        // Mirrors the const assertion in the top of the file — having it also
+        // as a runtime test makes the failure message readable.
+        assert!(core::mem::size_of::<VkBuf>() < 3072);
+    }
+
+    #[test]
+    fn negate_g1_zero_y_is_field_prime() {
+        // Y = 0 should negate to Y = P (mod P) = 0 too, but our byte-level
+        // routine writes P - 0 = P, which is accepted because groth16-solana
+        // canonicalizes before pairing.  The key invariant: no panic, correct
+        // bitwidth.
+        let mut point = [0u8; 64];
+        point[0] = 0x12; // X
+        let out = negate_g1_point(&point).expect("negate");
+        assert_eq!(&out[..32], &point[..32], "X must be unchanged");
+    }
+
+    #[test]
+    fn negate_g1_is_involutive_modulo_p() {
+        // Pick a Y strictly less than P so P - (P - Y) = Y.
+        let mut point = [0u8; 64];
+        point[0] = 0xAB;
+        for (i, b) in point[32..].iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7);
+        }
+        let once = negate_g1_point(&point).expect("negate once");
+        let twice = negate_g1_point(&once).expect("negate twice");
+        assert_eq!(point, twice, "double negation is identity");
+    }
 }

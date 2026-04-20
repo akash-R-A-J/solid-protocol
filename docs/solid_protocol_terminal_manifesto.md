@@ -3,6 +3,12 @@
 
 > "Identity is the final bottleneck of decentralized finance. To scale to a billion users without sacrificing sovereignty, we don't need just better accounts—we need stateless, non-malleable, and state-compressed proving systems."
 
+> **v0.2 amendment (2026-04-20).** References to "Light Protocol" below
+> describe the v0.1 state-compression backend. v0.2 runs on **SPL Account
+> Compression**. The thesis of "compressed-state proving systems" is
+> unchanged; only the specific concurrent-Merkle-tree program providing
+> that substrate has moved.
+
 ---
 
 ## 🏛️ 1. The Narrative: What is SolID?

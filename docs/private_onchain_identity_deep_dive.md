@@ -1,8 +1,24 @@
 # Private Onchain Identity on Solana: Deep Technical Analysis
 
+> [!NOTE]
+> **v0.2 amendment (2026-04-20).** This deep dive is preserved as the
+> canonical thesis document. The word "Light Protocol" throughout should
+> be read as "compressed-state backend" — v0.1 shipped on Light; v0.2
+> runs on **SPL Account Compression**. The backend-agnostic verifier
+> design (roots read via PDAs, not via backend-specific CPIs) made the
+> swap a drop-in: zero circuit changes, zero trusted-setup redo, zero
+> public-input reordering. Every architectural argument below about
+> composability, privacy, circuit design, SAS integration, and DAO
+> governance still holds verbatim.
+
 ## The Thesis
 
-Build the **Privado ID for Solana** — a general-purpose, protocol-level ZK identity layer that combines Solana Attestation Service (SAS) for credential issuance, Circom/Groth16 circuits for true zero-knowledge selective disclosure, and Light Protocol for scalable compressed credential state.
+Build the **Privado ID for Solana** — a general-purpose, protocol-level
+ZK identity layer that combines the Solana Attestation Service (SAS)
+for credential issuance, Circom/Groth16 circuits for true zero-knowledge
+selective disclosure, and a compressed-state Merkle backend (SPL Account
+Compression as of v0.2, Light Protocol in v0.1) for scalable credential
+state.
 
 > [!IMPORTANT]
 > This is NOT another vertical identity app. This is the **infrastructure layer** that every dApp on Solana plugs into for private, verifiable credentials — the missing piece between "SAS exists" and "private identity is solved."

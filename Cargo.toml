@@ -8,11 +8,12 @@ members = [
     "programs/schema-registry",
     "wasm",
 ]
-# `solid-prover` is an off-chain utility that pulls `ark-circom`, whose
-# `num-bigint = 0.4.3` hard-pin conflicts with `groth16-solana`'s `num-bigint`
-# version in the on-chain graph. It lives outside the default workspace and is
-# built standalone via `cargo build --manifest-path crates/solid-prover/Cargo.toml`.
-exclude = ["crates/solid-prover"]
+# The off-chain `solid-prover` tool lives in its own workspace at
+# `tools/solid-prover/` because `ark-circom 0.5.0-alpha` hard-pins
+# `num-bigint = 0.4.3`, which conflicts with `groth16-solana`'s version in the
+# on-chain dep graph. Build with:
+#   cd tools/solid-prover && cargo build --release
+# CI exercises both workspaces; see `.github/workflows/ci.yml`.
 
 [workspace.package]
 version = "0.1.0"

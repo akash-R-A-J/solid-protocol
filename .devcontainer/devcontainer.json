@@ -1,0 +1,39 @@
+{
+  "name": "SolID Protocol",
+  "image": "nixos/nix:2.21.2",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "runArgs": [
+    "--init",
+    "--cap-add=SYS_PTRACE",
+    "--security-opt=seccomp=unconfined"
+  ],
+  "containerEnv": {
+    "NIX_CONFIG": "experimental-features = nix-command flakes"
+  },
+  "mounts": [
+    "source=solid-nix-store,target=/nix,type=volume",
+    "source=solid-toolchain,target=${containerWorkspaceFolder}/.toolchain,type=volume"
+  ],
+  "onCreateCommand": "nix develop --command true",
+  "postStartCommand": "nix develop --command bash -lc 'echo Ready; solana --version; anchor --version'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "serayuzgur.crates",
+        "tamasfe.even-better-toml",
+        "jnoortheen.nix-ide",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.server.path": "${containerWorkspaceFolder}/.toolchain/bin/rust-analyzer",
+        "terminal.integrated.defaultProfile.linux": "zsh"
+      }
+    }
+  }
+}
