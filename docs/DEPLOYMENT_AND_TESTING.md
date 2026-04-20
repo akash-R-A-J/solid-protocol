@@ -20,13 +20,64 @@ already exists, the step is a no-op.
 | wasm-pack | 0.12+ | Build the `wasm/` crate for Node |
 
 ```bash
-# Quick install on macOS / Linux
+# Rust
 curl -fsSL https://sh.rustup.rs | sh
-sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-cargo install --git https://github.com/coral-xyz/anchor anchor-cli --tag v0.30.1
+
+# Solana CLI — pin to 1.18.22 because anchor-lang 0.30.1 pulls
+# solana-program 1.18.22 transitively. Newer CLIs sometimes link-fail.
+sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.22/install)"
+# Make sure the Solana binaries (including `cargo-build-sbf`) are on your PATH.
+# Add to ~/.zshrc or ~/.bashrc:
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+solana --version          # → solana-cli 1.18.22 ...
+cargo build-sbf --version # → solana-cargo-build-sbf 1.18.22 ...
+
+# Anchor — use AVM so the CLI matches the repo's pinned 0.30.1.
+cargo install --git https://github.com/coral-xyz/anchor avm --force
+avm install 0.30.1 && avm use 0.30.1
+anchor --version          # → anchor-cli 0.30.1
+
+# Rest of the toolchain
 npm i -g pnpm snarkjs circom
 cargo install wasm-pack
 ```
+
+> **If `anchor build` errors with `no such command: build-sbf`**, your Solana
+> CLI is either missing or not on PATH. Re-run the two install lines above
+> and confirm `cargo build-sbf --version` works from the same shell you run
+> `anchor build` in.
+>
+> **If `anchor build` warns `anchor-lang 0.30.1 and CLI 0.32.x don't match`**,
+> you skipped the `avm install 0.30.1 && avm use 0.30.1` step. The repo's
+> `Anchor.toml` already declares `anchor_version = "0.30.1"`, but AVM must
+> be the one managing the active CLI for that pin to take effect.
+>
+> **If `anchor build` errors with `lock file version 4 requires -Znext-lockfile-bump`**,
+> your host Rust is ≥ 1.85 (which writes v4 lockfiles) but your Solana
+> platform-tools cargo is pre-1.78 (can only parse v3). Anchor 0.30.1 was
+> built against Solana 1.18.22, whose bundled cargo is pre-1.78 — so we
+> must produce a **v3** lockfile. Fix:
+>
+> ```bash
+> # Install Rust 1.79 once; it writes v3 by default.
+> rustup toolchain install 1.79.0
+> rm -f Cargo.lock
+> cargo +1.79.0 generate-lockfile   # v3 lockfile
+> anchor build                       # platform-tools cargo is happy
+> ```
+>
+> Do **not** add a `rust-toolchain.toml` that forces the whole repo to 1.79
+> — some transitive deps require `edition2024` (Rust 1.85+) to parse. Using
+> `cargo +1.79.0` just for `generate-lockfile` sidesteps that because the
+> pinned deps we already ship in `Cargo.toml` are pre-edition2024; the
+> resolver never reaches the newer alternatives.
+>
+> **If `anchor build` errors with `feature edition2024 is required`**, you
+> have the opposite problem: a too-old host Rust is trying to parse a dep
+> manifest that requires 1.85+. Either (a) remove `rust-toolchain.toml` and
+> let your system Rust (≥1.85) handle `cargo metadata`, then regenerate the
+> lockfile via `cargo +1.79.0 generate-lockfile` as above, or (b) bump the
+> dep that pulled in the edition2024 crate.
 
 ---
 
