@@ -1,335 +1,196 @@
-# SolID — Deployment & End-to-End Testing Guide
+# Deployment and End-to-End Testing
 
-> **Last refreshed:** 2026-04-20 (v0.2 — SPL Account Compression, Nix-pinned toolchain).
+v0.3, April 2026. Post-remediation canonical workflow.
 
-This guide walks you from a clean checkout to a verified proof on-chain,
-for both **localnet** and **devnet**. Every command is idempotent; if
-something already exists, the step is a no-op.
+This document walks you from a clean checkout to a verified proof on-chain.
+It is the reference for the complete development loop. Every command is
+expected to succeed as written, without workarounds.
 
----
+## Prerequisites
 
-## 0. Prerequisites
+Install the pinned toolchain. Using the Nix flake is recommended:
 
-The canonical toolchain is pinned by `flake.nix` and materialized by
-`scripts/bootstrap.sh`. **Use the pinned versions below** — drift in any
-one of them is the single biggest source of "works-on-my-machine"
-failures we've seen in this codebase.
-
-| Tool | Pinned version | Why |
-|---|---|---|
-| Rust | `1.79.0` | Writes v3 `Cargo.lock` (Anchor's bundled Cargo is pre-1.78 and cannot parse v4) |
-| Solana CLI | `1.18.22` | `anchor-lang` 0.30.1 transitively depends on `solana-program` 1.18.22 |
-| Anchor | `0.30.1` | Pinned in `Anchor.toml`; AVM must manage the active CLI |
-| Node | `18` | ESM + fetch support, matches CI |
-| pnpm / npm | pnpm 9+ or npm 10+ | Monorepo package manager for `ts-sdk/` |
-| circom | `2.1.9` | Compile `.circom` → `.r1cs` + witness WASM |
-| snarkjs | `0.7.5` | Powers-of-tau + Groth16 setup |
-| wasm-pack | `0.13.1` | Build the WASM bridge for Node |
-
-### Option A — Reproducible (recommended)
-
-```bash
-# If you use Nix:
+```
 nix develop
-
-# Or without Nix (installs pinned tools into .toolchain/):
-bash scripts/bootstrap.sh
-export PATH="$PWD/.toolchain/bin:$PATH"
-
-# Sanity:
-solana --version           # → solana-cli 1.18.22
-anchor --version           # → anchor-cli 0.30.1
-circom --version           # → circom compiler 2.1.9
-wasm-pack --version        # → wasm-pack 0.13.1
 ```
 
-A VS Code Devcontainer at `.devcontainer/devcontainer.json` wraps the
-same flake for one-click onboarding.
+Outside Nix, install each of the following at the exact version:
 
-### Option B — Manual install
+- rust 1.79.0 with the wasm32-unknown-unknown target
+- solana-cli 1.18.22
+- anchor-cli 0.30.1
+- circom 2.1.9
+- snarkjs 0.7.5
+- wasm-pack 0.13.1
+- node 18
+- npm 10 or higher
 
-```bash
-# Rust 1.79.0 (for v3 lockfile compatibility)
-rustup toolchain install 1.79.0
-rustup default 1.79.0
-rustup target add wasm32-unknown-unknown
+scripts/bootstrap.sh will fetch and pin these into .toolchain/bin if you
+prefer an explicit install tree.
 
-# Solana 1.18.22
-sh -c "$(curl -sSfL https://release.anza.xyz/v1.18.22/install)"
-export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-
-# Anchor 0.30.1 via AVM
-cargo install --git https://github.com/coral-xyz/anchor avm --force
-avm install 0.30.1 && avm use 0.30.1
-
-# Rest
-npm i -g pnpm snarkjs@0.7.5 circom@2.1.9
-cargo install wasm-pack --version 0.13.1
-```
-
-### Common toolchain errors
-
-> **`lock file version 4 requires -Znext-lockfile-bump`** — Your host
-> Rust (≥1.85) wrote a v4 lockfile; Anchor's platform-tools cargo only
-> parses v3. `scripts/bootstrap.sh` guards against this; to re-fix by
-> hand:
->
-> ```bash
-> rm -f Cargo.lock
-> cargo +1.79.0 generate-lockfile
-> anchor build
-> ```
->
-> Do **not** add a repo-wide `rust-toolchain.toml` pinning 1.79 — some
-> transitive deps require edition2024. Using `cargo +1.79.0` only for
-> `generate-lockfile` sidesteps that.
-
-> **`feature edition2024 is required`** — Opposite problem: a too-old
-> host Rust parsing a newer-dep manifest. Either upgrade host Rust and
-> regenerate the lockfile with `cargo +1.79.0 generate-lockfile`, or
-> bump the offending dep.
-
-> **`anchor build` says `anchor-lang 0.30.1 and CLI 0.32.x don't match`**
-> — You skipped `avm use 0.30.1`. Re-run the AVM lines above.
-
----
-
-## 1. First-time build
-
-From the repo root:
-
-```bash
-# 1a. Rust libraries + zk-verifier host tests
-cargo test -p solid-core -p solid-light
-cargo test -p zk-verifier --lib       # VkBuf parser + negate_g1 tests
-
-# 1b. BPF build of the three Anchor programs
-anchor build                          # produces target/deploy/*.so + IDLs
-
-# 1c. TypeScript SDK
-cd ts-sdk && npm ci && npm run build && cd ..
-
-# 1d. WASM bridge (Node target)
-wasm-pack build crates/solid-core --target nodejs \
-  --out-dir ts-sdk/packages/core/wasm --release
-
-# 1e. Circuits + Groth16 setup (one-time trusted-setup ceremony)
-cd circuits && node scripts/setup.js && cd ..
-
-# 1f. Native prover (separate workspace)
-cd tools/solid-prover && cargo build --release && cd ../..
-```
-
-### Powers-of-tau
-
-`circuits/scripts/setup.js` needs `powersOfTau28_hez_final_16.ptau` (or
-bigger if `batch_credential_query.circom` grows past 2¹⁶ constraints).
-Download it once from the Hermez reference ceremony:
-
-```bash
-mkdir -p circuits/ptau
-wget -O circuits/ptau/pot16_final.ptau \
-  https://hermez.s3-eu-west-1.amazonaws.com/powersOfTau28_hez_final_16.ptau
-```
-
-The setup script produces, per circuit:
-- `circuits/build/<circuit>.r1cs`
-- `circuits/build/<circuit>_js/` (witness WASM)
-- `circuits/build/<circuit>_final.zkey`
-- `circuits/build/<circuit>_vk.json`
-
----
-
-## 2. Verify cross-language cryptographic agreement
-
-**Before deploying, always run the cross-language vector check.** If it
-fails, do not deploy — the circuit, Rust, and TS SDK disagree on the
-commitment / nullifier contract. CI runs this on every push.
-
-```bash
-# Regenerate reference vectors from Rust.
-cargo run --example gen_vectors -p solid-core
-
-# Replay them through the TS SDK.
-cd ts-sdk
-npm run build -w @solid-protocol/core
-npx ts-node ../tests/vectors/check_vectors.ts
-```
-
-Expected output:
+Verify program-ID consistency before doing anything else. This catches the
+most common source of deployment errors.
 
 ```
-✔ commitment matches Rust reference
-✔ nullifier matches Rust reference
-
-All cross-language vectors agree.
-```
-
----
-
-## 3. Program-ID consistency (hard gate)
-
-Before any deploy, verify that `Anchor.toml` ↔ `declare_id!()` ↔
-`deployments/*.json` all agree:
-
-```bash
 python3 scripts/check_program_ids.py
 ```
 
-On drift, follow
-[`PROGRAM_ID_RECONCILIATION.md`](./PROGRAM_ID_RECONCILIATION.md) — which
-walks you through closing stale programs on devnet, redeploying against
-the canonical keys, and regenerating the manifest with
-`scripts/regen_devnet_manifest.py`.
+## Build all artifacts
 
----
+```
+# Rust workspace tests (primitives, zk-verifier host tests, solid-prover)
+cargo test -p solid-core -p solid-light
+cargo test -p zk-verifier --lib
+cargo test --manifest-path tools/solid-prover/Cargo.toml
 
-## 4. Localnet deployment
+# BPF build of the three Anchor programs
+anchor build
 
-```bash
-# 4a. Start a local validator in one terminal.
-solana-test-validator --reset
+# Circuits: compile and run the trusted setup
+cd circuits && npm install && node scripts/setup.js && cd ..
 
-# 4b. Point the CLI at localnet and airdrop SOL.
-solana config set --url localhost
-solana airdrop 100
+# WASM bridge for the TS SDK
+wasm-pack build crates/solid-core --target nodejs \
+    --out-dir ts-sdk/packages/core/wasm --release
 
-# 4c. Deploy all three programs.
-anchor deploy --provider.cluster localnet
-
-# 4d. Initialize the on-chain state.
-npx ts-node scripts/initialize.ts --cluster localnet
-
-# 4e. Upload the verification key.
-npx ts-node scripts/store_vk.ts --cluster localnet \
-  --vk-json circuits/build/batch_credential_query_vk.json
+# TypeScript SDK
+cd ts-sdk && npm ci && npm run build && cd ..
 ```
 
-`scripts/initialize.ts` creates the `RegistryConfig`, `VerifierConfig`,
-and the `GlobalStateBinding` PDA. It prints every PDA it derives so you
-can pipe them into the next steps.
+If the circuit step fails for insufficient powers-of-tau entropy, open
+circuits/scripts/setup.js and follow the comments for regenerating the
+phase-1 ptau file. For mainnet, replace this single-party ceremony with a
+multi-party Hermez-style ceremony.
 
----
+## Deploy the programs
 
-## 5. Devnet deployment
+### Localnet
 
-Identical to localnet except for the cluster and the wallet:
+```
+solana-test-validator --reset &
+solana config set --url localhost
+solana airdrop 10
+anchor deploy --provider.cluster localnet
+```
 
-```bash
+### Devnet
+
+```
 solana config set --url devnet
-solana airdrop 2        # devnet faucet; may throttle
+solana airdrop 2
+solana airdrop 2
 
-python3 scripts/check_program_ids.py     # hard gate
 anchor deploy --provider.cluster devnet
 
-npx ts-node scripts/initialize.ts --cluster devnet
-npx ts-node scripts/store_vk.ts  --cluster devnet \
-  --vk-json circuits/build/batch_credential_query_vk.json
-
-# Regenerate the deployment manifest (records deployed sizes + upgrade authorities).
-python3 scripts/regen_devnet_manifest.py
-cat deployments/devnet.json
+# Record the canonical manifest.
+python3 scripts/regen_devnet_manifest.py > deployments/devnet.json
+python3 scripts/check_program_ids.py   # must be green after every deploy
 ```
 
-> The program IDs in `Anchor.toml` are the single source of truth. They
-> match `declare_id!()` in every program and `PROGRAM_IDS` in
-> `ts-sdk/packages/sdk/src/config.ts`. `check_program_ids.py` enforces
-> this invariant in CI.
+If check_program_ids.py fails at this point, follow
+docs/PROGRAM_ID_RECONCILIATION.md.
 
----
+## Initialize on-chain state
 
-## 6. End-to-end smoke flow
+Initialisation is idempotent and safe to re-run. It uses the program IDs in
+Anchor.toml; override SOLID_RPC_URL, SOLID_TREE_PUBKEY, and
+SOLID_GOVERNANCE_MINT via the environment if you need to pin them.
 
-The canonical happy path: an issuer is approved, a credential is issued,
-a holder generates a proof, and the verifier program accepts it.
-
-```bash
-# 1. Approve an issuer (DAO-governed path).
-npx ts-node scripts/register_issuer.ts
-npx ts-node scripts/vote_issuer.ts         # repeat with several voters
-npx ts-node scripts/finalize_issuer.ts
-
-# 2. Create + bind a schema tree (one-time per schema, per issuer).
-#    (Creates the SPL Account Compression tree and binds its root
-#     into schema-registry::SchemaTreeBinding.)
-npx ts-node scripts/create_schema_tree.ts --schema basic_identity_v1
-
-# 3. Issue a credential (CPIs to SPL AC append under the protocol-owned
-#    tree-authority PDA; emits CredentialIssued).
-npx ts-node scripts/issue.ts \
-  --schema basic_identity_v1 \
-  --holder <HOLDER_PUBKEY>
-
-# 4. Holder: generate a proof for "age >= 21 AND country == US".
-npx ts-node scripts/prove.ts \
-  --query compound_and \
-  --holder-secret <path/to/holder.key>
-
-# 5. Verifier: submit the proof on-chain.
-npx ts-node scripts/verify_onchain.ts \
-  --proof-json out/proof.json
+```
+SOLID_RPC_URL="http://127.0.0.1:8899" ts-node scripts/initialize.ts
 ```
 
-The final script calls `verifyOnChain` from `@solid-protocol/verifier`,
-which builds the Anchor-compatible instruction (see
-`buildVerifyBatchProofIx`) and waits for confirmation. On success it
-logs the transaction signature and the `CredentialVerified` event.
+This runs six steps, in order:
 
----
+1. initialize_registry on issuer-registry with governance_token_mint,
+   min_stake, voting_period, and approval_threshold_bps.
+2. register_schema on schema-registry for the reference
+   basic_identity_v1 schema.
+3. initialize_tree_binding binding the schema to an SPL AC credential tree.
+4. initialize_global_binding creating the GlobalStateBinding PDA.
+5. initialize on zk-verifier, creating verifier_config.
+6. store_verification_key in 900-byte chunks until the key is fully loaded.
 
-## 7. Unit & integration testing matrix
+scripts/e2e_state.json records every PDA and tree pubkey the downstream
+scripts need.
 
-| Layer | Command | What it proves |
-|---|---|---|
-| Rust libs | `cargo test -p solid-core -p solid-light` | Poseidon, BJJ, commitment, nullifier, query evaluation, multi-cred packing, `SchemaTreeBinding` parsing |
-| zk-verifier host | `cargo test -p zk-verifier --lib` | `VkBuf` parser (minimum size, max IC, overflow, truncation, stack budget), `negate_g1_point` involutivity |
-| Prover | `cd tools/solid-prover && cargo test` | Native ark-circom Groth16 generation |
-| Programs (BPF) | `anchor test` | Happy-path + failure-mode tests for all three programs (localnet) |
-| SDK | `cd ts-sdk && npm test` | TS-side helpers + Anchor IX packing |
-| Cross-language | `npx ts-node tests/vectors/check_vectors.ts` | Bytes agree across Rust / WASM / TS |
-| Circuit | `cd circuits && npm run test` | Circom witness generation against known inputs |
-| Program-ID drift | `python3 scripts/check_program_ids.py` | Anchor.toml ↔ declare_id ↔ deployments consistency |
+### Before step 3: create the credential tree
 
-All of these jobs run in `.github/workflows/ci.yml`, gated on the
-bootstrapped toolchain.
+The SPL AC tree must already exist and have its tree authority set to the
+tree-authority PDA derived from the schema hash. For convenience you can
+call createCredentialTree from @solid-protocol/light, or use the standard
+SPL AC initialisation flow. Set SOLID_TREE_PUBKEY before running
+initialize.ts so step 3 writes the correct binding.
 
----
+## Issue a credential
 
-## 8. Operational safety
-
-- The `zk-verifier` program has a `paused` flag. If an incident is
-  detected, the authority can flip it with `set_paused(true)`, blocking
-  new proofs without touching already-recorded nullifiers.
-- Authority transfer is a two-step process via `transfer_authority`.
-  Rotate on a cold-key-only cadence.
-- Nullifier PDAs are permanent. A slashed issuer's already-accepted
-  proofs remain accepted; revocation happens in a separate path via the
-  credential tree / identity state, not by invalidating nullifiers (see
-  [`REVOCATION_DESIGN.md`](./REVOCATION_DESIGN.md)).
-- `SchemaTreeBinding` carries a `status` byte (0 = active, 1 = frozen).
-  Flipping to `frozen` blocks all proofs against that schema at the
-  verifier without needing a program upgrade.
-
----
-
-## 9. Common failure modes
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `InvalidSchemaRootBinding` | Caller passed a `schema_tree_N` account that isn't the PDA owned by `schema-registry` for that schema. | Derive PDA from `(b"schema", schema_hash)` and pass the correct account. |
-| `NullifierMismatch` | `public_inputs[0]` from the circuit ≠ the 5-arg nullifier argument. | Ensure TS regenerates `publicSignals[0]` from the proof and uses those exact bytes. |
-| `InvalidVerifierAddress` | `verifierAddress` circuit input ≠ deployed program ID. | Run `python3 scripts/check_program_ids.py` and follow `PROGRAM_ID_RECONCILIATION.md` if it reports drift. |
-| `ProofVerificationFailed` | VK mismatch or wrong public-input permutation. | Re-run `store_vk.ts` after any circuit change. The `*_vk.json` in use must match the `.zkey` the holder used for `fullProve`. |
-| `Account already in use` on nullifier PDA | Replay attempt, or the same `(masterKey, revNonce, verifier, queryHash, verifierNonce)` tuple was used twice. | Regenerate `verifierNonce` per verification. |
-| `InvalidTreeAuthority` on `issue_credential` | The passed `merkle_tree` wasn't created with the protocol-owned `tree-authority` PDA as its authority. | Create trees via `createCredentialTree` from `@solid-protocol/light` — it wires the authority correctly. |
-
----
-
-## 10. Clean teardown
-
-```bash
-solana-test-validator --reset                      # wipes localnet
-rm -rf circuits/build target ts-sdk/**/dist \
-       ts-sdk/packages/core/wasm tools/solid-prover/target
-# Keep tests/vectors/ — they're committed reference fixtures.
 ```
+ts-node scripts/issue.ts
+```
+
+The script:
+
+- Generates a fresh issuer BabyJubJub keypair, a fresh holder master
+  keypair, and a fresh Solana authority for the issuer.
+- Derives the holder's per-schema keypair with the remediated
+  deriveCredentialKey primitive.
+- Signs the commitment under the issuer's BabyJubJub key.
+- Calls issuer-registry::issue_credential which CPIs into SPL AC
+  append via the ["tree-authority", schema_hash] PDA.
+- Persists the credential, both holder keypairs, and the issuer authority
+  secret into scripts/e2e_state.json.
+
+## Generate a proof and verify on-chain
+
+```
+ts-node scripts/prove.ts
+```
+
+The script:
+
+- Reads the credential and keypairs from scripts/e2e_state.json.
+- Seeds a LocalReplicaAdapter for the schema's Merkle tree and for the
+  global-state tree. The global-state leaf uses the remediated per-schema
+  identity commitment.
+- Runs generateBatchProof via @solid-protocol/holder. This is a real
+  Groth16 proof over the circuits/build/batch_credential_query_final.zkey.
+- Submits verify_batch_proof via @solid-protocol/verifier and captures the
+  confirmed transaction signature.
+- Re-submits the same transaction and asserts that the nullifier PDA's
+  init constraint rejects it.
+
+Expected output includes a successful verification tx signature and a
+"replay rejected" confirmation. If either fails, check the post-remediation
+audit in docs/POST_REMEDIATION_AUDIT.md for the specific regression gate.
+
+## Integration test suite
+
+tests/integration/ contains a suite of bankrun-based scenario tests
+covering every P0 and P1 regression gate plus the happy-path end-to-end.
+See tests/integration/README.md for the scenarios and the harness they
+run in. Run them with:
+
+```
+cd ts-sdk && npm run test:integration
+```
+
+## Mainnet checklist
+
+Do not deploy to mainnet-beta until every item below is satisfied:
+
+- All P0 and P1 items in docs/IMPROVEMENTS_ROADMAP.md are marked complete.
+- A multi-party trusted setup ceremony has completed with published
+  contributor attestations.
+- The circuit artifacts are hosted on IPFS and Arweave with content
+  addressing, not on cdn.solid-protocol.com.
+- AUTHORITY_PUBKEY and SOLID_TOKEN_MINT in ts-sdk/packages/sdk/src/config.ts
+  are set to real production keys.
+- All three program upgrade authorities have been transferred to a 3-of-5
+  multisig, such as a Squads Protocol vault.
+- At least one third-party audit (OtterSec, Halborn, or Trail of Bits)
+  has completed with no open findings at High or above.
+- Helius DAS or equivalent production Merkle-proof indexer is wired in via
+  a HeliusDasAdapter implementation of MerkleProofAdapter.
+- Monitoring and alerting are in place for CredentialIssued,
+  CredentialVerified, and SchemaBindingFrozen events.
+- deployments/mainnet.json is regenerated from regen_devnet_manifest.py.

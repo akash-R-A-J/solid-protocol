@@ -1,5 +1,8 @@
 # SolID Protocol — Comprehensive System Review & Audit
 
+NOTICE: this document is historical. It was written before the 2026-04 remediation landed. Many of its findings have been fixed in v0.3. Use docs/POST_REMEDIATION_AUDIT.md for the current state. Read this file only as a historical record of what was broken.
+
+
 > **Status**: [REVIEW ONLY — HISTORICAL]
 > **Date**: April 4, 2026
 > **Source of Truth**: Commit-level analysis of `programs/`, `circuits/`, `crates/`, and `ts-sdk/`.

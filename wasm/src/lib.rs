@@ -227,6 +227,50 @@ pub fn derive_key(master_key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsError>
     Ok(dk.to_vec())
 }
 
+/// Derive the per-schema BabyJubJub keypair the circuit expects.
+///
+/// Mirrors `IdentityAnchor` in `circuits/lib/identity_anchor.circom`:
+///
+/// ```text
+///   credentialPrivKey = Poseidon(masterIdentityKey, schemaHash)
+///   (credentialPubKeyAx, credentialPubKeyAy) = BabyPbk(credentialPrivKey)
+/// ```
+///
+/// Returns `{ privateKey, publicKeyX, publicKeyY }` matching the shape of
+/// `generateBJJKeypair`. The holder SDK uses this to compute the per-schema
+/// identity leaf `Poseidon(pubKeyX, pubKeyY, revocationNonce)` that actually
+/// sits in the global-state tree, instead of the wrong
+/// `Poseidon(masterPubKeyX, masterPubKeyY, revocationNonce)` used by the
+/// pre-remediation SDK (BUG-04).
+#[wasm_bindgen(js_name = "deriveCredentialKey")]
+pub fn derive_credential_key(
+    master_key: &[u8],
+    schema_hash: &[u8],
+) -> Result<JsValue, JsError> {
+    let mk = to_arr32(master_key)?;
+    let sh = to_arr32(schema_hash)?;
+    let priv_bytes = solid_core::babyjubjub::derive_key(&mk, &sh)
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    let pk = solid_core::babyjubjub::derive_public_key(&priv_bytes)
+        .map_err(|e| JsError::new(&format!("{}", e)))?;
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DerivedKey {
+        private_key: Vec<u8>,
+        public_key_x: Vec<u8>,
+        public_key_y: Vec<u8>,
+    }
+
+    let result = DerivedKey {
+        private_key: priv_bytes.to_vec(),
+        public_key_x: pk.x.to_vec(),
+        public_key_y: pk.y.to_vec(),
+    };
+
+    Ok(serde_wasm_bindgen::to_value(&result)?)
+}
+
 /// Compute the identity-state commitment: `Poseidon(pubKeyX, pubKeyY, revocationNonce)`.
 #[wasm_bindgen(js_name = "computeIdentityState")]
 pub fn compute_identity_state(

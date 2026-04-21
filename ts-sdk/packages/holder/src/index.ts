@@ -19,8 +19,10 @@
 import {
   initWasm,
   computeNullifier,
-  computeIdentityCommitment,
+  computeIdentityState,
+  deriveCredentialKey,
   poseidonHashBytes,
+  type BJJKeypair,
   type CompoundQuery,
   type MultiCredentialQuery,
   MAX_CREDENTIALS,
@@ -93,38 +95,57 @@ export interface BatchProofResult extends ProofResult {
 export async function generateProof(
   query: CompoundQuery,
   credential: StoredCredential,
+  masterPrivateKey: Uint8Array,
   circuitPaths: {
     wasmPath: string;
     zkeyPath: string;
   },
-  options: MerkleProofSource,
+  options: MerkleProofSource & {
+    /** Global-state tree PDA (mirrors schema_registry::global_binding). */
+    globalStateTree: PublicKey;
+  },
 ): Promise<ProofResult> {
   await initWasm();
 
-  // Compute the queryContextHash inline (mirrors circuit Step 4).
+  // queryContextHash must match the circuit's Step 4 computation. The circuit
+  // uses distinct Poseidon(8) calls over (credIndex||fieldIndex) and
+  // (operator||value), then a final Poseidon(4) with numPredicates +
+  // compoundLogic. Compound_query does not include credIndex but we pad with
+  // zeros to share the hash structure with the batch circuit.
   const queryContextHash = computeQueryContextHash(query);
 
-  // Step 1: Compute hardened nullifier via WASM (5-arg).
+  // Hardened nullifier uses the master key, not the per-schema credential
+  // key. Passing credential.holderPrivateKey (per-schema) here was a bug:
+  // the circuit's nullifier formula is Poseidon(masterKey, ...).
   const nullifier = computeNullifier(
-    credential.holderPrivateKey,
+    masterPrivateKey,
     query.revocationNonce ?? 0n,
     VERIFIER_ID_BYTES,
     queryContextHash,
     query.verifierNonce,
   );
 
-  // Step 2: Fetch Merkle proof from the supplied adapter.
+  // Credential inclusion proof in the schema-scoped tree.
   const merkleProof: MerkleProof = await lightFetchMerkleProof(
     options.merkleProofAdapter,
     credential.merkleTree,
     credential.commitment,
   );
 
-  console.log(`Merkle proof fetched!`);
-  console.log(`  Root: ${merkleProof.root.slice(0, 16)}...`);
-  console.log(`  Leaf index: ${merkleProof.leafIndex}`);
+  // Per-schema identity leaf for the global-state tree. Must match the
+  // circuit's IdentityAnchor derivation exactly.
+  const kp: BJJKeypair = deriveCredentialKey(masterPrivateKey, credential.schemaHash);
+  const identityLeaf = computeIdentityState(
+    kp.public_key_x,
+    kp.public_key_y,
+    query.revocationNonce ?? 0n,
+  );
+  const globalProof = await lightFetchMerkleProof(
+    options.merkleProofAdapter,
+    options.globalStateTree,
+    identityLeaf,
+  );
 
-  // Step 3: Build circuit input
   const queryFieldIndices = Array(MAX_PREDICATES).fill(0);
   const queryOperators = Array(MAX_PREDICATES).fill(0);
   const queryValues = Array(MAX_PREDICATES).fill('0');
@@ -137,7 +158,8 @@ export async function generateProof(
 
   const circuitInput = {
     // Public inputs
-    merkleRoot: merkleProof.root,
+    globalRoot: bufToDecimal(globalProof.root),
+    merkleRoot: bufToDecimal(merkleProof.root),
     schemaHash: bufToDecimal(credential.schemaHash),
     issuerPubKeyAx: bufToDecimal(credential.issuerPubKeyX),
     issuerPubKeyAy: bufToDecimal(credential.issuerPubKeyY),
@@ -146,15 +168,18 @@ export async function generateProof(
     queryValues,
     numPredicates: query.predicates.length,
     compoundLogic: query.compoundLogic === 'AND' ? 0 : 1,
+    verifierAddress: bufToDecimal(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
 
     // Private inputs
+    masterIdentityKey: bufToDecimal(masterPrivateKey),
+    revocationNonce: (query.revocationNonce ?? 0n).toString(),
+    globalSiblings: globalProof.siblings,
+    globalPathIndices: globalProof.pathIndices,
     attestationData: credential.attestationData.map(d => d.toString()),
     salt: bufToDecimal(credential.salt),
-    holderBJJPrivKey: bufToDecimal(credential.holderPrivateKey),
-    holderBJJPubKeyAx: bufToDecimal(credential.holderPubKeyX),
-    holderBJJPubKeyAy: bufToDecimal(credential.holderPubKeyY),
+    holderBJJPrivKey: bufToDecimal(kp.private_key),
     issuerSigR8x: bufToDecimal(credential.issuerSignature.r8_x),
     issuerSigR8y: bufToDecimal(credential.issuerSignature.r8_y),
     issuerSigS: bufToDecimal(credential.issuerSignature.s),
@@ -163,19 +188,22 @@ export async function generateProof(
     expirationTimestamp: credential.expirationTimestamp,
   };
 
-  // Step 4: Generate Groth16 proof via snarkjs
-  console.log('Generating Groth16 proof (this may take 10-30 seconds)...');
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
     circuitPaths.wasmPath,
     circuitPaths.zkeyPath,
   );
 
-  // Step 5: Format for on-chain verification (groth16-solana format)
   const solanaProof = formatProofForSolana(proof);
+  // BUG-02 fix mirrored in single-credential path.
+  const nullifierFromCircuit = bigintToBytes32(BigInt(publicSignals[0]));
 
-  console.log('Proof generated successfully!');
-  console.log(`  Nullifier: ${Buffer.from(nullifier).toString('hex').slice(0, 16)}...`);
+  // Sanity check: the WASM nullifier must match the circuit output.
+  if (Buffer.from(nullifier).compare(nullifierFromCircuit) !== 0) {
+    throw new Error(
+      'Nullifier mismatch: SDK-computed value differs from circuit output',
+    );
+  }
 
   return { proof, publicSignals, nullifier, solanaProof };
 }
@@ -226,53 +254,82 @@ export async function generateBatchProof(
       }
   }
 
-  // 4. Fetch Merkle proofs for ALL credentials in parallel.
-  //    Each credential now carries its own `merkleTree` pubkey (the SPL
-  //    Account-Compression tree bound to its schema), so batch proofs can
-  //    span multiple schema-scoped trees in a single verification.
+  // 4. Fetch per-credential Merkle proofs (per-schema SPL AC trees).
   const credentialProofs = await Promise.all(
     sortedCredentials.map(c =>
       lightFetchMerkleProof(options.merkleProofAdapter, c.merkleTree, c.commitment),
     ),
   );
 
-  // 2. Fetch the shared Global Identity proof from the global-state tree.
-  //    In SolID, the identity leaf is Poseidon(masterPK_x, masterPK_y, revocationNonce).
-  const identityCommitment = computeIdentityCommitment(
-      masterPublicKey.x,
-      masterPublicKey.y,
-      revocationNonce
+  // 5. Fetch a per-credential global inclusion proof.
+  //
+  //    BUG-04 fix: The circuit's `IdentityAnchor` derives a per-schema
+  //    BabyJubJub keypair via
+  //        credPriv_i = Poseidon(masterKey, schemaHash_i)
+  //        (credAx_i, credAy_i) = BabyPbk(credPriv_i)
+  //    and computes the global-tree leaf as
+  //        identityState_i = Poseidon(credAx_i, credAy_i, revocationNonce).
+  //
+  //    The pre-remediation SDK used the naive master-key leaf
+  //        Poseidon(masterPK.x, masterPK.y, revocationNonce)
+  //    for every credential and fetched one shared global proof. Because
+  //    the circuit runs NUM_CREDS IdentityAnchors — each with its own
+  //    schema-derived key — the global-tree membership would never match.
+  //
+  //    We now derive the per-schema keypair and fetch one global proof per
+  //    credential, matching the circuit exactly.
+  const perSchemaAnchors = sortedCredentials.map(c => {
+    const kp: BJJKeypair = deriveCredentialKey(masterPrivateKey, c.schemaHash);
+    const leaf = computeIdentityState(kp.public_key_x, kp.public_key_y, revocationNonce);
+    return { keypair: kp, leaf };
+  });
+  const globalProofs = await Promise.all(
+    perSchemaAnchors.map(a =>
+      lightFetchMerkleProof(
+        options.merkleProofAdapter,
+        options.globalStateTree,
+        a.leaf,
+      ),
+    ),
   );
-  const globalProof = await lightFetchMerkleProof(
-    options.merkleProofAdapter,
-    options.globalStateTree,
-    identityCommitment,
-  );
+  // Sanity: every credential's global root should be the same (single tree).
+  const canonicalGlobalRoot = globalProofs[0]?.root;
+  if (!canonicalGlobalRoot) {
+    throw new Error('No global-state proof returned for any credential');
+  }
+  for (const p of globalProofs) {
+    if (Buffer.from(p.root).compare(canonicalGlobalRoot) !== 0) {
+      throw new Error(
+        'Global-state proofs returned divergent roots — indexer may be inconsistent',
+      );
+    }
+  }
 
-  // 3. Build Batch Circuit Input (30+ signals)
+  // 6. Build Batch Circuit Input.
   const circuitInput: any = {
     // Public Inputs
-    globalRoot: globalProof.root,
-    merkleRoots: credentialProofs.map((p: any) => p.root),
-    schemaHashes: query.schema_hashes.map((h: any) => bufToDecimal(h)),
-    
-    queryCredentialIndices: Array(MAX_CREDENTIALS).fill(0),
-    queryFieldIndices: Array(MAX_CREDENTIALS).fill(0),
-    queryOperators: Array(MAX_CREDENTIALS).fill(0),
-    queryValues: Array(MAX_CREDENTIALS).fill('0'),
+    globalRoot: bufToDecimal(canonicalGlobalRoot),
+    merkleRoots: credentialProofs.map((p: any) => bufToDecimal(p.root)),
+    schemaHashes: sortedCredentials.map(c => bufToDecimal(c.schemaHash)),
+
+    queryCredentialIndices: Array(MAX_PREDICATES).fill(0),
+    queryFieldIndices: Array(MAX_PREDICATES).fill(0),
+    queryOperators: Array(MAX_PREDICATES).fill(0),
+    queryValues: Array(MAX_PREDICATES).fill('0'),
     numPredicates: query.predicates.length,
-    compoundLogic: query.compound_logic === 'AND' ? 0 : 1,
-    
+    compoundLogic: query.compoundLogic === 'AND' ? 0 : 1,
+
     verifierAddress: bufToDecimal(VERIFIER_ID_BYTES),
-    verifierNonce: bufToDecimal(query.verifier_nonce),
+    verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
 
     // Private Inputs
     masterIdentityKey: bufToDecimal(masterPrivateKey),
     revocationNonce: revocationNonce.toString(),
-    globalSiblings: globalProof.siblings,
-    globalPathIndices: globalProof.pathIndices,
-    
+    // Per-credential global-tree siblings/pathIndices.
+    globalSiblings: globalProofs.map(p => p.siblings),
+    globalPathIndices: globalProofs.map(p => p.pathIndices),
+
     data: sortedCredentials.map(c => c.attestationData.map(d => d.toString())),
     salts: sortedCredentials.map(c => bufToDecimal(c.salt)),
     issuerSigR8xs: sortedCredentials.map(c => bufToDecimal(c.issuerSignature.r8_x)),
@@ -307,7 +364,11 @@ export async function generateBatchProof(
   );
 
   const solanaProof = formatProofForSolana(proof);
-  const nullifier = Uint8Array.from(Buffer.from(publicSignals[0], 'hex')); // nullifier is publicSignals[0]
+  // BUG-02 fix: snarkjs returns publicSignals[i] as a decimal bigint-as-string,
+  // not a hex string. The pre-remediation SDK called Buffer.from(value, 'hex')
+  // which produced a zero-length buffer when the string contained any digit
+  // that was not also a hex character, and a truncated nullifier otherwise.
+  const nullifier = bigintToBytes32(BigInt(publicSignals[0]));
 
   return { proof, publicSignals, nullifier, solanaProof };
 }

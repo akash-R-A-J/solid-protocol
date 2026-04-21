@@ -1,5 +1,8 @@
 # SolID — Deep Comprehensive Audit (2026-04-19)
 
+NOTICE: this document is historical. It was written before the 2026-04 remediation landed. Many of its findings have been fixed in v0.3. Use docs/POST_REMEDIATION_AUDIT.md for the current state. Read this file only as a historical record of what was broken.
+
+
 > **HISTORICAL SNAPSHOT — pre-remediation.** This document is preserved
 > verbatim as the audit trail. For the current state of each finding,
 > see [`SOLID_INFRA_IMPROVEMENTS_STATUS.md`](./SOLID_INFRA_IMPROVEMENTS_STATUS.md)

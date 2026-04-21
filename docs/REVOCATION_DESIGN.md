@@ -1,9 +1,21 @@
-# Revocation Design — v1 (current) and v1.1 (planned SMT)
+# Revocation Design
 
-> **Status:** v1 is live (rotate-whole-identity model).  v1.1 is scheduled
-> for the first point release *after* the v1 E2E ships on devnet.  This
-> document is the canonical reference for both models, the trade-offs
-> between them, and the migration plan.
+v0.3, April 2026. Design-complete, implementation in progress.
+
+Status note (corrected 2026-04-21):
+
+v1 (rotate-whole-identity) is fully supported by the circuit and by
+schema-registry's update_global_root instruction. The on-chain scaffolding
+is already in place. What remains is the holder-side workflow (detect
+revocation, increment revocationNonce, re-derive identity leaf, request
+re-insertion into the global tree) and the issuer-side revocation
+procedure (publish revocation event, bump the identity-tree root).
+Previous versions of this document described v1 as live; that was
+aspirational. This revision restates the status accurately.
+
+v1.1 (SMT per-credential revocation) is scheduled for the release after
+v1 ships. This document is the canonical reference for both models, the
+trade-offs between them, and the migration plan.
 
 ---
 

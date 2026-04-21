@@ -37,6 +37,27 @@ use crate::credential_tree::{
 /// is owned by this program; this constant is purely documentation.
 pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT";
 
+/// Typed counterpart of [`SCHEMA_REGISTRY_PROGRAM_ID`].
+///
+/// Callers use `SCHEMA_REGISTRY_ID` for `require_keys_eq!` checks against
+/// `account.owner`. The zk-verifier must refuse any `global_tree` or
+/// `schema_tree_N` whose owner is not this program: without the check an
+/// attacker can craft a system-owned account with a valid `globroot` /
+/// `schmtree` discriminator and forge trust-root bindings.
+pub const SCHEMA_REGISTRY_ID: Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array(SCHEMA_REGISTRY_ID_BYTES);
+
+/// Raw bytes of `SCHEMA_REGISTRY_ID`, base58-decoded at the source location
+/// `"DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"`. Kept as a separate const
+/// so the program-ID literal above is usable in `const` contexts without the
+/// `pubkey!` proc-macro, which is not re-exported from `anchor_lang::prelude`.
+const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
+    184, 31, 191, 183, 14, 126, 178, 219,
+    191, 193, 249, 206, 232, 77, 185, 224,
+    56, 51, 91, 209, 33, 205, 175, 183,
+    155, 9, 46, 66, 147, 25, 1, 94,
+];
+
 // ─── Account-data builders (off-chain use) ─────────────────────────────────
 
 /// Build the Borsh-encoded bytes for a new `CompressedCredential` leaf.

@@ -185,6 +185,27 @@ export function deriveKey(masterKey: Uint8Array, context: Uint8Array): Uint8Arra
   return new Uint8Array(wasmModule.deriveKey(masterKey, context));
 }
 
+/**
+ * Derive the per-schema BabyJubJub keypair that the circuit's `IdentityAnchor`
+ * expects.
+ *
+ *   credentialPrivKey = Poseidon(masterKey, schemaHash)
+ *   (credentialPubKeyAx, credentialPubKeyAy) = BabyPbk(credentialPrivKey)
+ *
+ * Wraps the WASM `deriveCredentialKey` binding. The holder SDK must use this
+ * to build the per-schema identity leaf
+ *   Poseidon(credentialPubKeyAx, credentialPubKeyAy, revocationNonce)
+ * that sits in the global-state Merkle tree, not the naive master-key
+ * commitment (BUG-04).
+ */
+export function deriveCredentialKey(
+  masterKey: Uint8Array,
+  schemaHash: Uint8Array,
+): BJJKeypair {
+  ensureInit();
+  return wasmModule.deriveCredentialKey(masterKey, schemaHash);
+}
+
 export function computeIdentityState(pubKeyX: Uint8Array, pubKeyY: Uint8Array, revocationNonce: bigint): Uint8Array {
   ensureInit();
   return new Uint8Array(wasmModule.computeIdentityState(pubKeyX, pubKeyY, revocationNonce));

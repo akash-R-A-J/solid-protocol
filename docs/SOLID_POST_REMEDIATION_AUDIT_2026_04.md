@@ -1,5 +1,8 @@
 # SolID — Post-Remediation Audit (2026-04-19)
 
+NOTICE: this document is historical. It was written before the 2026-04 remediation landed. Many of its findings have been fixed in v0.3. Use docs/POST_REMEDIATION_AUDIT.md for the current state. Read this file only as a historical record of what was broken.
+
+
 > **HISTORICAL SNAPSHOT (2026-04-19).** Preserved verbatim. The residual
 > R-2 (SPL AC insert path) / R-3 (revocation SMT) / R-4 (`Box::leak`) /
 > R-5 (CI) / R-6 (prover workspace) items discussed below were closed in

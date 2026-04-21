@@ -1,13 +1,32 @@
 # SolID Protocol — End-to-End Run Guide
 
-> Run the complete Private Onchain Identity system on Solana devnet.  
-> **No local servers required.** Everything runs client-side — programs are on devnet, crypto runs in WASM/Node.js.
->
-> **v0.2 amendment (2026-04-20).** Commands and SDK snippets in this
-> guide were written against v0.1 (Light Protocol backend). The
-> conceptual flow — issue → fetch Merkle proof → generate Groth16 →
-> verify on-chain — is unchanged. For the v0.2 (SPL Account Compression)
-> command-by-command flow, **use [`DEPLOYMENT_AND_TESTING.md`](./DEPLOYMENT_AND_TESTING.md)
+Run the complete Private Onchain Identity system on Solana devnet or localnet.
+No local servers are required: programs run on-cluster and all crypto runs in
+WASM or Node.js.
+
+v0.3 note, April 2026. This guide is superseded for command-by-command
+workflow by DEPLOYMENT_AND_TESTING.md, which reflects the post-remediation
+SDK signatures and the fixed scripts/ entrypoints. Use this document for
+conceptual background and DEPLOYMENT_AND_TESTING.md for the exact command
+sequence.
+
+Historical note on commands in this file:
+
+Commands written against v0.1 (Light Protocol backend) remain here for
+historical reference. Translate to the v0.3 SDK as follows:
+
+- SolID.prove now takes an object with query, credentials, masterPrivateKey,
+  masterPublicKey, revocationNonce, globalStateTree, merkleProofAdapter.
+  It returns a real BatchProofResult, not a placeholder.
+- SolID.verifyOnChain now takes payer, proof, query, trees (a
+  SchemaTreeAccounts with globalTree and four schemaTree PDAs).
+  It returns a VerificationResult with a confirmed transaction signature.
+- generateProof (single credential) now takes masterPrivateKey as a
+  separate argument and requires a MerkleProofSource plus a globalStateTree
+  in its options.
+
+[ORIGINAL v0.1 GUIDE BELOW; use for reference only]
+
 > as the authoritative runbook**; treat this document as background
 > narrative. Key renames for v0.2:
 > - `@solid-protocol/light` no longer wraps `@lightprotocol/stateless.js`; it is a pure SPL AC adapter.

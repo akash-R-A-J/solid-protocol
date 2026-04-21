@@ -139,13 +139,22 @@ pub mod issuer_registry {
     }
 
     /// Vote on a pending issuer.
-    /// SEC-23: Flash-loan protection. Voting power is derived from staked tokens
-    /// that have been held for at least 100 slots to prevent one-block hacks.
+    ///
+    /// Governance invariants (2026-04 remediation):
+    ///   - Stake must be at least 100 slots old (flash-loan protection).
+    ///   - Current unix time must be strictly less than issuer.voting_ends_at
+    ///     (otherwise votes would be cast after the window closed, enabling
+    ///      late-vote stuffing before a caller runs finalize_voting).
+    ///   - Voter's active_votes_count is incremented so the tokens that backed
+    ///     this vote cannot be unstaked until release_vote is called. Without
+    ///     this increment a voter could stake, vote, and immediately unstake
+    ///     at zero economic cost, making the DAO economically meaningless.
     pub fn vote_on_issuer(ctx: Context<VoteOnIssuer>, approve: bool) -> Result<()> {
         let staker = &ctx.accounts.staker_account;
         let now_slot = Clock::get()?.slot;
+        let now_ts = Clock::get()?.unix_timestamp;
 
-        // SEC-23: Ensure stake is at least 100 slots old
+        // Flash-loan protection: stake age minimum.
         require!(
             now_slot >= staker.last_stake_slot + 100,
             ErrorCode::StakeTooNew
@@ -157,10 +166,28 @@ pub mod issuer_registry {
         let issuer = &mut ctx.accounts.issuer_account;
         let vote_record = &mut ctx.accounts.vote_record;
 
+        // Reject late votes. finalize_voting already enforces the other side
+        // (cannot finalize before voting_ends_at), so this check closes the
+        // symmetric window.
+        require!(
+            now_ts < issuer.voting_ends_at,
+            ErrorCode::VotingPeriodEnded
+        );
+        require!(
+            issuer.status == IssuerStatus::Pending,
+            ErrorCode::IssuerNotPending
+        );
+
         if approve {
-            issuer.votes_for += voter_weight;
+            issuer.votes_for = issuer
+                .votes_for
+                .checked_add(voter_weight)
+                .ok_or(ErrorCode::Overflow)?;
         } else {
-            issuer.votes_against += voter_weight;
+            issuer.votes_against = issuer
+                .votes_against
+                .checked_add(voter_weight)
+                .ok_or(ErrorCode::Overflow)?;
         }
 
         vote_record.voter = ctx.accounts.voter.key();
@@ -168,9 +195,21 @@ pub mod issuer_registry {
         vote_record.weight = voter_weight;
         vote_record.approved = approve;
         vote_record.has_voted = true;
+        vote_record.released = false;
 
-        msg!("Voted: {} with weight {} (Stake from slot {})", 
-            if approve { "Approve" } else { "Reject" }, voter_weight, staker.last_stake_slot);
+        // Lock the voter's stake until release_vote is called.
+        let staker_mut = &mut ctx.accounts.staker_account;
+        staker_mut.active_votes_count = staker_mut
+            .active_votes_count
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+
+        msg!(
+            "Voted: {} with weight {} (stake slot {})",
+            if approve { "Approve" } else { "Reject" },
+            voter_weight,
+            staker_mut.last_stake_slot
+        );
         // Auto-approval is handled by `finalize_voting` once the voting period
         // ends — we do NOT short-circuit here to avoid malleability around the
         // configured threshold.
@@ -250,13 +289,21 @@ pub mod issuer_registry {
     }
 
     /// After an issuer is finalized, voters can release their lock to unstake.
+    ///
+    /// Preconditions:
+    ///   - vote_record.released == false (checked)
+    ///   - issuer_account.status != Pending (enforced in context)
+    ///   - staker_account.active_votes_count >= 1 (defensive; should always
+    ///     hold because vote_on_issuer incremented it)
     pub fn release_vote(ctx: Context<ReleaseVote>) -> Result<()> {
         let staker_account = &mut ctx.accounts.staker_account;
         let vote_record = &mut ctx.accounts.vote_record;
 
         require!(!vote_record.released, ErrorCode::VoteAlreadyReleased);
-        
-        staker_account.active_votes_count -= 1;
+        staker_account.active_votes_count = staker_account
+            .active_votes_count
+            .checked_sub(1)
+            .ok_or(ErrorCode::Overflow)?;
         vote_record.released = true;
 
         msg!("Vote lock released for issuer {}", vote_record.issuer);
@@ -350,8 +397,15 @@ pub mod issuer_registry {
                 issuer.name, approval_pct / 100, registry.approval_threshold_bps / 100);
         }
         Ok(())
-    }    /// Slash an issuer for malicious behavior.
+    }
+
+    /// Slash an issuer for malicious behavior.
     /// Can only be called by DAO authority after governance vote or internal decision.
+    ///
+    /// Lamports move atomically from the shared `stake_vault` PDA to the
+    /// `dao_treasury` PDA. Without this transfer (pre-remediation behavior
+    /// only decremented accounting), slashed SOL was effectively orphaned in
+    /// the vault and the DAO never actually captured the penalty.
     pub fn slash_issuer(
         ctx: Context<SlashIssuer>,
         slash_amount: u64,
@@ -369,8 +423,21 @@ pub mod issuer_registry {
             ErrorCode::SlashExceedsStake
         );
 
-        issuer.staked_amount -= slash_amount;
-        issuer.slash_count += 1;
+        issuer.staked_amount = issuer
+            .staked_amount
+            .checked_sub(slash_amount)
+            .ok_or(ErrorCode::Overflow)?;
+        issuer.slash_count = issuer
+            .slash_count
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+
+        // Move lamports: stake_vault -> dao_treasury.
+        transfer_slashed_lamports(
+            &ctx.accounts.stake_vault,
+            &ctx.accounts.dao_treasury,
+            slash_amount,
+        )?;
 
         // If stake drops below minimum, revoke
         let registry = &ctx.accounts.registry_config;
@@ -422,11 +489,25 @@ pub mod issuer_registry {
             ErrorCode::SlashExceedsStake
         );
 
-        issuer.staked_amount = issuer.staked_amount.saturating_sub(slash_amount);
-        issuer.slash_count = issuer.slash_count.saturating_add(1);
+        issuer.staked_amount = issuer
+            .staked_amount
+            .checked_sub(slash_amount)
+            .ok_or(ErrorCode::Overflow)?;
+        issuer.slash_count = issuer
+            .slash_count
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
 
-        // Reporter bounty is only paid when the reporter is NOT the authority
-        // itself (the DAO treasury already controls those funds). Left as 0 here.
+        // Move the slashed lamports from stake_vault into the DAO treasury.
+        // Reporter bounty is paid by a separate follow-on instruction when the
+        // reporter is external — gating that to a circuit-verified fraud proof
+        // is tracked as a P2 item in docs/IMPROVEMENTS_ROADMAP.md.
+        transfer_slashed_lamports(
+            &ctx.accounts.stake_vault,
+            &ctx.accounts.dao_treasury,
+            slash_amount,
+        )?;
+
         if issuer.staked_amount == 0 {
             issuer.status = IssuerStatus::Revoked;
         }
@@ -440,22 +521,53 @@ pub mod issuer_registry {
         Ok(())
     }
 
-    /// Trust Anchor Bypass: High-tier entity approves a lower-tier entity (Phase 1.4).
-    pub fn approve_via_trust_anchor(ctx: Context<ApproveViaTrustAnchor>) -> Result<()> {
+    /// Trust Anchor Bypass: High-tier entity approves a lower-tier entity.
+    ///
+    /// The `target_authority` argument is used to derive the canonical
+    /// `[b"issuer", target_authority]` PDA seed, so a malicious trust anchor
+    /// cannot pass an arbitrary IssuerAccount as target_issuer.
+    ///
+    /// Emits `IssuerApproved` so off-chain indexers stay in sync whether the
+    /// approval came through DAO voting (finalize_voting) or through this
+    /// trust-anchor bypass.
+    pub fn approve_via_trust_anchor(
+        ctx: Context<ApproveViaTrustAnchor>,
+        target_authority: Pubkey,
+    ) -> Result<()> {
         let anchor = &ctx.accounts.anchor_issuer;
         let target = &mut ctx.accounts.target_issuer;
-        
+
         require!(
             anchor.tier == IssuerTier::Government || anchor.tier == IssuerTier::Regulated,
             ErrorCode::UnauthorizedTrustAnchor
         );
         require!(anchor.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
         require!(target.status == IssuerStatus::Pending, ErrorCode::IssuerNotPending);
+        require_keys_eq!(
+            target.authority,
+            target_authority,
+            ErrorCode::Unauthorized
+        );
 
         target.status = IssuerStatus::Approved;
-        
+
         let config = &mut ctx.accounts.registry_config;
-        config.active_issuers += 1;
+        config.active_issuers = config
+            .active_issuers
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+
+        emit!(IssuerApproved {
+            issuer: target.key(),
+            authority: target.authority,
+            bjj_pub_key_x: target.bjj_pub_key_x,
+            bjj_pub_key_y: target.bjj_pub_key_y,
+            tier: target.tier.clone(),
+            // Trust-anchor approvals are binary rather than percentage-based;
+            // surface this to downstream consumers as 10_000 bps = 100 pct.
+            approval_bps: 10_000,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
 
         msg!("Issuer APPROVED via Trust Anchor {}: {}", anchor.name, target.name);
         Ok(())
@@ -610,7 +722,10 @@ pub mod issuer_registry {
 pub struct InitializeRegistry<'info> {
     #[account(
         init, payer = authority,
-        space = 8 + 32 + 8 + 8 + 8 + 8 + 8,
+        // 8 disc + 32 authority + 32 governance_token_mint + 8 min_stake
+        // + 8 voting_period + 8 approval_threshold + 8 total_issuers
+        // + 8 active_issuers = 112 bytes.
+        space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 8,
         seeds = [b"registry-config"],
         bump
     )]
@@ -653,7 +768,10 @@ pub struct VoteOnIssuer<'info> {
         bump
     )]
     pub vote_record: Account<'info, VoteRecord>,
-    #[account(seeds = [b"staker", voter.key().as_ref()], bump)]
+    // `mut` is required: vote_on_issuer increments active_votes_count.
+    // Without mut, Anchor silently discards the write and the DAO
+    // governance lock is unenforceable.
+    #[account(mut, seeds = [b"staker", voter.key().as_ref()], bump)]
     pub staker_account: Account<'info, StakerAccount>,
     #[account(mut)]
     pub voter: Signer<'info>,
@@ -684,11 +802,24 @@ pub struct SubmitFraudProof<'info> {
     pub registry_config: Account<'info, RegistryConfig>,
     #[account(mut)]
     pub issuer_account: Account<'info, IssuerAccount>,
-    /// CHECK: Stake vault PDA for bounty payment
+    /// CHECK: Shared stake vault PDA (source of slashed lamports).
     #[account(mut, seeds = [b"stake-vault"], bump)]
     pub stake_vault: AccountInfo<'info>,
+    /// CHECK: DAO treasury PDA (destination of slashed lamports).
+    /// Initialised on first slash via init_if_needed so the registry is
+    /// deployable without a separate bootstrapping instruction.
+    #[account(
+        init_if_needed,
+        payer = reporter,
+        space = 0,
+        seeds = [b"dao-treasury"],
+        bump,
+        owner = system_program.key()
+    )]
+    pub dao_treasury: AccountInfo<'info>,
     #[account(mut)]
     pub reporter: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -703,12 +834,20 @@ pub struct FinalizeVoting<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(target_authority: Pubkey)]
 pub struct ApproveViaTrustAnchor<'info> {
     #[account(mut, seeds = [b"registry-config"], bump)]
     pub registry_config: Account<'info, RegistryConfig>,
     #[account(seeds = [b"issuer", anchor_authority.key().as_ref()], bump)]
     pub anchor_issuer: Account<'info, IssuerAccount>,
-    #[account(mut)]
+    /// Seed-constrained to the canonical issuer PDA of the supplied
+    /// target_authority. This prevents a malicious trust anchor from handing
+    /// us an arbitrary off-canon IssuerAccount.
+    #[account(
+        mut,
+        seeds = [b"issuer", target_authority.as_ref()],
+        bump,
+    )]
     pub target_issuer: Account<'info, IssuerAccount>,
     #[account(mut)]
     pub anchor_authority: Signer<'info>,
@@ -716,12 +855,29 @@ pub struct ApproveViaTrustAnchor<'info> {
 
 #[derive(Accounts)]
 pub struct SlashIssuer<'info> {
-    #[account(seeds = [b"registry-config"], bump)]
+    #[account(mut, seeds = [b"registry-config"], bump)]
     pub registry_config: Account<'info, RegistryConfig>,
     #[account(mut)]
     pub issuer_account: Account<'info, IssuerAccount>,
-    #[account(constraint = authority.key() == registry_config.authority @ ErrorCode::Unauthorized)]
+    /// CHECK: Shared stake vault PDA (source of slashed lamports).
+    #[account(mut, seeds = [b"stake-vault"], bump)]
+    pub stake_vault: AccountInfo<'info>,
+    /// CHECK: DAO treasury PDA (destination of slashed lamports).
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = 0,
+        seeds = [b"dao-treasury"],
+        bump,
+        owner = system_program.key()
+    )]
+    pub dao_treasury: AccountInfo<'info>,
+    #[account(
+        mut,
+        constraint = authority.key() == registry_config.authority @ ErrorCode::Unauthorized
+    )]
     pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -850,9 +1006,12 @@ pub struct WithdrawAfterCooldown<'info> {
 
 #[derive(Accounts)]
 pub struct ReleaseVote<'info> {
-    #[account(seeds = [b"staker", voter.key().as_ref()], bump)]
+    // `mut`: handler decrements active_votes_count.
+    #[account(mut, seeds = [b"staker", voter.key().as_ref()], bump)]
     pub staker_account: Account<'info, StakerAccount>,
+    // `mut`: handler flips `released = true`.
     #[account(
+        mut,
         seeds = [b"vote", issuer_account.key().as_ref(), voter.key().as_ref()],
         bump,
         constraint = vote_record.voter == voter.key(),
@@ -1018,6 +1177,33 @@ pub enum ErrorCode {
     InvalidCompressionProgram,
     #[msg("Supplied log_wrapper account is not SPL Noop")]
     InvalidNoopProgram,
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────
+
+/// Move `amount` lamports from `from` (a program-owned PDA) to `to` (also a
+/// PDA that we control). Direct lamport manipulation is safe when:
+///   1. The source account is program-owned and we are the program.
+///   2. We do not violate rent-exemption for the source.
+///
+/// Both stake_vault and dao_treasury are system-owned (non-data) lamport
+/// holders; manipulating their lamport field directly is the standard
+/// pattern (see withdraw_stake / withdraw_after_cooldown in this file).
+fn transfer_slashed_lamports<'info>(
+    from: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    amount: u64,
+) -> Result<()> {
+    let from_balance = **from.try_borrow_lamports()?;
+    require!(from_balance >= amount, ErrorCode::InsufficientStake);
+    **from.try_borrow_mut_lamports()? = from_balance
+        .checked_sub(amount)
+        .ok_or(ErrorCode::Overflow)?;
+    let to_balance = **to.try_borrow_lamports()?;
+    **to.try_borrow_mut_lamports()? = to_balance
+        .checked_add(amount)
+        .ok_or(ErrorCode::Overflow)?;
+    Ok(())
 }
 
 // ─── Events ────────────────────────────────────────────────────────────────

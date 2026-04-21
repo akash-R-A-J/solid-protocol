@@ -1,21 +1,40 @@
-import { 
-  initWasm, 
-  QueryBuilder, 
+import {
+  initWasm,
+  QueryBuilder,
   MultiCredentialQuery,
   BJJKeypair,
-  generateKeypair as coreGenerateKeypair
+  generateKeypair as coreGenerateKeypair,
+  PROGRAM_IDS,
 } from '@solid-protocol/core';
+import {
+  generateBatchProof,
+  type BatchProofResult,
+  type StoredCredential,
+  type MerkleProofSource,
+} from '@solid-protocol/holder';
+import {
+  verifyOnChain as realVerifyOnChain,
+  type SchemaTreeAccounts,
+  type VerificationRequest,
+  type VerificationResult,
+  deriveNullifierPda,
+  deriveVerifierConfigPda,
+  deriveVkStoragePda,
+  checkIssuerStatus,
+} from '@solid-protocol/verifier';
 import { SOLID_CONFIG } from './config';
 import { ResilientConnection } from './rpc';
-import { Connection, PublicKey } from '@solana/web3.js';
-import * as anchor from '@coral-xyz/anchor';
+import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 
 /**
  * SolID Protocol SDK
- * 
- * The high-level, production-grade interface for the SolID identity layer.
- * Provides a "One-Call" API for proving and verifying identity.
+ *
+ * High-level facade over the lower-level @solid-protocol/{core,holder,verifier,light}
+ * packages. The facade is thin: every method delegates to the package that
+ * already owns the real logic. In particular, neither prove() nor verifyOnChain()
+ * contain any stub output: they call the real Groth16 prover and submit a
+ * real confirmed verify_batch_proof transaction.
  */
 export class SolID {
   private static _initialized = false;
@@ -23,10 +42,7 @@ export class SolID {
   private static _connection: Connection;
 
   /**
-   * Initialize the SDK.
-   * Loads the WASM modules and sets up the resilient Solana RPC client.
-   * v0.2: No Photon/Light dependency — compressed state is read directly from
-   *       SPL Account Compression via standard `Connection.getAccountInfo`.
+   * Initialize the SDK. Must be called before any proving or verification.
    */
   static async initialize(): Promise<void> {
     if (this._initialized) return;
@@ -39,7 +55,7 @@ export class SolID {
   }
 
   /** Expose the resilient Solana RPC client so downstream packages
-   *  (issuer/holder) can share the same endpoint pool + failover state. */
+   *  (issuer/holder) can share the same endpoint pool and failover state. */
   static get rpc(): ResilientConnection {
     if (!this._initialized) {
       throw new Error('SolID SDK: call SolID.initialize() before accessing rpc.');
@@ -55,114 +71,176 @@ export class SolID {
   }
 
   /**
-   * Prove a set of credentials against a compound query.
-   * 
-   * This is the "Holder" side of the protocol.
-   * It handles:
-   * 1. Witness generation (WASM)
-   * 2. Proof generation (Groth16)
-   * 3. Public input formatting
+   * Prove a multi-credential compound query.
+   *
+   * Delegates to @solid-protocol/holder::generateBatchProof with circuit
+   * artifact paths sourced from SOLID_CONFIG. The caller supplies the
+   * credentials, the master key, the global-state tree, and a
+   * MerkleProofAdapter.
    */
-  static async prove(query: MultiCredentialQuery, identity: BJJKeypair): Promise<any> {
+  static async prove(params: {
+    query: MultiCredentialQuery;
+    credentials: StoredCredential[];
+    masterPrivateKey: Uint8Array;
+    masterPublicKey: { x: Uint8Array; y: Uint8Array };
+    revocationNonce: bigint;
+    globalStateTree: PublicKey;
+    merkleProofAdapter: MerkleProofSource['merkleProofAdapter'];
+    circuitPaths?: { wasmPath: string; zkeyPath: string };
+  }): Promise<BatchProofResult> {
     if (!this._initialized) await this.initialize();
-    
-    // In production, this would download the .wasm and .zkey from SOLID_CONFIG.ARTIFACT_BASE_URL
-    // and then call the snarkjs/ark-circom prover.
-    console.log('Proving query...', query.queryContextHash);
-    
-    // Placeholder for actual ZK proof generation
-    return {
-      proof: 'ZK_PROOF_DATA',
-      publicSignals: Array(31).fill('0'), // Standardized to 31 public inputs (SEC-18)
+    const circuitPaths = params.circuitPaths ?? {
+      wasmPath: `${SOLID_CONFIG.ARTIFACT_BASE_URL}${SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.WASM_PATH}`,
+      zkeyPath: `${SOLID_CONFIG.ARTIFACT_BASE_URL}${SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.ZKEY_PATH}`,
     };
+    return generateBatchProof(
+      params.query,
+      params.credentials,
+      params.masterPrivateKey,
+      params.masterPublicKey,
+      params.revocationNonce,
+      circuitPaths,
+      {
+        merkleProofAdapter: params.merkleProofAdapter,
+        globalStateTree: params.globalStateTree,
+      },
+    );
   }
 
   /**
-   * Verify an identity proof on-chain (Solana).
-   * 
-   * This is the "Verifier" side of the protocol.
-   * It handles:
-   * 1. Building the Anchor instruction for `verify_batch_proof`
-   * 2. Linking the Global State Tree (Light Protocol)
-   * 3. Submitting the proof to the zk-verifier program
+   * Submit a proof to the on-chain ZK verifier.
+   *
+   * Delegates to @solid-protocol/verifier::verifyOnChain which builds and
+   * confirms a real verify_batch_proof transaction. Returns the transaction
+   * signature of the confirmed submission, not a placeholder string.
    */
-  static async verifyOnChain(proof: any, publicSignals: string[], payer: anchor.Wallet): Promise<string> {
+  static async verifyOnChain(params: {
+    payer: Keypair;
+    proof: BatchProofResult;
+    query: MultiCredentialQuery;
+    trees: SchemaTreeAccounts;
+  }): Promise<VerificationResult> {
     if (!this._initialized) await this.initialize();
-    
-    console.log('SolID SDK: Verifying proof on-chain via Resilient RPC...');
-    
-    const programId = new PublicKey(SOLID_CONFIG.PROGRAM_IDS.ZK_VERIFIER);
-    const provider = new anchor.AnchorProvider(this._connection, payer, {});
-    
-    // In production, the IDL would be bundled or fetched from the chain.
-    // For this context, we assume the user has the IDL available or uses the raw Instruction builder.
-    const verifierConfig = PublicKey.findProgramAddressSync([Buffer.from('verifier-config')], programId)[0];
-    const vkStorage = PublicKey.findProgramAddressSync([Buffer.from('vk-storage'), verifierConfig.toBuffer()], programId)[0];
 
-    // Build public inputs as array of [32]u8
-    const inputs = publicSignals.map(s => {
-        const buf = Buffer.alloc(32);
-        const val = BigInt(s).toString(16).padStart(64, '0');
-        buf.write(val, 'hex');
-        return Array.from(buf);
-    });
+    const request: VerificationRequest = {
+      query: params.query,
+      proofData: {
+        proof_a: params.proof.solanaProof.proofA,
+        proof_b: params.proof.solanaProof.proofB,
+        proof_c: params.proof.solanaProof.proofC,
+        publicInputs: params.proof.publicSignals.map(s =>
+          bigintToBytes32BE(BigInt(s)),
+        ),
+        nullifier: params.proof.nullifier,
+      },
+    };
 
-    // Anchor CPI to verify_batch_proof
-    // The SDK creates the transaction that the dApp then submits.
-    console.log('SolID SDK: Constructing VerifyBatchProof instruction...');
-    
-    // Placeholder for actual Anchor programmatic call (requires IDL)
-    // return await program.methods.verifyBatchProof(proof.a, proof.b, proof.c, inputs, inputs[0]).accounts({ ... }).rpc();
-    
-    return 'SOLANA_TX_SIGNATURE_RC_100';
+    return realVerifyOnChain(
+      this._connection,
+      params.payer,
+      request,
+      params.trees,
+      new PublicKey(PROGRAM_IDS.zkVerifier),
+    );
   }
 
   /**
-   * Utility: Resolve a schema hash to its human-readable metadata.
-   * 
-   * Performs an on-chain search (Phase 4: Discovery) over the SchemaRegistry.
+   * Resolve a schema hash to its on-chain SchemaAccount PDA.
+   *
+   * The pre-remediation implementation filtered by a wrong memcmp offset and
+   * always returned empty. The Borsh layout of SchemaAccount uses
+   * len-prefixed Strings, so a static offset against name + category cannot
+   * work. We do a cheap full scan of program accounts (the registry is
+   * small; production integrators should layer a proper indexer on top).
    */
-  static async resolveSchema(schemaHash: Uint8Array): Promise<any> {
+  static async resolveSchema(schemaHash: Uint8Array): Promise<PublicKey | null> {
     if (!this._initialized) await this.initialize();
-    
-    console.log('SolID SDK: Discovering schema metadata for hash...', Buffer.from(schemaHash).toString('hex'));
-    
     const schemaProgramId = new PublicKey(SOLID_CONFIG.PROGRAM_IDS.SCHEMA_REGISTRY);
-    const accounts = await this._connection.getProgramAccounts(schemaProgramId, {
-      filters: [
-        { memcmp: { offset: 8+32+256+1+256+32, bytes: Buffer.from(schemaHash).toString('base58') } }
-      ]
-    });
-
-    if (accounts.length === 0) {
-      throw new Error('SolID SDK: Schema not found in Registry.');
+    const accounts = await this._connection.getProgramAccounts(schemaProgramId);
+    const target = Buffer.from(schemaHash);
+    for (const entry of accounts) {
+      // SchemaAccount layout relative to the 8-byte Anchor discriminator:
+      //   [8..40)  authority
+      //   [40..]   name (4-byte len + bytes)
+      //   ...      version (u8)
+      //   ...      category (4-byte len + bytes)
+      //   ...      field_names (Vec<String>)
+      //   [...+32) schema_hash
+      // Parse schema_hash by walking length prefixes rather than a fixed
+      // offset. The field ordering must match register_schema.
+      const data = entry.account.data;
+      try {
+        let off = 8 + 32;
+        // name
+        const nameLen = data.readUInt32LE(off); off += 4 + nameLen;
+        // version
+        off += 1;
+        // category
+        const catLen = data.readUInt32LE(off); off += 4 + catLen;
+        // field_names
+        const fieldsLen = data.readUInt32LE(off); off += 4;
+        for (let i = 0; i < fieldsLen; i++) {
+          const sLen = data.readUInt32LE(off); off += 4 + sLen;
+        }
+        const hash = data.subarray(off, off + 32);
+        if (hash.equals(target)) return entry.pubkey;
+      } catch {
+        continue;
+      }
     }
-
-    // In production, we'd use a dedicated indexer (Photon) for O(1) resolution.
-    // For now, this is a robust on-chain fall-back.
-    return { 
-        pda: accounts[0].pubkey.toBase58(),
-        status: 'Discovery Complete'
-    };
+    return null;
   }
 
   /**
-   * Utility: List all approved issuers.
+   * List all IssuerAccount PDAs whose status is Approved (variant 1).
+   *
+   * Pre-remediation code filtered with an offset that ignored the
+   * 4-byte Borsh length prefixes on name/metadata_uri. We walk the layout
+   * here and keep only Approved entries.
    */
-  static async listIssuers(): Promise<string[]> {
+  static async listIssuers(): Promise<PublicKey[]> {
     if (!this._initialized) await this.initialize();
-    
     const registryId = new PublicKey(SOLID_CONFIG.PROGRAM_IDS.ISSUER_REGISTRY);
-    const accounts = await this._connection.getProgramAccounts(registryId, {
-      filters: [
-        { memcmp: { offset: 8+32+64+128+32+32+1, bytes: '2' } } // 2 = Approved
-      ]
-    });
-
-    return accounts.map(a => a.pubkey.toBase58());
+    const accounts = await this._connection.getProgramAccounts(registryId);
+    const approved: PublicKey[] = [];
+    for (const entry of accounts) {
+      const data = entry.account.data;
+      try {
+        let off = 8 + 32;
+        const nameLen = data.readUInt32LE(off); off += 4 + nameLen;
+        const metaLen = data.readUInt32LE(off); off += 4 + metaLen;
+        off += 32 + 32; // bjj_pub_key_x, bjj_pub_key_y
+        off += 1;       // tier
+        const status = data.readUInt8(off);
+        if (status === 1) approved.push(entry.pubkey); // IssuerStatus::Approved = 1
+      } catch {
+        continue;
+      }
+    }
+    return approved;
   }
 }
 
-// Re-export core types for convenience
+function bigintToBytes32BE(n: bigint): Uint8Array {
+  const hex = n.toString(16).padStart(64, '0');
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// Re-export core types and lower-level helpers for convenience.
 export * from '@solid-protocol/core';
+export {
+  deriveNullifierPda,
+  deriveVerifierConfigPda,
+  deriveVkStoragePda,
+  checkIssuerStatus,
+};
+export type {
+  SchemaTreeAccounts,
+  VerificationRequest,
+  VerificationResult,
+} from '@solid-protocol/verifier';
 export { SOLID_CONFIG } from './config';

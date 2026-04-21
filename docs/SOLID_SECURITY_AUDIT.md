@@ -1,4 +1,7 @@
 # SolID Protocol — Security Audit Report
+
+NOTICE: this document is historical. It was written before the 2026-04 remediation landed. Many of its findings have been fixed in v0.3. Use docs/POST_REMEDIATION_AUDIT.md for the current state. Read this file only as a historical record of what was broken.
+
 **Comprehensive Technical Review & Vulnerability Assessment**
 
 > **HISTORICAL SNAPSHOT.** Findings here were remediated through

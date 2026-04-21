@@ -1,57 +1,74 @@
 {
   "network": "devnet",
   "cluster": "https://api.devnet.solana.com",
-  "deployed_at": "2026-04-04T08:48:00+05:30",
+  "deployed_at": null,
+  "note": "Program IDs mirror Anchor.toml exactly. deployed_at is null until a fresh anchor deploy regenerates this file via scripts/regen_devnet_manifest.py. The toolchain section records the exact pinned versions consumed by CI.",
   "deployer": {
-    "address": "Hz4uJrCLqs9rqMHJyvD9tqWgSNc92TjsBYANUUNxLWWv",
-    "keypair_path": "/home/rajakash/.config/solana/id.json"
+    "address": null,
+    "keypair_path": "~/.config/solana/id.json"
   },
   "programs": {
     "schema_registry": {
-      "program_id": "2oma2yU2vfSYNR8sPDq5JvRbrtetyk5wuuGzwGYupAsH",
-      "upgrade_authority": "Hz4uJrCLqs9rqMHJyvD9tqWgSNc92TjsBYANUUNxLWWv",
-      "idl_metadata": "3JeBDMjUUJCTDiV2zfdUPzNwTALMZ6W8v1g5Wkrnw5rJ",
+      "program_id": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT",
+      "upgrade_authority": null,
+      "idl_metadata": null,
       "binary": "target/deploy/schema_registry.so",
-      "description": "On-chain credential schema registry with version control"
+      "description": "On-chain credential schema registry plus SchemaTreeBinding and GlobalStateBinding PDAs"
     },
     "zk_verifier": {
-      "program_id": "FhtEvsUwxRRT8nf3uaxK6iAefFqvqCYimc9vqnH5XEgr",
-      "upgrade_authority": "Hz4uJrCLqs9rqMHJyvD9tqWgSNc92TjsBYANUUNxLWWv",
-      "idl_metadata": "DLYCcVqWBMT5XLDV8bKUFHYaEsDRuad9AZ7KEzZUWqHx",
+      "program_id": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2",
+      "upgrade_authority": null,
+      "idl_metadata": null,
       "binary": "target/deploy/zk_verifier.so",
-      "description": "Groth16 ZK proof verifier with Bloom filter nullifier registry"
+      "description": "Groth16 batch verifier with PDA-per-nullifier replay protection"
     },
     "issuer_registry": {
-      "program_id": "6ewriDVJLTaeBG7AsjuobAfyhDWfCz681RDWMFq5Laeo",
-      "upgrade_authority": "Hz4uJrCLqs9rqMHJyvD9tqWgSNc92TjsBYANUUNxLWWv",
-      "idl_metadata": "6GFK3AB8ZdTtu3zAGtgcdtQph5nW4Y9gBMXPkaXy7swK",
+      "program_id": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR",
+      "upgrade_authority": null,
+      "idl_metadata": null,
       "binary": "target/deploy/issuer_registry.so",
-      "description": "DAO-governed issuer registry with staking and slashing"
+      "description": "DAO-governed issuer registry with staking, slashing, and SPL AC credential issuance"
     }
   },
   "pdas": {
     "verifier_config": {
       "seeds": ["verifier-config"],
-      "program": "FhtEvsUwxRRT8nf3uaxK6iAefFqvqCYimc9vqnH5XEgr"
+      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
     },
     "vk_storage": {
       "seeds": ["vk-storage", "<verifier_config_pubkey>"],
-      "program": "FhtEvsUwxRRT8nf3uaxK6iAefFqvqCYimc9vqnH5XEgr"
+      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
     },
-    "nullifier_bloom": {
-      "seeds": ["nullifier-bloom", "<verifier_config_pubkey>"],
-      "program": "FhtEvsUwxRRT8nf3uaxK6iAefFqvqCYimc9vqnH5XEgr"
+    "nullifier_record_example": {
+      "seeds": ["null", "<nullifier_bytes>"],
+      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2",
+      "note": "One PDA per proof, created atomically by verify_batch_proof; replaces the v0.1 nullifier_bloom design"
     },
     "registry_config": {
       "seeds": ["registry-config"],
-      "program": "6ewriDVJLTaeBG7AsjuobAfyhDWfCz681RDWMFq5Laeo"
+      "program": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
+    },
+    "dao_treasury": {
+      "seeds": ["dao-treasury"],
+      "program": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
+    },
+    "global_binding": {
+      "seeds": ["global-binding"],
+      "program": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
+    },
+    "schema_tree_binding_example": {
+      "seeds": ["schema-tree-binding", "<schema_hash>"],
+      "program": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
     }
   },
   "toolchain": {
-    "anchor_cli": "1.0.0",
+    "anchor_cli": "0.30.1",
     "anchor_lang": "0.30.1",
-    "solana_cli": "3.1.12",
-    "rust": "1.94.1",
-    "node": "v24.10.0"
+    "solana_cli": "1.18.22",
+    "rust": "1.79.0",
+    "node": "18",
+    "circom": "2.1.9",
+    "snarkjs": "0.7.5",
+    "wasm_pack": "0.13.1"
   }
 }

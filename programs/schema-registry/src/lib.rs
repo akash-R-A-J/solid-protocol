@@ -42,12 +42,47 @@ pub const GLOBAL_STATE_BINDING_SIZE: usize = 80;
 pub const STATUS_ACTIVE: u8 = 0;
 pub const STATUS_FROZEN: u8 = 1;
 
+// Length ceilings for register_schema.  These must match the space allocation
+// of SchemaAccount exactly; the handler enforces them so Borsh serialization
+// never overflows the allocated PDA.
+pub const SCHEMA_MAX_NAME_LEN: usize = 64;
+pub const SCHEMA_MAX_CATEGORY_LEN: usize = 64;
+pub const SCHEMA_MAX_FIELDS: usize = 8;
+pub const SCHEMA_MAX_FIELD_NAME_LEN: usize = 32;
+
+/// Exact Borsh-encoded size of a SchemaAccount, matching the field order in
+/// the struct definition below.
+///
+///   32 authority
+/// + (4 + SCHEMA_MAX_NAME_LEN)       name (len-prefixed String)
+/// +  1                              version
+/// + (4 + SCHEMA_MAX_CATEGORY_LEN)   category
+/// + (4 + SCHEMA_MAX_FIELDS * (4 + SCHEMA_MAX_FIELD_NAME_LEN))
+///                                   field_names (Vec<String>)
+/// + 32                              schema_hash
+/// +  1                              deprecated (bool)
+/// +  8                              created_at (i64)
+/// +  8                              usage_count (u64)
+pub const SCHEMA_ACCOUNT_SPACE: usize = 32
+    + (4 + SCHEMA_MAX_NAME_LEN)
+    + 1
+    + (4 + SCHEMA_MAX_CATEGORY_LEN)
+    + (4 + SCHEMA_MAX_FIELDS * (4 + SCHEMA_MAX_FIELD_NAME_LEN))
+    + 32
+    + 1
+    + 8
+    + 8;
+
 /// Schema Registry — modular schema management + credential-tree bindings.
 #[program]
 pub mod schema_registry {
     use super::*;
 
     /// Register a new schema.
+    ///
+    /// The length caps on `name`, `category`, and `field_names` must match
+    /// the SCHEMA_ACCOUNT_SPACE constant: overflowing any of them would push
+    /// the Borsh-serialized layout past the allocated PDA size at write-time.
     pub fn register_schema(
         ctx: Context<RegisterSchema>,
         name: String,
@@ -57,9 +92,23 @@ pub mod schema_registry {
         schema_hash: [u8; 32],
     ) -> Result<()> {
         require!(
-            !field_names.is_empty() && field_names.len() <= 8,
+            !field_names.is_empty() && field_names.len() <= SCHEMA_MAX_FIELDS,
             ErrorCode::InvalidFieldCount
         );
+        require!(
+            name.len() <= SCHEMA_MAX_NAME_LEN,
+            ErrorCode::MetadataTooLong
+        );
+        require!(
+            category.len() <= SCHEMA_MAX_CATEGORY_LEN,
+            ErrorCode::MetadataTooLong
+        );
+        for fname in field_names.iter() {
+            require!(
+                fname.len() <= SCHEMA_MAX_FIELD_NAME_LEN,
+                ErrorCode::MetadataTooLong
+            );
+        }
 
         // SEC-06: Verify schema_hash against metadata
         let mut name_fields: Vec<u64> = Vec::new();
@@ -103,10 +152,20 @@ pub mod schema_registry {
         Ok(())
     }
 
-    /// Increment usage counter (called via CPI during credential issuance).
+    /// Increment the schema's usage counter.
+    ///
+    /// Access control: only the schema authority may call this. The previous
+    /// implementation had no signer constraint, which let anyone inflate a
+    /// schema's `usage_count` to `u64::MAX` and DoS any downstream consumer
+    /// that read the counter (analytics, governance weight, fee calculations).
     pub fn increment_usage(ctx: Context<IncrementUsage>) -> Result<()> {
         let schema = &mut ctx.accounts.schema_account;
         require!(!schema.deprecated, ErrorCode::SchemaDeprecated);
+        require_keys_eq!(
+            schema.authority,
+            ctx.accounts.authority.key(),
+            ErrorCode::UnauthorizedSchemaAuthority
+        );
         schema.usage_count = schema
             .usage_count
             .checked_add(1)
@@ -243,8 +302,17 @@ pub mod schema_registry {
             ErrorCode::UnauthorizedTreeBinding
         );
 
+        // Monotonicity: a binding's root may only advance in slot time.
+        // Without this, a compromised authority (or a replayed tx) could
+        // regress the root back to a value that predates a revocation,
+        // allowing a revoked credential's inclusion proof to pass again.
+        let last_slot_bytes: [u8; 8] = data[104..112].try_into().unwrap();
+        let last_slot = u64::from_le_bytes(last_slot_bytes);
+        let now_slot = Clock::get()?.slot;
+        require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
+
         data[72..104].copy_from_slice(&new_root);
-        data[104..112].copy_from_slice(&Clock::get()?.slot.to_le_bytes());
+        data[104..112].copy_from_slice(&now_slot.to_le_bytes());
         Ok(())
     }
 
@@ -340,8 +408,72 @@ pub mod schema_registry {
             stored_authority == ctx.accounts.authority.key().to_bytes(),
             ErrorCode::UnauthorizedTreeBinding
         );
+
+        // Same monotonicity guarantee as update_tree_root.
+        let last_slot_bytes: [u8; 8] = data[40..48].try_into().unwrap();
+        let last_slot = u64::from_le_bytes(last_slot_bytes);
+        let now_slot = Clock::get()?.slot;
+        require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
+
         data[8..40].copy_from_slice(&new_root);
-        data[40..48].copy_from_slice(&Clock::get()?.slot.to_le_bytes());
+        data[40..48].copy_from_slice(&now_slot.to_le_bytes());
+        Ok(())
+    }
+
+    /// Transfer `authority` on a `SchemaTreeBinding` PDA to a new Pubkey.
+    ///
+    /// Closes the operational-key-rotation gap: without this instruction the
+    /// original schema-binding authority was immutable, so a compromised or
+    /// lost key would brick the binding (and every proof against that schema).
+    pub fn transfer_tree_binding_authority(
+        ctx: Context<UpdateTreeRoot>,
+        _schema_hash: [u8; 32],
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        let binding_info = ctx.accounts.schema_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidBindingOwner
+        );
+        let mut data = binding_info.try_borrow_mut_data()?;
+        require!(
+            data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
+            ErrorCode::MalformedBinding
+        );
+        let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+        require!(
+            stored_authority == ctx.accounts.authority.key().to_bytes(),
+            ErrorCode::UnauthorizedTreeBinding
+        );
+        data[113..145].copy_from_slice(&new_authority.to_bytes());
+        msg!("SchemaTreeBinding authority rotated to {}", new_authority);
+        Ok(())
+    }
+
+    /// Transfer the global-state binding authority.
+    pub fn transfer_global_binding_authority(
+        ctx: Context<UpdateGlobalRoot>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        let binding_info = ctx.accounts.global_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidBindingOwner
+        );
+        let mut data = binding_info.try_borrow_mut_data()?;
+        require!(
+            data.len() >= GLOBAL_STATE_BINDING_SIZE && data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
+            ErrorCode::MalformedBinding
+        );
+        let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
+        require!(
+            stored_authority == ctx.accounts.authority.key().to_bytes(),
+            ErrorCode::UnauthorizedTreeBinding
+        );
+        data[48..80].copy_from_slice(&new_authority.to_bytes());
+        msg!("GlobalStateBinding authority rotated to {}", new_authority);
         Ok(())
     }
 }
@@ -351,7 +483,7 @@ pub mod schema_registry {
 pub struct RegisterSchema<'info> {
     #[account(
         init, payer = authority,
-        space = 8 + 32 + 64 + 1 + 64 + 256 + 32 + 1 + 8 + 8,
+        space = 8 + SCHEMA_ACCOUNT_SPACE,
         seeds = [b"schema", name.as_bytes(), &[version]],
         bump
     )]
@@ -372,6 +504,7 @@ pub struct DeprecateSchema<'info> {
 pub struct IncrementUsage<'info> {
     #[account(mut)]
     pub schema_account: Account<'info, SchemaAccount>,
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -463,4 +596,10 @@ pub enum ErrorCode {
     InvalidStatus,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("Caller is not the schema authority")]
+    UnauthorizedSchemaAuthority,
+    #[msg("New root slot must strictly exceed previous last_updated_slot")]
+    RootSlotNotMonotonic,
+    #[msg("Schema name, category, or field name exceeds permitted length")]
+    MetadataTooLong,
 }

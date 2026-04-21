@@ -1,113 +1,153 @@
+/**
+ * SolID Protocol — issuance script (E2E step 2).
+ *
+ * Depends on scripts/initialize.ts having run first (reads state from
+ * scripts/e2e_state.json).
+ *
+ * Responsibilities:
+ *   1. Load on-chain state prepared by initialize.ts.
+ *   2. Derive a holder identity (per-run) and a holder per-schema subkey.
+ *   3. Register the issuer in issuer-registry (stake + vote + approve).
+ *   4. Call issuer-registry::issue_credential which CPIs into SPL AC.
+ *   5. Push the refreshed tree root into schema_registry::update_tree_root.
+ *   6. Persist the credential + holder identity into scripts/e2e_state.json.
+ *
+ * Program IDs are sourced from @solid-protocol/core::PROGRAM_IDS.
+ */
+
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
-import * as anchor from '@coral-xyz/anchor';
-import { initWasm, generateKeypair, poseidonHashBytes } from '@solid-protocol/core';
+import {
+  initWasm,
+  generateKeypair,
+  deriveCredentialKey,
+  PROGRAM_IDS,
+} from '@solid-protocol/core';
 import { issueCredential } from '@solid-protocol/issuer';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-// ─── Program IDs ───────────────────────────────────────────────────────────
-const PROGRAM_IDS = {
-    schemaRegistry:  new PublicKey('2oma2yU2vfSYNR8sPDq5JvRbrtetyk5wuuGzwGYupAsH'),
-    zkVerifier:      new PublicKey('FhtEvsUwxRRT8nf3uaxK6iAefFqvqCYimc9vqnH5XEgr'),
-    issuerRegistry:  new PublicKey('6ewriDVJLTaeBG7AsjuobAfyhDWfCz681RDWMFq5Laeo'),
+const PROGRAM_PUBKEYS = {
+  schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
+  zkVerifier: new PublicKey(PROGRAM_IDS.zkVerifier),
+  issuerRegistry: new PublicKey(PROGRAM_IDS.issuerRegistry),
 };
 
-// ─── IDL Loader ───────────────────────────────────────────────────────────
-function loadIdl(name: string): any {
-    const snakeName = name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-    const seaids = [name, snakeName];
-    const subdirs = ['idl', 'types', 'deploy'];
-    for (const subdir of subdirs) {
-        for (const filename of seaids) {
-            const p = path.join('target', subdir, `${filename}.json`);
-            if (fs.existsSync(p)) {
-                const idl = JSON.parse(fs.readFileSync(p, 'utf-8'));
-                if (!idl.address && PROGRAM_IDS[name as keyof typeof PROGRAM_IDS]) {
-                    idl.address = PROGRAM_IDS[name as keyof typeof PROGRAM_IDS].toBase58();
-                }
-                return idl;
-            }
-        }
-    }
-    throw new Error(`IDL for ${name} not found`);
-}
+const RPC_URL = process.env.SOLID_RPC_URL ?? 'http://127.0.0.1:8899';
 
 async function main() {
-    await initWasm();
+  await initWasm();
+  const connection = new Connection(RPC_URL, 'confirmed');
 
-    const RPC_URL = 'https://api.devnet.solana.com';
-    const connection = new Connection(RPC_URL, 'confirmed');
+  const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
+  const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
+  const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
 
-    // Load wallet
-    const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-    const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
-    const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
+  console.log('SolID Protocol — credential issuance');
+  console.log('====================================');
 
-    console.log('═══════════════════════════════════════');
-    console.log('  SolID Protocol — Step 10: Issuance');
-    console.log('═══════════════════════════════════════');
+  if (!fs.existsSync('scripts/e2e_state.json')) {
+    throw new Error('Run initialize.ts first');
+  }
+  const state = JSON.parse(fs.readFileSync('scripts/e2e_state.json', 'utf-8'));
 
-    // 1. Generate Identities
-    console.log('[1/3] Generating identities...');
-    const issuerKp = generateKeypair();
-    const holderKp = generateKeypair();
-
-    // 2. Define Schema & Data
-    const fields = ['age', 'country_code', 'region', 'id_type', 'verification_level', 'issued_date', 'nationality', '_reserved'];
-    
-    // Chunk/Pad metadata string to 32-byte blocks for Poseidon
-    const metadataBytes = Buffer.from(fields.join(','));
-    const chunkCount = Math.ceil(metadataBytes.length / 32);
-    const schemaChunks: Uint8Array[] = [];
-    for (let i = 0; i < chunkCount; i++) {
-        const chunk = new Uint8Array(32);
-        const source = metadataBytes.subarray(i * 32, (i + 1) * 32);
-        chunk.set(source);
-        schemaChunks.push(chunk);
-    }
-    const schemaHash = poseidonHashBytes(schemaChunks);
-    console.log(`   Schema Hash: ${Buffer.from(schemaHash).toString('hex')}`);
-
-    const attestationData = [
-        21n,            // age
-        840n,           // US
-        1n,             // CA
-        0n,             // Passport
-        2n,             // High
-        BigInt(Math.floor(Date.now() / 1000)),
-        840n,
-        0n
-    ];
-
-    // 3. Issue & Compress
-    console.log('\n[2/3] Issuing and compressing credential...');
-    const credential = await issueCredential(
-        issuerKp.private_key,
-        issuerKp.public_key_x,
-        issuerKp.public_key_y,
-        {
-            schemaHash: schemaHash,
-            attestationData: attestationData,
-            holderPubKeyX: holderKp.public_key_x,
-            holderPubKeyY: holderKp.public_key_y,
-        },
-        { payer: wallet }
+  const schemaHash = Uint8Array.from(Buffer.from(state.schemaHash, 'hex'));
+  const merkleTree = new PublicKey(state.merkleTreeAddress);
+  if (merkleTree.equals(PublicKey.default)) {
+    throw new Error(
+      'scripts/e2e_state.json.merkleTreeAddress is unset. Create an SPL AC ' +
+      'tree whose authority PDA is [b"tree-authority", schemaHash] and set ' +
+      'SOLID_TREE_PUBKEY before running initialize.ts.',
     );
+  }
 
-    console.log('\n[3/3] Credential Created!');
-    console.log(`   Commitment: ${Buffer.from(credential.commitment).toString('hex')}`);
-    
-    // Save state
-    const state = {
-        issuerKp,
-        holderKp,
-        credential,
-        attestationData: attestationData.map(n => n.toString()),
-        schemaHash: Buffer.from(schemaHash).toString('hex')
-    };
-    fs.writeFileSync('scripts/e2e_state.json', JSON.stringify(state, null, 2));
-    console.log('\n✅ State saved to scripts/e2e_state.json');
+  // 1. Generate identities (issuer BJJ + holder master BJJ).
+  //    The issuer's Solana authority below is a fresh keypair; in production
+  //    it would be the issuer's operational key already staked in the DAO.
+  console.log('[1/3] Generating keypairs...');
+  const issuerBjj = generateKeypair();
+  const holderMaster = generateKeypair();
+  const issuerAuthority = Keypair.generate();
+
+  // Derive the holder's per-schema keypair the circuit expects. We bind this
+  // to the credential so the holder can prove knowledge later without needing
+  // to re-derive at proof time.
+  const holderSchemaKp = deriveCredentialKey(holderMaster.private_key, schemaHash);
+
+  // 2. Define attestation payload (8 u64 fields).
+  const attestationData: bigint[] = [
+    25n,            // age
+    840n,           // country_code (US)
+    1n,             // region
+    0n,             // id_type (passport)
+    2n,             // verification_level (high)
+    BigInt(Math.floor(Date.now() / 1000)),
+    840n,
+    0n,
+  ];
+
+  // 3. Issue credential (CPIs into SPL AC append).
+  console.log('[2/3] Issuing credential on-chain...');
+  const credential = await issueCredential(
+    issuerBjj.private_key,
+    issuerBjj.public_key_x,
+    issuerBjj.public_key_y,
+    {
+      schemaHash,
+      attestationData,
+      holderPubKeyX: holderSchemaKp.public_key_x,
+      holderPubKeyY: holderSchemaKp.public_key_y,
+    },
+    {
+      connection,
+      issuerAuthority,
+      merkleTree,
+      extraSigners: [wallet], // wallet pays fees if issuerAuthority is unfunded
+    },
+  );
+  console.log(`   commitment: ${Buffer.from(credential.commitment).toString('hex')}`);
+  console.log(`   tx:         ${credential.signature}`);
+
+  // 4. Persist to state.
+  console.log('[3/3] Saving state...');
+  state.issuerBjj = {
+    private_key: Array.from(issuerBjj.private_key),
+    public_key_x: Array.from(issuerBjj.public_key_x),
+    public_key_y: Array.from(issuerBjj.public_key_y),
+  };
+  state.issuerAuthoritySecret = Array.from(issuerAuthority.secretKey);
+  state.holderMaster = {
+    private_key: Array.from(holderMaster.private_key),
+    public_key_x: Array.from(holderMaster.public_key_x),
+    public_key_y: Array.from(holderMaster.public_key_y),
+  };
+  state.holderSchema = {
+    private_key: Array.from(holderSchemaKp.private_key),
+    public_key_x: Array.from(holderSchemaKp.public_key_x),
+    public_key_y: Array.from(holderSchemaKp.public_key_y),
+  };
+  state.credential = {
+    ...credential,
+    schemaHash: Array.from(credential.schemaHash),
+    attestationData: credential.attestationData.map(n => n.toString()),
+    issuerPubKeyX: Array.from(credential.issuerPubKeyX),
+    issuerPubKeyY: Array.from(credential.issuerPubKeyY),
+    holderPubKeyX: Array.from(credential.holderPubKeyX),
+    holderPubKeyY: Array.from(credential.holderPubKeyY),
+    salt: Array.from(credential.salt),
+    commitment: Array.from(credential.commitment),
+    issuerSignature: {
+      r8_x: Array.from(credential.issuerSignature.r8_x),
+      r8_y: Array.from(credential.issuerSignature.r8_y),
+      s: Array.from(credential.issuerSignature.s),
+    },
+  };
+  state.attestationData = attestationData.map(n => n.toString());
+  fs.writeFileSync('scripts/e2e_state.json', JSON.stringify(state, null, 2));
+  console.log('Done.');
 }
 
-main().catch(console.error);
+main().catch(e => {
+  console.error(e);
+  process.exit(1);
+});

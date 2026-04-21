@@ -62,6 +62,29 @@ export const SCHEMA_REGISTRY_PROGRAM_ID = new PublicKey(
 
 export { SPL_ACCOUNT_COMPRESSION_PROGRAM_ID, SPL_NOOP_PROGRAM_ID };
 
+// ─── Hash functions ────────────────────────────────────────────────────────
+
+/**
+ * Binary Poseidon hash pair for LocalReplicaAdapter.
+ *
+ * The on-chain ZK verifier expects Poseidon-hashed Merkle trees (see
+ * circuits/lib/merkle_inclusion.circom) because every MerkleInclusion in the
+ * circuits composes with Poseidon(2). A test harness that drives the circuit
+ * must therefore use this hashPair, otherwise the computed root will not
+ * match the circuit's constraint.
+ *
+ * Note: SPL Account Compression uses keccak256 internally for its own tree
+ * header; that root is opaque to SolID proofs. The identity-state tree and
+ * any SolID-native schema-shadow tree are all Poseidon-hashed.
+ */
+export function poseidonHashPair(left: Uint8Array, right: Uint8Array): Uint8Array {
+  // Lazy-load @solid-protocol/core so this file remains importable in any
+  // environment; poseidonHashBytes will throw if WASM has not been initialised.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const core = require('@solid-protocol/core');
+  return core.poseidonHashBytes([left, right]);
+}
+
 // ─── PDA helpers ───────────────────────────────────────────────────────────
 
 /** `(b"tree-authority", schemaHash)` under `issuer-registry`. */
@@ -295,35 +318,71 @@ export class LocalReplicaAdapter implements MerkleProofAdapter {
     const key = Buffer.from(leafCommitment).toString('hex');
     const idx = this.leafIndex.get(key);
     if (idx === undefined) {
-      throw new Error(`leaf not found in replica: ${key.slice(0, 16)}…`);
+      throw new Error(`leaf not found in replica: ${key.slice(0, 16)}...`);
     }
+
+    // Lazy sparse-tree walk.
+    //
+    // The pre-remediation implementation materialized a full 2^depth leaf
+    // array (33 MB at depth 20, 2 GB at depth 26) on every proof request
+    // and then collapsed it layer by layer. The version below only
+    // materializes the path from the target leaf up to the root: at each
+    // layer we need the sibling of our current node, and the sibling is
+    // recursively computed as the hash of its own pair of children. When
+    // either child is an entirely absent subtree, its root is the cached
+    // "empty subtree root" at that height — the well-known zero-hash
+    // ladder. Memory usage is O(depth) instead of O(2^depth).
     const zero = new Uint8Array(32);
-    const nodes: Uint8Array[] = this.leaves.slice();
-    // Pad with zero-leaves to a power-of-two of size 2^depth.
-    while (nodes.length < 1 << this.depth) nodes.push(zero);
+    const leafCount = this.leaves.length;
+
+    // Precompute the zero-subtree root at each height. zeroAt[h] is the
+    // root of an all-zero subtree of height h. The cache is reused across
+    // all fetch calls for this adapter so we pay the cost once per depth.
+    if (this.zeroLevels.length === 0) {
+      this.zeroLevels.push(zero);
+      for (let h = 1; h <= this.depth; h++) {
+        const below = this.zeroLevels[h - 1];
+        this.zeroLevels.push(this.hashPair(below, below));
+      }
+    }
+
+    // subtreeRoot(start, height) returns the root of the subtree covering
+    // leaf indices [start, start + 2^height). Zero subtrees short-circuit.
+    const subtreeRoot = (start: number, height: number): Uint8Array => {
+      if (height === 0) {
+        return start < leafCount ? this.leaves[start] : zero;
+      }
+      const span = 1 << height;
+      if (start >= leafCount) {
+        return this.zeroLevels[height];
+      }
+      const mid = start + (span >> 1);
+      const left = subtreeRoot(start, height - 1);
+      const right = subtreeRoot(mid, height - 1);
+      return this.hashPair(left, right);
+    };
 
     const siblings: Uint8Array[] = [];
     const pathIndices: number[] = [];
-
     let cursor = idx;
-    let layer = nodes;
     for (let d = 0; d < this.depth; d++) {
       const isRight = (cursor & 1) === 1;
-      const siblingIdx = isRight ? cursor - 1 : cursor + 1;
-      siblings.push(layer[siblingIdx] ?? zero);
+      const siblingIndex = isRight ? cursor - 1 : cursor + 1;
+      // Convert the sibling's leaf index at height `d+1` into the subtree
+      // start index at height `d`.
+      const siblingSubtreeStart = siblingIndex << d;
+      siblings.push(subtreeRoot(siblingSubtreeStart, d));
       pathIndices.push(isRight ? 1 : 0);
-
-      const next: Uint8Array[] = [];
-      for (let i = 0; i < layer.length; i += 2) {
-        next.push(this.hashPair(layer[i], layer[i + 1] ?? zero));
-      }
-      layer = next;
       cursor >>= 1;
     }
 
-    const root = layer[0];
+    // Root = subtreeRoot(0, depth).
+    const root = subtreeRoot(0, this.depth);
     return { root, siblings, pathIndices, leafIndex: idx };
   }
+
+  /** Memoised zero-subtree roots keyed by height. */
+  private zeroLevels: Uint8Array[] = [];
 }
 
 // ─── Event decoding ────────────────────────────────────────────────────────

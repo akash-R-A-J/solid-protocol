@@ -1,5 +1,8 @@
 # SolID Protocol — Final Comprehensive Audit (2026-04-19)
 
+NOTICE: this document is historical. It was written before the 2026-04 remediation landed. Many of its findings have been fixed in v0.3. Use docs/POST_REMEDIATION_AUDIT.md for the current state. Read this file only as a historical record of what was broken.
+
+
 > **HISTORICAL SNAPSHOT (2026-04-19).** Preserved verbatim as audit
 > record. The R-series residual blockers flagged below have since been
 > closed in v0.2 (2026-04-20) — most notably the SPL Account Compression

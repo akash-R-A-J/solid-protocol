@@ -17,6 +17,7 @@
 use anchor_lang::prelude::*;
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solid_light::cpi_helpers;
+use solid_light::cpi_helpers::SCHEMA_REGISTRY_ID;
 
 declare_id!("BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2");
 
@@ -64,11 +65,20 @@ pub mod zk_verifier {
         config.vk_initialized = false;
         config.bump = ctx.bumps.verifier_config;
         config.paused = false;
+        config.next_vk_chunk = 0;
         msg!("SolID ZK Verifier initialized. Authority: {}", config.authority);
         Ok(())
     }
 
-    /// Store the verification key in chunks (may require multiple calls for large VKs).
+    /// Store the verification key in chunks.
+    ///
+    /// Two invariants the old implementation missed:
+    ///   1. Chunks must arrive in order (`chunk_index == config.next_vk_chunk`).
+    ///      Without this a confused operator could scramble the VK and the
+    ///      parser would silently accept a corrupt key.
+    ///   2. The cumulative VK size is capped at the allocated 10_240 bytes.
+    ///      Without the cap the Vec's realloc would fail at serialize-time
+    ///      with an opaque error on the final chunk.
     pub fn store_verification_key(
         ctx: Context<StoreVerificationKey>,
         chunk_index: u16,
@@ -82,18 +92,38 @@ pub mod zk_verifier {
             config.authority == ctx.accounts.authority.key(),
             ErrorCode::Unauthorized
         );
+        require!(
+            chunk_index == config.next_vk_chunk,
+            ErrorCode::ChunkOutOfOrder
+        );
+
+        const VK_MAX_BYTES: usize = 10_240;
+        let incoming_len = chunk_data.len();
 
         if chunk_index == 0 {
+            require!(incoming_len <= VK_MAX_BYTES, ErrorCode::VkStorageFull);
             vk_storage.data = chunk_data;
         } else {
+            let new_total = vk_storage
+                .data
+                .len()
+                .checked_add(incoming_len)
+                .ok_or(ErrorCode::Overflow)?;
+            require!(new_total <= VK_MAX_BYTES, ErrorCode::VkStorageFull);
             vk_storage.data.extend_from_slice(&chunk_data);
         }
+
+        config.next_vk_chunk = config
+            .next_vk_chunk
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
 
         if is_final_chunk {
             config.vk_initialized = true;
             msg!(
-                "Verification key stored: {} bytes total",
-                vk_storage.data.len()
+                "Verification key stored: {} bytes total across {} chunks",
+                vk_storage.data.len(),
+                config.next_vk_chunk
             );
         }
         Ok(())
@@ -148,6 +178,18 @@ pub mod zk_verifier {
         );
 
         // (3) Global-root verification.
+        //
+        // The `global_tree` account is the `GlobalStateBinding` PDA owned by
+        // `schema-registry`. Without the owner check below an attacker can
+        // pass a system-owned account with a forged `globroot` discriminator
+        // and any root bytes: the parse-level verify_state_root_matches would
+        // succeed against fabricated data and the whole ZK path becomes
+        // bypassable.
+        require_keys_eq!(
+            *ctx.accounts.global_tree.owner,
+            SCHEMA_REGISTRY_ID,
+            ErrorCode::InvalidGlobalRoot
+        );
         let global_root = public_inputs[1];
         let tree_account_data = ctx.accounts.global_tree.try_borrow_data()?;
         require!(
@@ -183,12 +225,21 @@ pub mod zk_verifier {
             // (4b) Registered tree lookup via schema-registry PDA.
             // The caller must pass 4 `schema_tree_info[i]` accounts, one per
             // active slot (zero slots allow the default `Pubkey::default()`).
+            //
+            // The owner check here is load-bearing for the same reason as the
+            // global_tree check above: without it, a crafted system-owned
+            // account carrying a `schmtree` discriminator would be accepted.
             let tree_info = match i {
                 0 => &ctx.accounts.schema_tree_0,
                 1 => &ctx.accounts.schema_tree_1,
                 2 => &ctx.accounts.schema_tree_2,
                 _ => &ctx.accounts.schema_tree_3,
             };
+            require_keys_eq!(
+                *tree_info.owner,
+                SCHEMA_REGISTRY_ID,
+                ErrorCode::InvalidSchemaRootBinding
+            );
             let data = tree_info.try_borrow_data()?;
             require!(
                 cpi_helpers::verify_schema_root_binding(&data, &merkle_root, &schema_hash),
@@ -482,10 +533,16 @@ pub struct VerifierConfig {
     pub vk_initialized: bool,
     pub paused: bool,
     pub bump: u8,
+    /// Index of the next chunk expected by `store_verification_key`.
+    /// Reset to zero only through a redeploy; once the VK is finalized this
+    /// serves as an audit trail of how many chunks were stitched together.
+    pub next_vk_chunk: u16,
 }
 
 impl VerifierConfig {
-    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1;
+    // 32 authority + 8 proof_count + 1 vk_initialized + 1 paused + 1 bump
+    // + 2 next_vk_chunk.
+    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1 + 2;
 }
 
 #[account]
@@ -528,6 +585,12 @@ pub enum ErrorCode {
     InvalidCredentialOrder,
     #[msg("Verifier is paused")]
     Paused,
+    #[msg("VK chunk arrived out of order (expected next_vk_chunk)")]
+    ChunkOutOfOrder,
+    #[msg("VK storage capacity exceeded (10240 bytes)")]
+    VkStorageFull,
+    #[msg("Arithmetic overflow")]
+    Overflow,
 }
 
 // ─── Unit tests ────────────────────────────────────────────────────────────

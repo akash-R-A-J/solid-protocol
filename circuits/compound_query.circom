@@ -16,9 +16,9 @@ include "lib/nullifier_expiry.circom";
 ///
 /// Standardized on the 5-way Hardened Nullifier and Query Context Binding.
 ///
-template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
+template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
 
-    // ─── Public Inputs ────────────────────────────────────────────────
+    // --- Public Inputs ------------------------------------------------
     signal input globalRoot;
     signal input merkleRoot;
     signal input schemaHash;
@@ -28,17 +28,17 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     signal input queryOperators[MAX_PREDICATES];
     signal input queryValues[MAX_PREDICATES];
     signal input numPredicates;
-    signal input compoundLogic; // 0 = AND, 1 = OR
+    signal input compoundLogic;
     signal input verifierAddress;
     signal input verifierNonce;
     signal input currentTimestamp;
 
-    // ─── Private Inputs ───────────────────────────────────────────────
+    // --- Private Inputs -----------------------------------------------
     signal input masterIdentityKey;
     signal input revocationNonce;
-    signal input globalSiblings[20];
-    signal input globalPathIndices[20];
-    
+    signal input globalSiblings[GLOBAL_DEPTH];
+    signal input globalPathIndices[GLOBAL_DEPTH];
+
     signal input attestationData[NUM_FIELDS];
     signal input salt;
     signal input issuerSigR8x;
@@ -49,18 +49,36 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     signal input expirationTimestamp;
     signal input holderBJJPrivKey;
 
-    // ─── Public Output ────────────────────────────────────────────────
+    // --- Public Output ------------------------------------------------
     signal output nullifierHash;
 
-    // ═════════════════════════════════════════════════════════════════
+    // --- Input Range Checks -------------------------------------------
+    // Bound numPredicates and compoundLogic exactly as in the batch circuit.
+    // A single-credential proof still needs these because the predicate
+    // evaluation loop and the AND/OR mux share the same underspecification.
+    component numPredsCheck = LessEqThan(8);
+    numPredsCheck.in[0] <== numPredicates;
+    numPredsCheck.in[1] <== MAX_PREDICATES;
+    numPredsCheck.out === 1;
+
+    compoundLogic * (compoundLogic - 1) === 0;
+
+    // Schema must be non-zero. The batch circuit tolerates zero-schema
+    // padding because it is multi-credential; compound_query is single-credential
+    // and a zero schema here would mean there is nothing to prove.
+    component schemaIsZero = IsZero();
+    schemaIsZero.in <== schemaHash;
+    schemaIsZero.out === 0;
+
+    // ================================================================
     // STEP 0: Identity Binding (Bind PrivKey to PubKey)
-    // ═════════════════════════════════════════════════════════════════
-    component anchor = IdentityAnchor(20);
+    // ================================================================
+    component anchor = IdentityAnchor(GLOBAL_DEPTH);
     anchor.masterIdentityKey <== masterIdentityKey;
     anchor.revocationNonce <== revocationNonce;
     anchor.schemaHash <== schemaHash;
     anchor.globalRoot <== globalRoot;
-    for (var i = 0; i < 20; i++) {
+    for (var i = 0; i < GLOBAL_DEPTH; i++) {
         anchor.globalSiblings[i] <== globalSiblings[i];
         anchor.globalPathIndices[i] <== globalPathIndices[i];
     }
@@ -139,11 +157,9 @@ template CompoundQuerySolana(TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
     orCheck.in[1] <== 0;
     signal orResult <== orCheck.out;
 
-    component logicIsOr = IsEqual();
-    logicIsOr.in[0] <== compoundLogic;
-    logicIsOr.in[1] <== 1;
-
-    signal finalResult <== (1 - logicIsOr.out) * andResult + logicIsOr.out * orResult;
+    // compoundLogic is already constrained to {0, 1} above, so we can use it
+    // directly as the selector here.
+    signal finalResult <== (1 - compoundLogic) * andResult + compoundLogic * orResult;
     finalResult === 1;
 
     // ═════════════════════════════════════════════════════════════════
@@ -199,4 +215,4 @@ component main {public [
     verifierAddress,
     verifierNonce,
     currentTimestamp
-]} = CompoundQuerySolana(20, 8, 4);
+]} = CompoundQuerySolana(20, 20, 8, 4);
