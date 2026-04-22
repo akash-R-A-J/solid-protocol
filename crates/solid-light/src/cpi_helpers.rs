@@ -58,6 +58,54 @@ const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
     155, 9, 46, 66, 147, 25, 1, 94,
 ];
 
+// ─── Program-ID consistency tests (SOLID-SEC-032) ──────────────────────────
+//
+// The owner-check that anchors the whole trust model of zk-verifier
+// (`ADR-0010`) compares `account.owner` to `SCHEMA_REGISTRY_ID`, which is
+// built from `SCHEMA_REGISTRY_ID_BYTES` above. If the byte array ever
+// drifts from the base58 literal in `SCHEMA_REGISTRY_PROGRAM_ID` (e.g.,
+// someone updates the literal but forgets to re-transcribe the bytes, or
+// redeploys to a new ID but updates only `Anchor.toml`), the owner-check
+// silently starts accepting nothing OR accepting the wrong program, and
+// the forged-trust-root attack surface reopens with zero test-failure
+// signal. These tests are the local gate. `scripts/check_program_ids.py`
+// is the repository-wide gate that cross-validates the literal against
+// `Anchor.toml` and `declare_id!`.
+
+#[cfg(test)]
+mod id_bytes_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    /// SOLID-SEC-032: byte array must equal the base58-decoded string
+    /// literal in the same file.
+    #[test]
+    fn schema_registry_id_bytes_matches_program_id_literal() {
+        let decoded = Pubkey::from_str(SCHEMA_REGISTRY_PROGRAM_ID)
+            .expect("SCHEMA_REGISTRY_PROGRAM_ID must be a valid base58 pubkey");
+        assert_eq!(
+            decoded.to_bytes(),
+            SCHEMA_REGISTRY_ID_BYTES,
+            "SCHEMA_REGISTRY_ID_BYTES drifted from SCHEMA_REGISTRY_PROGRAM_ID. \
+             Re-derive bytes from the base58 literal via \
+             `Pubkey::from_str(SCHEMA_REGISTRY_PROGRAM_ID).to_bytes()`."
+        );
+    }
+
+    /// SOLID-SEC-032: the typed `Pubkey` built from the array must equal
+    /// the `Pubkey` decoded from the string literal.
+    #[test]
+    fn schema_registry_id_typed_matches_program_id_literal() {
+        let decoded = Pubkey::from_str(SCHEMA_REGISTRY_PROGRAM_ID)
+            .expect("SCHEMA_REGISTRY_PROGRAM_ID must be a valid base58 pubkey");
+        assert_eq!(
+            SCHEMA_REGISTRY_ID, decoded,
+            "SCHEMA_REGISTRY_ID (typed Pubkey) diverged from \
+             SCHEMA_REGISTRY_PROGRAM_ID (base58 literal)."
+        );
+    }
+}
+
 // ─── Account-data builders (off-chain use) ─────────────────────────────────
 
 /// Build the Borsh-encoded bytes for a new `CompressedCredential` leaf.

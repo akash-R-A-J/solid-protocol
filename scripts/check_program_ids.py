@@ -33,6 +33,15 @@ DECLARE_ID_PATHS: Dict[str, pathlib.Path] = {
     "schema_registry": ROOT / "programs/schema-registry/src/lib.rs",
 }
 
+# SOLID-SEC-032: the zk-verifier program owner-checks tree PDAs against a
+# hardcoded SCHEMA_REGISTRY_ID_BYTES constant in solid-light/src/cpi_helpers.rs.
+# A drift between that constant and the schema_registry program ID in
+# Anchor.toml silently re-opens the forged-trust-root attack (ADR-0010).
+# We validate the base58 string literal here. The companion Rust tests in
+# `crates/solid-light/src/cpi_helpers.rs` (id_bytes_tests) validate the
+# byte array against the string.
+CPI_HELPERS_PATH: pathlib.Path = ROOT / "crates/solid-light/src/cpi_helpers.rs"
+
 
 def read_anchor_toml() -> Dict[str, Dict[str, str]]:
     """Return {cluster: {program_name: pubkey}} from `[programs.<cluster>]`."""
@@ -71,6 +80,23 @@ def read_declare_ids() -> Dict[str, str]:
         else:
             sys.exit(f"[fatal] no declare_id! in {path}")
     return out
+
+
+def read_cpi_helpers_schema_registry_literal() -> str | None:
+    """Return the base58 SCHEMA_REGISTRY_PROGRAM_ID literal from cpi_helpers.rs.
+
+    None if the file is missing; empty string if the constant is not present
+    in a recognized form (caller treats either as a failure).
+    """
+    if not CPI_HELPERS_PATH.exists():
+        return None
+    text = CPI_HELPERS_PATH.read_text()
+    # Match: pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = "DPk6…";
+    m = re.search(
+        r'pub\s+const\s+SCHEMA_REGISTRY_PROGRAM_ID\s*:\s*&str\s*=\s*"([^"]+)"\s*;',
+        text,
+    )
+    return m.group(1) if m else ""
 
 
 def read_deployments() -> Dict[str, Dict[str, str]]:
@@ -119,6 +145,37 @@ def main() -> int:
                     f"declare_id!() in {DECLARE_ID_PATHS[program].relative_to(ROOT)} "
                     f"= {declared[program]!r} but Anchor.toml says {sorted(seen)!r}"
                 )
+
+    # (1b) SOLID-SEC-032: the hardcoded SCHEMA_REGISTRY_PROGRAM_ID literal in
+    # solid-light/src/cpi_helpers.rs must agree with the schema_registry ID
+    # in Anchor.toml. If this drifts, the on-chain owner-check against
+    # SCHEMA_REGISTRY_ID (ADR-0010) silently breaks.
+    cpi_literal = read_cpi_helpers_schema_registry_literal()
+    if cpi_literal is None:
+        failures.append(
+            f"missing {CPI_HELPERS_PATH.relative_to(ROOT)} -- "
+            "cannot validate SCHEMA_REGISTRY_PROGRAM_ID literal"
+        )
+    elif cpi_literal == "":
+        failures.append(
+            f"{CPI_HELPERS_PATH.relative_to(ROOT)} does not define "
+            "`pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = \"...\";` -- "
+            "required by SOLID-SEC-032"
+        )
+    else:
+        schema_anchor_ids: set[str] = set()
+        for cluster, prog_map in anchor.items():
+            if "schema_registry" in prog_map:
+                schema_anchor_ids.add(prog_map["schema_registry"])
+        if schema_anchor_ids and cpi_literal not in schema_anchor_ids:
+            failures.append(
+                f"{CPI_HELPERS_PATH.relative_to(ROOT)} "
+                f"SCHEMA_REGISTRY_PROGRAM_ID = {cpi_literal!r} "
+                f"but Anchor.toml says {sorted(schema_anchor_ids)!r} -- "
+                "re-derive the base58 string and the SCHEMA_REGISTRY_ID_BYTES "
+                "array together (Rust tests in cpi_helpers.rs::id_bytes_tests "
+                "gate the byte array)"
+            )
 
     # (2) Every deployment manifest must agree with Anchor.toml for its cluster.
     for cluster, prog_map in deployments.items():

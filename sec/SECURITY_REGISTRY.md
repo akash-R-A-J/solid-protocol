@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 2    | 0           | 1     | 0        | 0         | 3     |
-| HIGH      | 9    | 0           | 3     | 0        | 0         | 12    |
+| HIGH      | 8    | 0           | 4     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 30   | 0           | 8     | 0        | 0         | 38    |
+| **Total** | 29   | 0           | 9     | 0        | 0         | 38    |
 
 ---
 
@@ -71,7 +71,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
 | SOLID-SEC-030   | MEDIUM   | Fixed  | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
 | SOLID-SEC-031   | HIGH     | Fixed  | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
-| SOLID-SEC-032   | HIGH     | Open   | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
+| SOLID-SEC-032   | HIGH     | Fixed  | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
 | SOLID-SEC-033   | HIGH     | Fixed  | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
 | SOLID-SEC-034   | MEDIUM   | Open   | `SubmitFraudProof` / `SlashIssuer` contexts missing PDA seed constraint on `issuer_account` |
 | SOLID-SEC-035   | LOW      | Open   | `set_binding_status` can unfreeze without timelock                 |
@@ -598,18 +598,32 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-032 -- `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time check
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22 (master-audit NEW-SEC-02; renumbered
   from 029)
-- **Evidence:** `crates/solid-light/src/cpi_helpers.rs:54-59`
-- **Description.** Hand-decoded base58 pubkey stored as a 32-byte
-  constant. The P0-2 owner-check on `global_tree` / `schema_tree_N`
-  depends on this constant. `scripts/check_program_ids.py` does
-  NOT validate it. Future redeploy that updates `Anchor.toml` but
-  not this constant silently reopens the forged-trust-root attack.
-- **Remediation.** Rust `#[test]` decoding base58 from build-time
-  constant; extend `check_program_ids.py`.
-- **Regression gate.** `schema_registry_id_bytes_matches_anchor_toml`.
+- **Fixed:** 2026-04-23 (Phase 1)
+- **Evidence:** `crates/solid-light/src/cpi_helpers.rs`
+  (id_bytes_tests module); `scripts/check_program_ids.py`
+  (CPI_HELPERS_PATH check section).
+- **Remediation landed.** Two-layer defense:
+  1. Rust host-side unit tests in `cpi_helpers::id_bytes_tests`
+     decode `SCHEMA_REGISTRY_PROGRAM_ID` via
+     `Pubkey::from_str` and assert byte equality with
+     `SCHEMA_REGISTRY_ID_BYTES` (and with the typed
+     `SCHEMA_REGISTRY_ID` `Pubkey`). Any drift between the base58
+     literal and the byte array fails `cargo test -p solid-light`.
+  2. `scripts/check_program_ids.py` reads the literal out of
+     cpi_helpers.rs via regex and validates it against the
+     `schema_registry` entry in `Anchor.toml`. Any drift between
+     the literal and Anchor.toml fails the CI gate. The Rust test
+     closes the byte-array loop; the Python check closes the
+     cross-file loop.
+- **Regression gates (in CI now).**
+  - `cargo test -p solid-light --lib` covers
+    `schema_registry_id_bytes_matches_program_id_literal` and
+    `schema_registry_id_typed_matches_program_id_literal`.
+  - `python3 scripts/check_program_ids.py` now fails on any
+    literal/Anchor.toml mismatch.
 
 ### SOLID-SEC-033 -- Identity cohesion catch-22 (E2E blocker)
 
