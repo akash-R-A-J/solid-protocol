@@ -1177,6 +1177,8 @@ pub enum ErrorCode {
     InvalidCompressionProgram,
     #[msg("Supplied log_wrapper account is not SPL Noop")]
     InvalidNoopProgram,
+    #[msg("Slash would drop stake_vault below the rent-exempt minimum (SOLID-SEC-030)")]
+    StakeVaultWouldGoBelow,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -1196,9 +1198,28 @@ fn transfer_slashed_lamports<'info>(
 ) -> Result<()> {
     let from_balance = **from.try_borrow_lamports()?;
     require!(from_balance >= amount, ErrorCode::InsufficientStake);
-    **from.try_borrow_mut_lamports()? = from_balance
+    let remaining = from_balance
         .checked_sub(amount)
         .ok_or(ErrorCode::Overflow)?;
+
+    // SOLID-SEC-030: the shared `stake_vault` PDA is a 0-byte lamport-only
+    // account. If a full slash drops its balance to zero (or below the
+    // rent-exempt minimum), the Solana runtime garbage-collects the PDA and
+    // every future `register_issuer` deposit fails with "account not found".
+    //
+    // Enforce the rent floor on the source account. This is safe for any
+    // data size: the runtime's rent-exempt minimum is a function of
+    // `data_len()` so we compute it per-call rather than hardcoding a
+    // lamport amount that would drift across epochs.
+    //
+    // `to` can only grow, so no rent check is needed on the receiver.
+    let min_rent = Rent::get()?.minimum_balance(from.data_len());
+    require!(
+        remaining >= min_rent,
+        ErrorCode::StakeVaultWouldGoBelow
+    );
+
+    **from.try_borrow_mut_lamports()? = remaining;
     let to_balance = **to.try_borrow_lamports()?;
     **to.try_borrow_mut_lamports()? = to_balance
         .checked_add(amount)

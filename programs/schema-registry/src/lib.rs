@@ -110,24 +110,22 @@ pub mod schema_registry {
             );
         }
 
-        // SEC-06: Verify schema_hash against metadata
-        let mut name_fields: Vec<u64> = Vec::new();
-        for chunk in name.as_bytes().chunks(8) {
-            let mut buf = [0u8; 8];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            name_fields.push(u64::from_le_bytes(buf));
-        }
-        let mut hash_inputs: Vec<u64> = name_fields;
-        hash_inputs.push(version as u64);
-        hash_inputs.push(field_names.len() as u64);
-        if hash_inputs.len() > 16 {
-            hash_inputs.truncate(16);
-        }
-
-        // We use light-poseidon for on-chain verification
-        // (Simplified for this task, in production we use the solid-core trait)
-        // let computed_hash = solve_poseidon(hash_inputs);
-        // require!(computed_hash == schema_hash, ErrorCode::InvalidSchemaHash);
+        // SEC-06 / SOLID-SEC-002: Verify schema_hash against metadata.
+        //
+        // Shared derivation with `solid_core::schema::SchemaDefinition::compute_hash`
+        // so the on-chain check cannot drift from the off-chain SDK. Any
+        // change to the preimage layout must land in BOTH places in the same
+        // PR (regression test: `solid_core::schema::tests::test_compute_schema_hash_parts_matches_definition`).
+        let computed_hash = solid_core::schema::compute_schema_hash_from_parts(
+            &name,
+            version,
+            field_names.len(),
+        )
+        .map_err(|_| error!(ErrorCode::PoseidonFailed))?;
+        require!(
+            computed_hash == schema_hash,
+            ErrorCode::InvalidSchemaHash
+        );
 
         let schema = &mut ctx.accounts.schema_account;
         schema.authority = ctx.accounts.authority.key();
@@ -602,4 +600,6 @@ pub enum ErrorCode {
     RootSlotNotMonotonic,
     #[msg("Schema name, category, or field name exceeds permitted length")]
     MetadataTooLong,
+    #[msg("On-chain Poseidon evaluation failed")]
+    PoseidonFailed,
 }

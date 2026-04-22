@@ -44,6 +44,17 @@ pub const MAX_IC: usize = NR_PUBLIC_INPUTS + 1;
 
 pub const NULLIFIER_SEED: &[u8] = b"null";
 
+/// SOLID-SEC-005: default clock skew tolerance for the `currentTimestamp`
+/// public input. 10 minutes. Chosen to absorb normal client-clock drift and
+/// inter-RPC delay without admitting a materially stale proof. Overridable
+/// per-config via `set_timestamp_skew`.
+pub const DEFAULT_TIMESTAMP_SKEW_SECONDS: u32 = 600;
+
+/// Hard cap on the configurable skew window. Anything larger than an hour
+/// is a governance decision that belongs behind a superseding ADR, not a
+/// single config call.
+pub const MAX_TIMESTAMP_SKEW_SECONDS: u32 = 3_600;
+
 // Compile-time assertion: the stack-owned VK buffer must fit comfortably
 // inside Solana's per-frame BPF stack budget (4 KB).
 //   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma) + 128 (delta)
@@ -66,7 +77,30 @@ pub mod zk_verifier {
         config.bump = ctx.bumps.verifier_config;
         config.paused = false;
         config.next_vk_chunk = 0;
+        // SOLID-SEC-005: default timestamp skew window is 10 minutes. The
+        // authority can tune this via `set_timestamp_skew` without a program
+        // upgrade. Stored as u32 seconds; practical range is 0..=3600.
+        config.timestamp_skew_seconds = DEFAULT_TIMESTAMP_SKEW_SECONDS;
         msg!("SolID ZK Verifier initialized. Authority: {}", config.authority);
+        Ok(())
+    }
+
+    /// Update the clock-skew tolerance window for `currentTimestamp` public
+    /// input (SOLID-SEC-005). Authority-only.
+    ///
+    /// The window caps at 1 hour. Longer windows defeat the freshness
+    /// guarantee without a compelling reason; if a use case needs one, add a
+    /// new ADR first (per `adr/README.md`).
+    pub fn set_timestamp_skew(
+        ctx: Context<AuthorityOnly>,
+        skew_seconds: u32,
+    ) -> Result<()> {
+        require!(
+            skew_seconds <= MAX_TIMESTAMP_SKEW_SECONDS,
+            ErrorCode::TimestampSkewTooLarge
+        );
+        ctx.accounts.verifier_config.timestamp_skew_seconds = skew_seconds;
+        msg!("Timestamp skew updated to {} seconds", skew_seconds);
         Ok(())
     }
 
@@ -175,6 +209,37 @@ pub mod zk_verifier {
         require!(
             verifier_address_input == ID.to_bytes(),
             ErrorCode::InvalidVerifierAddress
+        );
+
+        // (2b) SOLID-SEC-005: bind `currentTimestamp` public input to on-chain
+        // Clock. The circuit enforces `currentTimestamp <= expirationTimestamp`
+        // per credential, but without an on-chain freshness check a prover may
+        // pass `currentTimestamp = 0` and defeat every expiration gate.
+        //
+        // public_inputs[30] is a 32-byte LE encoding of a BN254 field element.
+        // Plausible unix timestamps fit in a u64, so bytes [8..32] MUST be
+        // zero; otherwise the caller has either (a) fed the circuit a
+        // pathological value or (b) packed the input with the wrong encoding
+        // (see SOLID-SEC-031 for the related SDK-side fix). Either way we
+        // reject.
+        let ts_bytes = public_inputs[30];
+        for i in 8..32 {
+            require!(ts_bytes[i] == 0, ErrorCode::StaleTimestamp);
+        }
+        let claimed_ts = u64::from_le_bytes(
+            ts_bytes[0..8]
+                .try_into()
+                .map_err(|_| ErrorCode::StaleTimestamp)?,
+        );
+        let now_i64 = Clock::get()?.unix_timestamp;
+        require!(now_i64 >= 0, ErrorCode::StaleTimestamp);
+        let now = now_i64 as u64;
+        let skew = config.timestamp_skew_seconds as u64;
+        let lower = now.saturating_sub(skew);
+        let upper = now.saturating_add(skew);
+        require!(
+            claimed_ts >= lower && claimed_ts <= upper,
+            ErrorCode::StaleTimestamp
         );
 
         // (3) Global-root verification.
@@ -537,12 +602,17 @@ pub struct VerifierConfig {
     /// Reset to zero only through a redeploy; once the VK is finalized this
     /// serves as an audit trail of how many chunks were stitched together.
     pub next_vk_chunk: u16,
+    /// SOLID-SEC-005: tolerance (seconds) between the `currentTimestamp`
+    /// public input and the on-chain Clock at `verify_batch_proof` time.
+    /// Default `DEFAULT_TIMESTAMP_SKEW_SECONDS`; configurable via
+    /// `set_timestamp_skew` up to `MAX_TIMESTAMP_SKEW_SECONDS`.
+    pub timestamp_skew_seconds: u32,
 }
 
 impl VerifierConfig {
     // 32 authority + 8 proof_count + 1 vk_initialized + 1 paused + 1 bump
-    // + 2 next_vk_chunk.
-    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1 + 2;
+    // + 2 next_vk_chunk + 4 timestamp_skew_seconds.
+    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1 + 2 + 4;
 }
 
 #[account]
@@ -591,6 +661,10 @@ pub enum ErrorCode {
     VkStorageFull,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("currentTimestamp public input is outside the configured skew window")]
+    StaleTimestamp,
+    #[msg("Timestamp skew value exceeds MAX_TIMESTAMP_SKEW_SECONDS (3600)")]
+    TimestampSkewTooLarge,
 }
 
 // ─── Unit tests ────────────────────────────────────────────────────────────

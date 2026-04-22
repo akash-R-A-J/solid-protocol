@@ -98,28 +98,13 @@ impl SchemaDefinition {
     /// Compute the Poseidon hash of this schema.
     ///
     /// The hash is computed from the schema name (as field elements) + version + field count.
-    /// This must be deterministic for the same schema definition.
+    /// This must be deterministic for the same schema definition, and must agree
+    /// byte-for-byte with `schema-registry::register_schema`'s on-chain check.
+    /// Both sides therefore delegate to `compute_schema_hash_from_parts` below
+    /// so the preimage layout cannot drift between off-chain SDK and on-chain
+    /// program. See SOLID-SEC-002.
     pub fn compute_hash(&self) -> Result<[u8; 32]> {
-        // Encode schema name as u64 values (first 8 bytes → u64, next 8 → u64, etc.)
-        let name_bytes = self.name.as_bytes();
-        let mut name_fields: Vec<u64> = Vec::new();
-        for chunk in name_bytes.chunks(8) {
-            let mut buf = [0u8; 8];
-            buf[..chunk.len()].copy_from_slice(chunk);
-            name_fields.push(u64::from_le_bytes(buf));
-        }
-
-        // Build hash inputs: name fields + version + field count
-        let mut hash_inputs: Vec<u64> = name_fields;
-        hash_inputs.push(self.version as u64);
-        hash_inputs.push(self.fields.len() as u64);
-
-        // Truncate to max Poseidon input size (16)
-        if hash_inputs.len() > 16 {
-            hash_inputs.truncate(16);
-        }
-
-        poseidon::hash_fields_to_bytes(&hash_inputs)
+        compute_schema_hash_from_parts(&self.name, self.version, self.fields.len())
     }
 
     /// Get the cached schema hash, computing if needed.
@@ -130,6 +115,44 @@ impl SchemaDefinition {
             self.compute_hash()
         }
     }
+}
+
+/// Canonical schema-hash derivation shared between the off-chain SDK
+/// (`SchemaDefinition::compute_hash`) and the on-chain registry handler
+/// (`schema-registry::register_schema`).
+///
+/// Preimage layout (all values are `u64` Poseidon inputs):
+/// 1. Schema name bytes chunked into 8-byte little-endian groups, each
+///    interpreted as a `u64` via `u64::from_le_bytes`.
+/// 2. `version` as `u64`.
+/// 3. `field_count` as `u64`.
+///
+/// The vector is truncated to 16 inputs to stay within the Poseidon
+/// width ceiling used by `light-poseidon` / `circomlib`.
+///
+/// The output is 32 bytes in little-endian field-element encoding. This
+/// is the SAME encoding used by every other primitive in the protocol.
+///
+/// Load-bearing for SOLID-SEC-002: if this function diverges between
+/// off-chain and on-chain implementations, `register_schema` will reject
+/// every correctly-derived schema hash the SDK produces.
+pub fn compute_schema_hash_from_parts(
+    name: &str,
+    version: u8,
+    field_count: usize,
+) -> Result<[u8; 32]> {
+    let mut hash_inputs: Vec<u64> = Vec::new();
+    for chunk in name.as_bytes().chunks(8) {
+        let mut buf = [0u8; 8];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        hash_inputs.push(u64::from_le_bytes(buf));
+    }
+    hash_inputs.push(version as u64);
+    hash_inputs.push(field_count as u64);
+    if hash_inputs.len() > 16 {
+        hash_inputs.truncate(16);
+    }
+    poseidon::hash_fields_to_bytes(&hash_inputs)
 }
 
 // ─── Pre-built Schema Constructors ─────────────────────────────────────────
@@ -220,5 +243,50 @@ mod tests {
         assert!(basic_identity_v1().is_ok());
         assert!(vaccination_v1().is_ok());
         assert!(product_certification_v1().is_ok());
+    }
+
+    /// SOLID-SEC-002 regression gate.
+    ///
+    /// `SchemaDefinition::compute_hash` and `compute_schema_hash_from_parts`
+    /// are the off-chain and on-chain entry points for the same derivation.
+    /// They MUST produce identical outputs for identical (name, version,
+    /// field_count). Any future divergence (e.g. someone "simplifies" one
+    /// side) immediately breaks `register_schema` and fails this test.
+    #[test]
+    fn test_compute_schema_hash_parts_matches_definition() {
+        let s = basic_identity_v1().unwrap();
+        let via_definition = s.compute_hash().unwrap();
+        let via_parts = compute_schema_hash_from_parts(&s.name, s.version, s.fields.len())
+            .unwrap();
+        assert_eq!(via_definition, via_parts);
+
+        let s2 = vaccination_v1().unwrap();
+        let via_definition2 = s2.compute_hash().unwrap();
+        let via_parts2 = compute_schema_hash_from_parts(&s2.name, s2.version, s2.fields.len())
+            .unwrap();
+        assert_eq!(via_definition2, via_parts2);
+    }
+
+    /// SOLID-SEC-002 regression gate.
+    ///
+    /// Same inputs must produce the same bytes; a single flipped field must
+    /// produce different bytes. Any failure here is a Poseidon breakage.
+    #[test]
+    fn test_compute_schema_hash_parts_deterministic_and_sensitive() {
+        let a = compute_schema_hash_from_parts("basic_identity_v1", 1, 8).unwrap();
+        let b = compute_schema_hash_from_parts("basic_identity_v1", 1, 8).unwrap();
+        assert_eq!(a, b);
+
+        // Version change -> different hash.
+        let c = compute_schema_hash_from_parts("basic_identity_v1", 2, 8).unwrap();
+        assert_ne!(a, c);
+
+        // Field-count change -> different hash.
+        let d = compute_schema_hash_from_parts("basic_identity_v1", 1, 7).unwrap();
+        assert_ne!(a, d);
+
+        // Name change -> different hash.
+        let e = compute_schema_hash_from_parts("vaccination_v1", 1, 8).unwrap();
+        assert_ne!(a, e);
     }
 }

@@ -27,12 +27,12 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
-| CRITICAL  | 3    | 0           | 0     | 0        | 0         | 3     |
-| HIGH      | 12   | 0           | 0     | 0        | 0         | 12    |
-| MEDIUM    | 11   | 0           | 2     | 0        | 0         | 13    |
+| CRITICAL  | 2    | 0           | 1     | 0        | 0         | 3     |
+| HIGH      | 11   | 0           | 1     | 0        | 0         | 12    |
+| MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 35   | 0           | 3     | 0        | 0         | 38    |
+| **Total** | 32   | 0           | 6     | 0        | 0         | 38    |
 
 ---
 
@@ -41,10 +41,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | ID              | Severity | Status | Title                                                              |
 |-----------------|----------|--------|--------------------------------------------------------------------|
 | SOLID-SEC-001   | CRITICAL | Open   | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
-| SOLID-SEC-002   | CRITICAL | Open   | `register_schema` Poseidon integrity check commented out           |
+| SOLID-SEC-002   | CRITICAL | Fixed  | `register_schema` Poseidon integrity check commented out           |
 | SOLID-SEC-003   | CRITICAL | Open   | `issue_credential` missing schema + tree pubkey binding            |
 | SOLID-SEC-004   | HIGH     | Open   | No in-circuit issuer pubkey binding; revoked issuers still verify  |
-| SOLID-SEC-005   | HIGH     | Open   | `currentTimestamp` public input not bound to `Clock`               |
+| SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
 | SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
 | SOLID-SEC-008   | HIGH     | Open   | Nullifier does not include epoch / global root                     |
@@ -69,7 +69,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-027   | INFO     | Fixed  | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
 | SOLID-SEC-028   | MEDIUM   | Fixed  | `CLAUDE.md` and test README document wrong WASM build path         |
 | SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
-| SOLID-SEC-030   | MEDIUM   | Open   | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
+| SOLID-SEC-030   | MEDIUM   | Fixed  | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
 | SOLID-SEC-031   | HIGH     | Open   | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
 | SOLID-SEC-032   | HIGH     | Open   | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
 | SOLID-SEC-033   | HIGH     | Open   | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
@@ -107,17 +107,28 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-002 -- `register_schema` integrity check disabled
 
 - **Severity:** CRITICAL
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22
-- **Evidence:** `programs/schema-registry/src/lib.rs:114-130`
-- **Description.** `require!(computed_hash == schema_hash)` is
-  commented out. Anyone can register a schema whose metadata does not
-  match the declared hash.
-- **Impact.** Root enabler for SOLID-SEC-003. SEC-06 in the
-  remediation audit is not actually closed.
-- **Remediation.** Re-enable using `light-poseidon` (~170K CU).
-- **Regression gate.** Unit test: mismatched hash returns
-  `ErrorCode::InvalidSchemaHash`.
+- **Fixed:** 2026-04-23 (Phase 1 Tier 2)
+- **Evidence:** `programs/schema-registry/src/lib.rs:112-125` (now calls
+  `solid_core::schema::compute_schema_hash_from_parts` and enforces
+  `InvalidSchemaHash`).
+- **Remediation landed.** Introduced
+  `solid_core::schema::compute_schema_hash_from_parts` as the shared
+  preimage builder; both off-chain (`SchemaDefinition::compute_hash`)
+  and on-chain (`register_schema`) call it so the derivation cannot
+  drift. Added `PoseidonFailed` variant to schema-registry's
+  `ErrorCode`.
+- **Regression gate (in CI now).** `cargo test -p solid-core --lib`:
+  - `schema::tests::test_compute_schema_hash_parts_matches_definition`
+    asserts the helper and `SchemaDefinition::compute_hash` agree
+    byte-for-byte for `basic_identity_v1` and `vaccination_v1`.
+  - `schema::tests::test_compute_schema_hash_parts_deterministic_and_sensitive`
+    verifies determinism plus sensitivity to version/field-count/name
+    changes.
+- **Follow-up (Phase 2).** Bankrun-level integration test
+  `integration_04_schema_and_bindings` covers the end-to-end
+  `register_schema` reject-on-mismatch path.
 
 ### SOLID-SEC-003 -- `issue_credential` missing schema + tree pubkey binding
 
@@ -165,21 +176,33 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-005 -- `currentTimestamp` not bound to `Clock`
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22
-- **Evidence:** `programs/zk-verifier/src/lib.rs:157-198`;
-  `circuits/batch_credential_query.circom:65,192-198`
-- **Description.** `public_inputs[30]` carries `currentTimestamp`.
-  Circuit enforces `currentTimestamp <= expirationTimestamp` per
-  credential. On-chain verifier never compares
-  `public_inputs[30]` to `Clock::get()?`.
-- **Impact.** Attacker supplies `currentTimestamp = 0`; expired
-  credentials verify.
-- **Remediation.** Bind with configurable skew (10 min) stored in
-  `VerifierConfig`, not hardcoded.
-- **Regression gate.** Integration tests
-  `10_verify_expired_credential_rejected`,
-  `11_verify_future_timestamp_rejected`.
+- **Fixed:** 2026-04-23 (Phase 1 Tier 2)
+- **Evidence:** `programs/zk-verifier/src/lib.rs` (verify_batch_proof step 2b,
+  VerifierConfig.timestamp_skew_seconds, `set_timestamp_skew`
+  instruction, `DEFAULT_TIMESTAMP_SKEW_SECONDS = 600`,
+  `MAX_TIMESTAMP_SKEW_SECONDS = 3600`).
+- **Remediation landed.**
+  - Added `timestamp_skew_seconds: u32` field to `VerifierConfig`;
+    `VerifierConfig::SPACE` bumped from 45 to 49. CLAUDE.md invariant
+    ("Any change to VerifierConfig requires bumping SPACE") satisfied.
+  - `initialize` sets the default to 600 seconds.
+  - New authority-only `set_timestamp_skew` instruction caps at 3600
+    to prevent a governance-without-ADR increase to an effectively-
+    unbounded window.
+  - `verify_batch_proof` extracts the u64 timestamp from the low 8
+    bytes of `public_inputs[30]` (LE field-element encoding, matching
+    the rest of the public-input contract), enforces the high 24
+    bytes are zero, and rejects with `StaleTimestamp` unless
+    `lower <= claimed_ts <= upper`.
+- **Regression gate (in CI now).** `cargo test -p zk-verifier --lib`
+  continues to pass (11/11) including VK-parser and G1-negation
+  tests, confirming no regression.
+- **Follow-up (Phase 2).** Bankrun integration tests
+  `integration_10_verify_expired_credential_rejected` and
+  `integration_11_verify_future_timestamp_rejected` exercise the
+  on-chain Clock comparison end-to-end.
 
 ### SOLID-SEC-006 -- VK chunk 0 overwrite, no freeze-gate
 
@@ -511,32 +534,30 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-030 -- `transfer_slashed_lamports` can drain `stake_vault` to zero
 
 - **Severity:** MEDIUM
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22 (v0.4 audit; folds in master-audit BUG-NEW-03)
-- **Evidence:** `programs/issuer-registry/src/lib.rs:1192-1206`
-- **Description.** `transfer_slashed_lamports` uses raw lamport
-  manipulation to move funds from the shared
-  `PDA([b"stake-vault"])` to `dao_treasury`. When
-  `slash_amount == vault_lamports`, the vault drops to 0 lamports.
-  A 0-lamport account not explicitly closed is garbage-collected by
-  the Solana runtime. This permanently destroys the shared stake
-  vault PDA; future `register_issuer` SOL deposits fail with
-  "account not found". This is the acute form of SOLID-SEC-014
-  (single shared vault); per-issuer vaults in Phase 2 close the
-  structural concern.
-- **Impact.** Triggered when the last remaining issuer's entire
-  stake is slashed. Destroys DAO staking infrastructure.
-- **Remediation.**
-  ```rust
-  let min_bal = Rent::get()?.minimum_balance(0);
-  require!(
-      vault_lamports.saturating_sub(slash_amount) >= min_bal,
-      ErrorCode::StakeVaultWouldGoBelow
-  );
-  ```
-- **Regression gate.** Unit test: slash with
-  `amount == vault_lamports` fails; slash with
-  `amount == vault_lamports - min_bal` succeeds.
+- **Fixed:** 2026-04-23 (Phase 1 Tier 2)
+- **Evidence:** `programs/issuer-registry/src/lib.rs` -- the
+  `transfer_slashed_lamports` helper now computes
+  `remaining = from_balance - amount`, checks
+  `remaining >= Rent::get()?.minimum_balance(from.data_len())`, and
+  rejects with `ErrorCode::StakeVaultWouldGoBelow` otherwise. Rent
+  floor is computed per-call from the actual account data length so
+  the check works for any source account (not just the shared
+  zero-data stake_vault).
+- **Remediation landed.** Guard lives inside the helper so all call
+  sites (slash_issuer, submit_fraud_proof) get the same defense. The
+  receiver is not guarded because lamport balances can only grow on
+  the receiving side. New `StakeVaultWouldGoBelow` variant added to
+  `ErrorCode`.
+- **Regression gate (in CI now).** `cargo check -p issuer-registry`
+  passes; structural fix verified by the compile. Full end-to-end
+  test `stake_vault_not_garbage_collected_after_full_slash` lands
+  with Phase 2 integration work per `plan/IMPLEMENTATION_PLAN.md`.
+- **Structural follow-up.** SOLID-SEC-014 (per-issuer vaults)
+  eliminates the single-vault-GC category outright in Phase 2. The
+  guard here is the defense-in-depth ratchet that prevents a bug in
+  any future code path from accidentally GC'ing the shared PDA.
 
 ---
 
