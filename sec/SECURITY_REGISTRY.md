@@ -4,9 +4,20 @@ Canonical, living tracker for every security finding across every audit.
 One file. No fragmentation. Nothing deleted.
 
 - Protocol version under review: v0.4 (April 2026, second audit pass)
-- Last audit: 2026-04-22 (`sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`)
-- Last registry update: 2026-04-22
-- Next audit target: after Phase 1 close-out (see build plan Section 7)
+- Last audits folded in (chronological):
+  - 2026-04-22 senior-engineer comprehensive audit
+    (`sec/audits/2026-04-22_v0.3_comprehensive_audit.md`)
+  - 2026-04-22 Antigravity deep system audit
+    (`sec/audits/2026-04-22_v0.3_antigravity_deep_system_audit.md`)
+  - 2026-04-22 master consolidated audit
+    (`sec/audits/2026-04-22_v0.3_master_audit.md`)
+  - 2026-04-22 v0.4 comprehensive audit + build plan
+    (`sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`)
+- Last registry update: 2026-04-22 (merges master-audit findings into
+  SOLID-SEC-031..038 after v0.4 had already allocated
+  SOLID-SEC-028..030; duplicates collapsed into canonical IDs)
+- Next audit target: after Phase 1 close-out
+  (see `plan/IMPLEMENTATION_PLAN.md`)
 
 See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
@@ -17,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 3    | 0           | 0     | 0        | 0         | 3     |
-| HIGH      | 9    | 0           | 0     | 0        | 0         | 9     |
-| MEDIUM    | 12   | 0           | 0     | 0        | 0         | 12    |
-| LOW       | 3    | 0           | 0     | 0        | 0         | 3     |
-| INFO      | 3    | 0           | 0     | 0        | 0         | 3     |
-| **Total** | 30   | 0           | 0     | 0        | 0         | 30    |
+| HIGH      | 12   | 0           | 0     | 0        | 0         | 12    |
+| MEDIUM    | 13   | 0           | 0     | 0        | 0         | 13    |
+| LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
+| INFO      | 5    | 0           | 0     | 0        | 0         | 5     |
+| **Total** | 38   | 0           | 0     | 0        | 0         | 38    |
 
 ---
 
@@ -37,7 +48,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
 | SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
 | SOLID-SEC-008   | HIGH     | Open   | Nullifier does not include epoch / global root                     |
-| SOLID-SEC-009   | HIGH     | Open   | WASM bridge fractured across 3 locations (Cargo.toml / wasm/ / ts-sdk)|
+| SOLID-SEC-009   | HIGH     | Open   | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
 | SOLID-SEC-011   | HIGH     | Open   | E2E scripts bugged: zkey name, missing import, missing issuer flow |
 | SOLID-SEC-012   | HIGH     | Open   | Trusted setup is single-party with timestamp entropy               |
@@ -48,798 +59,449 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-017   | MEDIUM   | Open   | `solid-prover` uses `ark_std::test_rng()` -> breaks unlinkability  |
 | SOLID-SEC-018   | MEDIUM   | Open   | `verifier_config` write lock on every verify caps throughput       |
 | SOLID-SEC-019   | MEDIUM   | Open   | `set_binding_status` / `transfer_tree_binding_authority` missing schema-hash re-assertion |
-| SOLID-SEC-020   | MEDIUM   | Open   | E2E scripts persist plaintext issuer + holder secrets to `scripts/e2e_state.json` |
-| SOLID-SEC-021   | MEDIUM   | Open   | Depth-20 circuit caps global tree at ~250K holders; hard scale cliff |
-| SOLID-SEC-022   | LOW      | Open   | Local `IsZero` reimplementation in `credential_atom.circom`        |
+| SOLID-SEC-020   | MEDIUM   | Open   | E2E scripts persist plaintext issuer + holder secrets              |
+| SOLID-SEC-021   | MEDIUM   | Open   | Depth-20 circuit caps global tree at ~250K holders                 |
+| SOLID-SEC-022   | LOW      | Open   | Local `IsZero` reimplementation in `credential_atom.circom` (also NEW-SEC-09 in master audit) |
 | SOLID-SEC-023   | LOW      | Open   | `active_issuers` counter drifts on Cooldown -> Revoked path        |
 | SOLID-SEC-024   | LOW      | Open   | `unstake_tokens` uses raw `-=` instead of `checked_sub`            |
 | SOLID-SEC-025   | INFO     | Open   | `CheckIssuerStatus` ungated and never called on-chain              |
 | SOLID-SEC-026   | INFO     | Open   | `Credential::verify_integrity` never called on-chain               |
 | SOLID-SEC-027   | INFO     | Open   | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
-| SOLID-SEC-028   | MEDIUM   | Open   | `CLAUDE.md` and test README document wrong WASM build path (`crates/solid-core` instead of `wasm/`) |
-| SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots forced to prove global inclusion |
-| SOLID-SEC-030   | MEDIUM   | Open   | `transfer_slashed_lamports` can drain `stake_vault` to 0, garbage-collecting the shared PDA |
+| SOLID-SEC-028   | MEDIUM   | Open   | `CLAUDE.md` and test README document wrong WASM build path         |
+| SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
+| SOLID-SEC-030   | MEDIUM   | Open   | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
+| SOLID-SEC-031   | HIGH     | Open   | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
+| SOLID-SEC-032   | HIGH     | Open   | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
+| SOLID-SEC-033   | HIGH     | Open   | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
+| SOLID-SEC-034   | MEDIUM   | Open   | `SubmitFraudProof` / `SlashIssuer` contexts missing PDA seed constraint on `issuer_account` |
+| SOLID-SEC-035   | LOW      | Open   | `set_binding_status` can unfreeze without timelock                 |
+| SOLID-SEC-036   | LOW      | Open   | `nullifier.rs` module docstring describes stale 3-arg formula (impl is correct 5-arg) |
+| SOLID-SEC-037   | INFO     | Open   | `WithdrawAfterCooldown` missing explicit authority constraint (seeds provide partial protection) |
+| SOLID-SEC-038   | INFO     | Open   | Master-audit informational cluster: `i16` borrow signedness, reader/writer size asymmetry, `GreaterThan(8)` bound comment |
 
 ---
 
 ## Findings -- detail
-
-Each entry records: title, severity, status, introduced-in audit, last
-updated, evidence (file:line), description, impact, remediation, and the
-regression gate that must ship with the fix.
-
----
 
 ### SOLID-SEC-001 -- Batch circuit query indices unconstrained
 
 - **Severity:** CRITICAL
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:**
-  - `circuits/batch_credential_query.circom:56-59,216-217`
-  - `circuits/lib/predicate_evaluator.circom:85-112`
-- **Description.** The batch circuit declares `queryCredentialIndices[MAX_PREDICATES]`
-  and `queryFieldIndices[MAX_PREDICATES]` as public inputs with no range
-  constraints. `BatchFieldSelector` internally computes
-  `credIs[i].out * selectors[i].value` and returns 0 for any out-of-range
-  index. A prover sets `credIndex = 1000`, `queryValue = 0`, `operator = EQ`
-  and satisfies `result = 1` for any predicate without holding any credential.
-- **Impact.** Full soundness break on batch proofs. Trivially exploitable.
-  `compound_query.circom` is affected at `FieldSelector`
-  (`predicate_evaluator.circom:64-81`) identically.
-- **Remediation.** Add `LessThan(8)` range checks on every index before
-  entering the selector. Force a new trusted setup (which the circuit
-  change requires anyway -- combine with SOLID-SEC-004 and SOLID-SEC-008 into
-  one setup event).
-- **Regression gate.** Property-based witness-generation test in
-  `tests/circuits/` that feeds 1000 random out-of-range index vectors and
-  asserts witness generation fails. On-chain integration test that submits
-  such a proof and asserts `verify_batch_proof` rejects.
-- **Blocks:** any further production deployment.
-
----
+  `circuits/batch_credential_query.circom:56-59,216-217`;
+  `circuits/lib/predicate_evaluator.circom:85-112`
+- **Description.** `queryCredentialIndices[MAX_PREDICATES]` and
+  `queryFieldIndices[MAX_PREDICATES]` are public inputs with no range
+  constraints. `BatchFieldSelector` returns 0 for any out-of-range
+  index; a prover sets `credIndex = 1000`, `queryValue = 0`,
+  `operator = EQ` and satisfies `result = 1` for any predicate.
+- **Impact.** Full soundness break on batch proofs. `compound_query.circom`
+  has the same exposure via `FieldSelector`.
+- **Remediation.** Add `LessThan(8)` range checks on every index.
+  Requires new trusted setup (combine with SOLID-SEC-004,
+  SOLID-SEC-008, SOLID-SEC-029).
+- **Regression gate.** Property-based witness test with 1000 random
+  out-of-range indices; on-chain rejection integration test.
 
 ### SOLID-SEC-002 -- `register_schema` integrity check disabled
 
 - **Severity:** CRITICAL
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/schema-registry/src/lib.rs:114-130`
-- **Description.** The Poseidon self-consistency check
-  `require!(computed_hash == schema_hash)` is commented out with a
-  "Simplified for this task" note. Anyone can register a schema whose
-  declared metadata does not correspond to the claimed `schema_hash`.
-- **Impact.** Root enabler for SOLID-SEC-003. Breaks the integrity promise
-  labelled `SEC-06` in the remediation audit -- SEC-06 is not actually closed.
-- **Remediation.** Re-enable the check using `light-poseidon` on-chain.
-  Budget approx 170K CU for a 16-element input; acceptable for a one-time
-  registration.
-- **Regression gate.** Unit test: `register_schema` with mismatched
-  `schema_hash` fails with `ErrorCode::InvalidSchemaHash`. Add
-  `tests/integration/04_schema_and_bindings.test.ts` covering the
-  positive and negative cases.
-- **Blocks:** mainnet.
-
----
+- **Description.** `require!(computed_hash == schema_hash)` is
+  commented out. Anyone can register a schema whose metadata does not
+  match the declared hash.
+- **Impact.** Root enabler for SOLID-SEC-003. SEC-06 in the
+  remediation audit is not actually closed.
+- **Remediation.** Re-enable using `light-poseidon` (~170K CU).
+- **Regression gate.** Unit test: mismatched hash returns
+  `ErrorCode::InvalidSchemaHash`.
 
 ### SOLID-SEC-003 -- `issue_credential` missing schema + tree pubkey binding
 
 - **Severity:** CRITICAL
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:**
-  - `programs/issuer-registry/src/lib.rs:619-716`
-  - Account context: `programs/issuer-registry/src/lib.rs:909-937`
-- **Description.** The handler derives `PDA(b"tree-authority", schema_hash)`
-  but does not: (a) require `schema_hash` correspond to a registered schema,
-  (b) require `merkle_tree.key() == SchemaTreeBinding.tree_pubkey`, (c)
-  prevent an approved issuer from appending to any SPL-AC tree whose
-  authority is `PDA(b"tree-authority", any-32-bytes)`.
-- **Impact.** Combined with SOLID-SEC-002, an approved issuer can spawn a
-  rogue schema/tree universe that the on-chain verifier accepts as canonical.
-  Combined with SOLID-SEC-004, the issuer can then issue self-signed
-  credentials that verify.
-- **Remediation.** Add `schema_account` and `schema_tree_binding` as
-  required accounts. Seed-constrain `schema_account` to
-  `[b"schema", name, &[version]]`, require
-  `schema_account.schema_hash == schema_hash` and
-  `schema_tree_binding.tree_pubkey == merkle_tree.key()`.
+  `programs/issuer-registry/src/lib.rs:619-716,909-937`
+- **Description.** Does not require `schema_hash` to match a registered
+  `SchemaAccount`, does not bind `merkle_tree.key()` to
+  `SchemaTreeBinding.tree_pubkey`, does not prevent an approved issuer
+  from appending to any SPL-AC tree whose authority is
+  `PDA(b"tree-authority", any-32-bytes)`.
+- **Impact.** Approved issuer spawns a rogue schema/tree universe the
+  verifier accepts as canonical. Combined with SOLID-SEC-002, trivially
+  exploitable.
+- **Remediation.** Add `schema_account` + `schema_tree_binding`
+  required accounts. Seed-constrain + `require!` equality.
 - **Regression gate.** Integration tests
-  `06_issue_credential_rejects_unregistered_schema` and
+  `06_issue_credential_rejects_unregistered_schema`,
   `07_issue_credential_rejects_wrong_tree`.
-- **Blocks:** mainnet.
-
----
 
 ### SOLID-SEC-004 -- No in-circuit issuer pubkey binding
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:**
-  - Circuit: `circuits/batch_credential_query.circom:81-82` (issuer pubkey is a private input)
-  - On-chain: `programs/zk-verifier/src/lib.rs:148-297` (no issuer cross-check)
-  - `programs/issuer-registry/src/lib.rs:577-582` (`check_issuer_status` exists but unused)
-  - `CLAUDE.md:107-115` (open-work)
-- **Description.** The circuit accepts `issuerPubKeyAx/Ay` as private
-  inputs. The verifier program has no mechanism (CPI or Merkle membership)
-  to assert the key corresponds to a DAO-approved, non-revoked issuer.
-- **Impact.** Revoked / slashed issuers' prior signatures remain valid
-  in-circuit. A compromised SDK or adversary can produce valid-looking
-  proofs against unapproved issuer keys.
-- **Remediation (preferred).** Introduce a compressed issuer Merkle tree
-  maintained by `issuer-registry`. Add a root-binding PDA and a new
-  public input to the circuit requiring in-circuit membership of the
-  issuer pubkey. Rotating the root on `revoke_issuer` / `slash_issuer`
-  sweeps revoked keys out without a circuit change afterwards.
-- **Alternative.** CPI from `verify_batch_proof` into `check_issuer_status`;
-  adds CU cost, complicates account ordering.
-- **Regression gate.** Circuit witness test requiring a valid issuer
-  membership proof. Integration test
+  `circuits/batch_credential_query.circom:81-82`;
+  `programs/zk-verifier/src/lib.rs:148-297`;
+  `programs/issuer-registry/src/lib.rs:577-582`;
+  `CLAUDE.md:107-115`
+- **Description.** Circuit accepts `issuerPubKeyAx/Ay` as private
+  inputs. Verifier has no cross-check. `check_issuer_status` exists but
+  no CPI call.
+- **Impact.** Revoked issuers' prior signatures verify. Unapproved
+  keys can be smuggled by a malicious SDK.
+- **Remediation.** Compressed issuer Merkle tree + in-circuit
+  membership proof (preferred) or CPI into `check_issuer_status`
+  (alternate). Bundle with SOLID-SEC-001 / SOLID-SEC-008 /
+  SOLID-SEC-029 in one circuit rev + trusted setup.
+- **Regression gate.** Circuit witness test + integration test
   `05_verify_rejects_unapproved_issuer`.
-- **Blocks:** external audit close-out. Bundle with SOLID-SEC-001 and
-  SOLID-SEC-008 into a single circuit rev + trusted setup.
 
----
-
-### SOLID-SEC-005 -- `currentTimestamp` public input not bound to `Clock`
+### SOLID-SEC-005 -- `currentTimestamp` not bound to `Clock`
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `programs/zk-verifier/src/lib.rs:157-198`
-  - `circuits/batch_credential_query.circom:65,192-198`
-- **Description.** `public_inputs[30]` carries `currentTimestamp`. The
-  circuit enforces `currentTimestamp <= expirationTimestamp` per
-  credential. The on-chain verifier never compares `public_inputs[30]`
-  to `Clock::get()?.unix_timestamp`.
-- **Impact.** Attacker supplies `currentTimestamp = 0`, the circuit's
-  expiry check becomes `0 <= expiration` for any non-zero expiration.
-  Expired credentials still verify.
-- **Remediation.** In `verify_batch_proof`:
-  ```rust
-  let now_ts = Clock::get()?.unix_timestamp as u64;
-  let claimed_ts = u64_le_from_32bytes_or_err(&public_inputs[30])?;
-  let skew = 300; // 5 minutes
-  require!(
-      claimed_ts >= now_ts.saturating_sub(skew) &&
-      claimed_ts <= now_ts.saturating_add(skew),
-      ErrorCode::StaleTimestamp
-  );
-  ```
-- **Regression gate.** Integration test
-  `10_verify_expired_credential_rejected` plus
-  `11_verify_future_timestamp_rejected` for the upper skew bound.
-- **Blocks:** external audit close-out.
+- **Evidence:** `programs/zk-verifier/src/lib.rs:157-198`;
+  `circuits/batch_credential_query.circom:65,192-198`
+- **Description.** `public_inputs[30]` carries `currentTimestamp`.
+  Circuit enforces `currentTimestamp <= expirationTimestamp` per
+  credential. On-chain verifier never compares
+  `public_inputs[30]` to `Clock::get()?`.
+- **Impact.** Attacker supplies `currentTimestamp = 0`; expired
+  credentials verify.
+- **Remediation.** Bind with configurable skew (10 min) stored in
+  `VerifierConfig`, not hardcoded.
+- **Regression gate.** Integration tests
+  `10_verify_expired_credential_rejected`,
+  `11_verify_future_timestamp_rejected`.
 
----
-
-### SOLID-SEC-006 -- VK chunk 0 overwrite, no freeze, truncated VK finalizable
+### SOLID-SEC-006 -- VK chunk 0 overwrite, no freeze-gate
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/zk-verifier/src/lib.rs:82-130`
-- **Description.** Chunk-0 path unconditionally writes
-  `vk_storage.data = chunk_data`. There is no `vk_frozen` flag, no
-  requirement that the program be paused for VK writes, and nothing
-  prevents the authority from calling with `is_final_chunk = true` on a
-  half-uploaded VK. The parser at `VkBuf::parse` accepts any
-  `nr_ic >= 1`.
-- **Impact.** A compromised authority can live-replace the VK (universal
-  forgery). A bungled upload can finalize a truncated VK with fewer IC
-  commitments than the circuit requires, producing bespoke silent
-  acceptance bugs.
-- **Remediation.**
-  1. Add `config.vk_frozen: bool` and `config.vk_generation: u16`.
-     Refuse writes when frozen.
-  2. Store VKs as `(vk_id, VkStorage)` PDAs; keep at least one deprecated
-     generation valid for a grace window.
-  3. Include `vk_generation` as a public input; proofs bind to the VK
-     they were produced against.
-  4. Require `paused == true` for any VK write after generation 0.
-- **Regression gate.** Unit tests: cannot finalize with partial chunks,
-  cannot overwrite when frozen, cannot verify proof against wrong
-  generation.
-- **Blocks:** external audit close-out.
+- **Description.** Chunk 0 unconditionally writes `vk_storage.data`;
+  authority can finalize a truncated VK with small `nr_ic`.
+- **Impact.** Universal forgery via live VK swap; silent acceptance of
+  truncated VK.
+- **Remediation.** Add `vk_frozen: bool` + `vk_generation: u16`. Store
+  `(vk_id, VkStorage)` pairs. Include `vk_generation` in public inputs.
+  Require `paused` for post-gen-0 writes.
+- **Regression gate.** Unit tests for finalize-with-partial, write-when-
+  frozen, verify-against-wrong-generation.
 
----
-
-### SOLID-SEC-007 -- BJJ public keys not subgroup-checked at registration
+### SOLID-SEC-007 -- BJJ pubkeys not subgroup-checked
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:** `crates/solid-core/src/babyjubjub.rs:111-114,125-133`;
-  `programs/issuer-registry/src/lib.rs` register_issuer handler
-- **Description.** `pubkey_to_affine` checks `is_on_curve()` and
-  `!is_zero()` but does not check the cofactor. Order-{1,2,4,8} torsion
-  points are accepted. Similarly `register_issuer` stores
-  `bjj_pub_key_x/y` with no curve/subgroup check.
-- **Impact.** A malicious issuer registers a small-order public key.
-  Because `S * B8 = R + h * A` becomes `S * B8 = R` when `A` is
-  small-order, the issuer forges signatures trivially on any message.
-  Circomlib's in-circuit verifier does cofactor multiplication on R8/A,
-  so the circuit-level attack may be blocked -- but off-chain signing
-  with small-order keys is undefended.
-- **Remediation.** In `pubkey_to_affine`: reject points whose
-  `mul_by_cofactor()` is the identity. In `register_issuer`: verify
-  on-curve + subgroup check before accepting registration. Both use
-  arkworks primitives already in the dependency tree.
-- **Regression gate.** Rust unit tests with explicit small-order points.
-- **Blocks:** external audit close-out.
+- **Evidence:** `crates/solid-core/src/babyjubjub.rs:111-114,125-133`
+- **Description.** `pubkey_to_affine` checks on-curve + non-zero but
+  not cofactor; `register_issuer` stores `bjj_pub_key_x/y` with no
+  subgroup check.
+- **Impact.** Small-order pubkey enables trivial signature forgery
+  off-chain (circuit-level defenses may block in-circuit case).
+- **Remediation.** Reject points whose `mul_by_cofactor` is identity.
+- **Regression gate.** Rust unit tests with explicit small-order
+  points.
 
----
-
-### SOLID-SEC-008 -- Nullifier lacks epoch / global-root binding
+### SOLID-SEC-008 -- Nullifier lacks epoch binding
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:**
-  - `circuits/batch_credential_query.circom:286-292`
-  - `crates/solid-core/src/nullifier.rs:23-40`
-- **Description.** Nullifier =
-  `Poseidon(masterIdentityKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)`.
-  It does not include the global root or an epoch counter. Change `verifier` or
-  `queryContextHash` or `verifierNonce` and the nullifier changes -- there
-  is no one-proof-per-credential rate limit beyond those scopes.
-  Additionally, if the authority ever regresses a root (via bug, reorg, or
-  future misuse), the same nullifier would be unique but the proof would
-  semantically apply to two tree generations.
-- **Impact.** Defense-in-depth gap. Not immediately exploitable, but a
-  single future bug in root-update logic or a deep reorg turns this into
-  a replay path.
-- **Remediation.** Include `globalRoot` (or a monotonic epoch counter
-  stored in `GlobalStateBinding`) in the nullifier preimage. Circuit
-  change -- bundle with SOLID-SEC-001 and SOLID-SEC-004 in a single
-  new trusted setup.
-- **Regression gate.** Witness test: identical inputs across two
-  distinct global-root epochs produce distinct nullifiers.
-- **Blocks:** external audit close-out.
-
----
+  `circuits/batch_credential_query.circom:286-292`;
+  `crates/solid-core/src/nullifier.rs:23-40`
+- **Description.** Nullifier = `Poseidon(masterKey, revocationNonce,
+  verifierAddress, queryContextHash, verifierNonce)`. No `globalRoot`
+  or epoch counter.
+- **Impact.** Defense-in-depth gap against root regression.
+- **Remediation.** Include monotonic `epoch_counter` stored in
+  `GlobalStateBinding`. Bundle with SOLID-SEC-001 / SOLID-SEC-004 /
+  SOLID-SEC-029.
+- **Regression gate.** Witness test: distinct-epoch inputs produce
+  distinct nullifiers.
 
 ### SOLID-SEC-009 -- WASM bridge fractured across 3 locations
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `crates/solid-core/Cargo.toml:10` declares a `wasm` feature
-  - `crates/solid-core/src/` contains zero `#[wasm_bindgen]` exports
-  - `wasm/src/lib.rs` holds the real bridge
-  - `.github/workflows/ci.yml:196-197,256-257,301-303` runs
-    `wasm-pack build crates/solid-core`, producing an empty package
-  - `ts-sdk/packages/core/package.json` pins `file:../../../wasm/pkg`
-    (a dir that neither CI nor any script creates)
-- **Description.** Three disagreeing sources of truth for where the
-  WASM bridge lives. CI builds from one, SDK imports from another,
-  Cargo declares a feature in a third. The `cross_language_vectors`
-  job only appears to pass because `check_vectors.ts` is narrow
-  (see SOLID-SEC-010).
-- **Impact.** The JS SDK's cryptography is not actually anchored to
-  the Rust primitives it claims to call. Drift will be silent.
-- **Remediation.** Pick one source of truth:
-  - (A) Move all `#[wasm_bindgen]` exports into
-    `crates/solid-core/src/wasm.rs` behind the `wasm` feature. Delete
-    `wasm/` crate. Update CI and SDK path accordingly.
-  - (B) Keep `wasm/` standalone. Remove the `wasm` feature from
-    `solid-core`. Fix CI to build `wasm/` and SDK to depend on
-    `../../../wasm/pkg`.
-- **Regression gate.** New CI job `wasm_bridge_smoke`: build pkg,
-  load from the SDK path the SDK actually uses, round-trip every
-  primitive against `gen_vectors.rs` outputs.
-- **Blocks:** mainnet (silent drift is unacceptable for identity
-  primitives).
+- **Evidence:** `crates/solid-core/Cargo.toml:10`; `wasm/src/lib.rs`;
+  `.github/workflows/ci.yml:196-197,256-257,301-303`;
+  `ts-sdk/packages/core/package.json`
+- **Description.** `Cargo.toml` declares a `wasm` feature in
+  `solid-core` with zero `#[wasm_bindgen]` exports; the real bridge
+  lives in `wasm/`; CI builds from `crates/solid-core`; SDK imports
+  from `../../../wasm/pkg` which neither CI nor any script creates.
+  See SOLID-SEC-028 for the documentation variant of this defect.
+- **Impact.** Silent drift between Rust primitives and TS SDK
+  consumers.
+- **Remediation.** Keep `wasm/` standalone (solid-core must remain
+  BPF-compatible). Fix CI + SDK pinned path.
+- **Regression gate.** CI job `wasm_bridge_smoke`.
 
----
-
-### SOLID-SEC-010 -- Cross-language test vectors cover only 2 of 10 primitives
+### SOLID-SEC-010 -- Cross-language vectors 2/10 primitives
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `crates/solid-core/examples/gen_vectors.rs:55,62`
-  - `tests/vectors/check_vectors.ts`
-  - `tests/vectors/commitment_and_nullifier.json`
-- **Description.** Only `attestation_commitment` and `nullifier` are
-  covered. Not covered: raw Poseidon, BJJ sign/verify,
+- **Evidence:** `crates/solid-core/examples/gen_vectors.rs:55,62`;
+  `tests/vectors/check_vectors.ts`
+- **Description.** Only `attestation_commitment` and `nullifier`
+  covered. Missing vectors for Poseidon raw, BJJ sign/verify,
   `derive_credential_key`, `computeIdentityState`,
-  `QueryBuilder._computeContextHash`, any EdDSA signed-message vector.
-  The TS SDK's `QueryBuilder.toCircuitInputs` at
-  `ts-sdk/packages/core/src/index.ts:257-279` performs query-context
-  hashing in JavaScript -- the drift-prone surface -- with no vector
-  guard.
-- **Impact.** A silent divergence between Rust, WASM, circuits, and TS
-  would ship and only surface when proofs start failing. The
-  "cross-language vectors" CI gate in `CLAUDE.md` is advertised as
-  byte-for-byte but only covers 20% of the surface.
-- **Remediation.** Extend `gen_vectors.rs` to emit vectors for every
-  primitive with a TS caller. Add `snarkjs wtns check` vectors for
-  circuit-internal signals (Poseidon output, signature verification
-  output).
-- **Regression gate.** `cross_language_vectors` job fails if any
-  TS-side primitive disagrees with the Rust reference.
-- **Blocks:** external audit close-out.
+  `QueryBuilder._computeContextHash`.
+- **Impact.** Silent divergence between Rust / WASM / TS / circuits.
+- **Remediation.** Extend `gen_vectors.rs` to every primitive with a
+  TS caller.
+- **Regression gate.** `cross_language_vectors` CI fails on divergence.
 
----
-
-### SOLID-SEC-011 -- E2E scripts bugged (3 concrete defects)
+### SOLID-SEC-011 -- E2E scripts bugged
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - (a) `circuits/scripts/setup.js:57` writes `circuit_final.zkey`;
-    `scripts/prove.ts:123` reads `batch_credential_query_final.zkey`
-  - (b) `scripts/prove.ts:105` references `keccak256HashPair` which is
-    never imported
-  - (c) `scripts/issue.ts` lacks the
-    `register_issuer -> stake_tokens -> vote_on_issuer ->
-    finalize_voting or approve_via_trust_anchor` sequence, so on a
-    clean registry `issueCredential` CPI-fails
-- **Impact.** A stranger cannot run E2E from a clean checkout. All
-  three are first-run blockers.
-- **Remediation.** Fix both filename ends to agree, import the hashing
-  helper (or switch to `poseidonHashPair` consistently), and add the
-  issuer-approval bootstrap to `scripts/issue.ts` or a new
-  `scripts/bootstrap_issuer.ts`.
-- **Regression gate.** New CI job `e2e_localnet` that boots
-  `solana-test-validator`, runs `scripts/bootstrap_issuer.ts`,
-  `scripts/issue.ts`, `scripts/prove.ts` end-to-end, and asserts a
-  successful on-chain verification.
-- **Blocks:** external audit (auditors cannot reproduce your flow).
+- **Evidence:** `circuits/scripts/setup.js:57` vs
+  `scripts/prove.ts:123` (zkey filename mismatch);
+  `scripts/prove.ts:105` (`keccak256HashPair` unimported);
+  `scripts/issue.ts` (no register/stake/vote/approve sequence).
+- **Impact.** Stranger cannot run E2E from clean checkout.
+- **Remediation.** Unify zkey name, replace keccak with Poseidon
+  consistently, add issuer-approval bootstrap.
+- **Regression gate.** CI `e2e_localnet` end-to-end to on-chain verify.
 
----
-
-### SOLID-SEC-012 -- Trusted setup is single-party with timestamp entropy
+### SOLID-SEC-012 -- Trusted setup single-party
 
 - **Severity:** HIGH
 - **Status:** Open
 - **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `circuits/scripts/setup.js:4,47`
   (`'solid-entropy-' + Date.now()`)
-- **Description.** Single-party Phase-2 contribution. Entropy derivable
-  from the ceremony timestamp. Whoever ran this script knows the toxic
-  waste and can forge any proof.
-- **Impact.** As documented (`CLAUDE.md:116`,
-  `docs/IMPROVEMENTS_ROADMAP.md`). Pre-mainnet blocker.
-- **Remediation.** Multi-party ceremony via `snarkjs zkey contribute`
-  with at least 10 independent contributors. Attestation hashes
-  published. Final zkey hosted on IPFS + Arweave with content
-  addressing. Final hash pinned in the registry, in
-  `deployments/mainnet.json`, and in `sec/audits/<mainnet-go-live>.md`.
-- **Regression gate.** `verify_ceremony.js` that a newcomer can run to
-  validate the full attestation transcript.
-- **Blocks:** mainnet.
+- **Impact.** Operator controls toxic waste -> universal forgery.
+- **Remediation.** Multi-party ceremony, 10+ contributors,
+  attestation chain published, zkey on IPFS + Arweave.
+- **Regression gate.** `verify_ceremony.js` attestation validator.
 
----
-
-### SOLID-SEC-013 -- Slashing / fraud-proof authority is single-key
+### SOLID-SEC-013 -- Single-key slashing / fraud authority
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `programs/issuer-registry/src/lib.rs:409` (slash_issuer authority check)
-  - `programs/issuer-registry/src/lib.rs:475-478` (submit_fraud_proof)
-  - `programs/issuer-registry/src/lib.rs:894` (revoke_issuer)
-- **Description.** Token-weighted voting decentralizes issuer approval,
-  but slashing -- the economically consequential operation -- is gated
-  by a single `registry_config.authority` key. No multisig, no on-chain
-  governance proposal flow, no timelock.
-- **Impact.** A single key compromise gives the attacker
-  universal-slash capability against the issuer set.
-- **Remediation.** Route authority through Squads multisig (3-of-5
-  minimum) with a 24h challenge window on slashing, 48h timelock on VK
-  rotation. Until then, document the threat model explicitly.
-- **Regression gate.** Integration test that slashing fails from a
-  non-multisig key once wired.
-- **Blocks:** production release.
+- **Evidence:** `programs/issuer-registry/src/lib.rs:409,475-478,894`
+- **Remediation.** Squads 3-of-5 multisig + 48h timelock on VK
+  rotation + 24h challenge on slashing.
+- **Regression gate.** Slash from non-multisig key must fail.
 
----
-
-### SOLID-SEC-014 -- `stake_vault` is a single shared PDA
+### SOLID-SEC-014 -- Shared `stake_vault` PDA
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `programs/issuer-registry/src/lib.rs:750-752,791-793,862-863`
-    (all use `[b"stake-vault"]` seed)
-- **Description.** Every issuer deposits into the same PDA. Withdrawals
-  are by raw lamport manipulation (`try_borrow_mut_lamports`). No
-  per-issuer accounting against the shared vault; the stored
-  `issuer.staked_amount` is authoritative. Lamports can arrive at the
-  PDA address via `solana transfer` without going through this program.
-- **Impact.** If the vault ever accumulates untracked lamports, a
-  cascade of withdrawals can underflow / brick the vault. No direct
-  theft; availability risk.
-- **Remediation.** Per-issuer vaults seeded as
-  `[b"stake-vault", issuer.authority.as_ref()]`. Simplifies slashing
-  math and isolates failure.
-- **Regression gate.** Integration test for two independent issuers'
-  stake+withdraw flows not interfering.
-- **Blocks:** production release.
+- **Evidence:** `programs/issuer-registry/src/lib.rs:750-752,791-793,
+  862-863`
+- **Remediation.** Per-issuer vaults seeded by issuer authority.
+  Related: SOLID-SEC-030 (GC guard on the shared vault as a short-
+  term fix until per-issuer vaults land).
+- **Regression gate.** Two-issuer stake/withdraw independence test.
 
----
-
-### SOLID-SEC-015 -- `approve_via_trust_anchor` has no minimum-tier gate
+### SOLID-SEC-015 -- `approve_via_trust_anchor` no tier gate
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/issuer-registry/src/lib.rs:533-574`
-- **Description.** A `Government` / `Regulated` anchor can approve any
-  `Pending` target regardless of the target's tier. No rate limit on
-  approvals per anchor.
-- **Impact.** A compromised Government-tier key becomes a global
-  credential-minting primitive. Centralization risk in the trust-anchor
-  design.
-- **Remediation.** Require the anchor's tier to be strictly higher than
-  the target. Add a per-anchor sliding-window rate limit (e.g., 10
-  approvals / 24h / anchor).
-- **Regression gate.** Unit test: `Community` cannot be approved by
-  `Community`; rate-limit enforcement.
-- **Blocks:** production release.
+- **Remediation.** Require anchor tier strictly higher than target;
+  per-anchor rate limit.
+- **Regression gate.** Same-tier approval must fail.
 
----
-
-### SOLID-SEC-016 -- `transfer_authority` is single-step
+### SOLID-SEC-016 -- Single-step `transfer_authority`
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/zk-verifier/src/lib.rs:140-146`
-- **Description.** A misaddressed transfer immediately bricks the
-  verifier's governance with no recovery.
-- **Impact.** Operator footgun. Non-adversarial but irreversible.
-- **Remediation.** Two-step "propose -> accept": `propose_authority`
-  stores `pending_authority`; `accept_authority` under the new key
-  commits the transfer. Optionally a `cancel_authority_transfer` under
-  the old key.
-- **Regression gate.** Unit test: proposing does not switch; accepting
-  from wrong key fails; accepting from proposed key succeeds.
-- **Blocks:** production release.
+- **Remediation.** Propose + accept two-step pattern.
+- **Regression gate.** Accept-without-propose fails; wrong-key-accept
+  fails.
 
----
-
-### SOLID-SEC-017 -- `solid-prover` uses deterministic `test_rng`
+### SOLID-SEC-017 -- `solid-prover` uses `test_rng`
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `tools/solid-prover/src/lib.rs:90`
-  (`let mut rng = ark_std::test_rng();`)
-- **Description.** Groth16 prover randomness is used for the `r`/`s`
-  blinding. `test_rng` is deterministic (seeded with 0).
-- **Impact.** Privacy (not soundness). Identical witnesses produce
-  identical proof bytes, so two proofs for the same holder/credential/query
-  are linkable -- breaks the unlinkability story in
-  `docs/private_onchain_identity_deep_dive.md`.
+- **Impact.** Privacy: identical witness produces identical proof
+  bytes.
 - **Remediation.** Use `rand::rngs::OsRng`.
-- **Regression gate.** Unit test: two proofs with identical witness
-  produce different `(proof.a, proof.b, proof.c)` bytes.
-- **Blocks:** production release.
+- **Regression gate.** Two identical-witness proofs must differ
+  byte-for-byte.
 
----
-
-### SOLID-SEC-018 -- `verifier_config` write-lock caps throughput
+### SOLID-SEC-018 -- `verifier_config` write lock
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:** `programs/zk-verifier/src/lib.rs:495` (mut on every verify)
-- **Description.** Every `verify_batch_proof` takes a write lock on the
-  singleton `verifier_config` PDA (to bump `proof_count`). Solana
-  schedules txs to disjoint write sets in parallel; one mutable
-  singleton serialises the entire verify path.
-- **Impact.** Caps sustained verify throughput at roughly 100/s at
-  current CU budgets; 1000/s is unreachable without sharding.
-- **Remediation.** Either (a) drop `proof_count` and use event-count
-  metrics via an indexer, or (b) shard
-  `verifier_config -> verifier_shard_{0..N}` with N=16 and modulo-hash
-  the proof into a shard, then reduce off-chain.
-- **Regression gate.** Load test on devnet: 300 concurrent verifies,
-  no schedule-exclusion serialization.
-- **Blocks:** real-infra claim. Not production-blocking for low-TPS
-  deployments.
+- **Evidence:** `programs/zk-verifier/src/lib.rs:495`
+- **Impact.** ~100 verify/sec ceiling.
+- **Remediation.** Drop `proof_count` (use events) OR shard into
+  `verifier_shard_{0..N}` with modulo-hash.
+- **Regression gate.** Load test: 300 concurrent verifies, no
+  schedule-exclusion serialization.
 
----
-
-### SOLID-SEC-019 -- schema-registry handlers missing schema-hash re-assertion
+### SOLID-SEC-019 -- Missing schema-hash re-assertion
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/schema-registry/src/lib.rs:322-349,428-452`
-- **Description.** `set_binding_status` and `transfer_tree_binding_authority`
-  use `UpdateTreeRoot` context (seed-constrained on `schema_hash`) but
-  do not re-assert `&data[8..40] == schema_hash.as_slice()` -- unlike
-  `update_tree_root` (lines 292-295) which does.
-- **Impact.** Low in practice (Anchor's `seeds` constraint already
-  matches the PDA address). Defense-in-depth gap: any future refactor
-  that reuses `UpdateTreeRoot` with a PDA whose contents can diverge
-  from seeds would authorize on stored-authority alone.
-- **Remediation.** Add the same `require!` assertion to both handlers.
-- **Regression gate.** Unit test covering the invariant.
-- **Blocks:** production hardening.
+- **Remediation.** Add `require!(&data[8..40] == schema_hash)` to
+  `set_binding_status` and `transfer_tree_binding_authority`.
+- **Regression gate.** Unit test per handler.
 
----
-
-### SOLID-SEC-020 -- E2E scripts persist plaintext secrets
+### SOLID-SEC-020 -- Plaintext E2E secrets
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `scripts/issue.ts:118-125`
-  - `.gitignore` (does not exclude `scripts/e2e_state.json`)
-- **Description.** Issuer and holder secrets (Solana keypair bytes,
-  BJJ private keys) written as plaintext JSON to `scripts/e2e_state.json`.
-- **Impact.** A developer pushes local state and leaks long-term
-  signing keys. Even on localnet, re-using this pattern for devnet
-  would be catastrophic.
-- **Remediation.** Write to `/tmp/solid-e2e-state.json` or
-  `$XDG_RUNTIME_DIR`. Add `scripts/e2e_state.json` and
-  `~/.solid-protocol/` to `.gitignore`. For devnet/mainnet paths,
-  require an encrypted keystore (Argon2id + AES-256-GCM consistent
-  with the holder story in `docs/key-management.md`).
-- **Regression gate.** Pre-commit hook that rejects commits
-  containing file names matching `*e2e_state*` or containing BJJ
-  private-key magic bytes.
-- **Blocks:** external developer onboarding safety.
+- **Evidence:** `scripts/issue.ts:118-125`; `.gitignore`
+- **Remediation.** Move state to `/tmp` or encrypted keystore; add to
+  `.gitignore`; pre-commit hook rejects BJJ-key magic bytes.
+- **Regression gate.** Hook test.
 
----
-
-### SOLID-SEC-021 -- Depth-20 circuit caps the protocol at ~250K holders
+### SOLID-SEC-021 -- Depth-20 cap at ~250K holders
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `circuits/batch_credential_query.circom:35-48` (`GLOBAL_DEPTH=20`)
-  - `ts-sdk/packages/light/src/index.ts:137` (`maxDepth=20`)
-  - `circuits/lib/identity_anchor.circom` (per-schema identity leaf in global tree)
-- **Description.** The `GLOBAL_DEPTH` is compile-time baked into the VK.
-  Since `identity_leaf` is per-schema, a single holder with N schemas
-  occupies N slots. Practical cap for the global tree: ~250K holders
-  before a new circuit rev + trusted setup is required.
-- **Impact.** Silent scalability cliff. Not called out in any doc
-  (not in `docs/infra_roadmap.md`, not in `docs/architecture.md`).
-- **Remediation.** Ship a depth-24 circuit rev for the next trusted
-  setup (buys 16x capacity). Until then, document the ceiling
-  explicitly and add a monitor that alerts at 80% of capacity.
-- **Regression gate.** Capacity monitor in the indexer / verifier
-  dashboard (SOLID-SEC-018 addressed together).
-- **Blocks:** real-infra claim.
-
----
+- **Evidence:** `circuits/batch_credential_query.circom:35-48`;
+  `ts-sdk/packages/light/src/index.ts:137`
+- **Remediation.** Ship depth-24 circuit rev in next trusted setup
+  (16x capacity). Add capacity monitor.
+- **Regression gate.** Monitoring alert at 80% capacity.
 
 ### SOLID-SEC-022 -- Local `IsZero` reimplementation
 
 - **Severity:** LOW
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:** `circuits/lib/credential_atom.circom:83-90`
-- **Description.** Local `IsZero` template co-exists with circomlib's
-  `comparators.circom` pulled in by the batch circuit. Template
-  resolution depends on include order. Both forms are algebraically
-  correct today.
-- **Impact.** Soundness-neutral. Maintenance hazard: a future refactor
-  that drops `in * out === 0` in the local copy would turn into a
-  soundness bug.
-- **Remediation.** Delete the local `IsZero`. Include
-  `circomlib/comparators.circom` explicitly. Add an R1CS-hash
-  regression gate.
-- **Regression gate.** Snapshot R1CS hash in `circuits/build/` and
-  fail CI on unexpected diff.
-- **Blocks:** nothing, hygiene.
-
----
+- **Evidence:** `circuits/lib/credential_atom.circom:83-90`. Also
+  flagged in master audit as NEW-SEC-09.
+- **Remediation.** Delete local template; include
+  `circomlib/comparators.circom` explicitly.
+- **Regression gate.** R1CS-hash snapshot in CI.
 
 ### SOLID-SEC-023 -- `active_issuers` counter drifts
 
 - **Severity:** LOW
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:**
-  - `programs/issuer-registry/src/lib.rs:344-347` (cooldown -> revoked
-    with `staked_amount == 0` does not decrement)
-  - vs `programs/issuer-registry/src/lib.rs:448` (slash decrements)
-- **Description.** `approve_*` paths bump `active_issuers += 1`.
-  `slash_issuer` decrements. `withdraw_after_cooldown` that transitions
-  to `Revoked` does not. Counter drifts.
-- **Impact.** `active_issuers` is informational today. Governance
-  thresholds that reference it would drift.
-- **Remediation.** Centralize status transitions in one helper that
-  always updates the counter at the transition point.
-- **Regression gate.** Property-based test on the transition table.
-- **Blocks:** nothing, hygiene.
+- **Evidence:** `programs/issuer-registry/src/lib.rs:344-347` vs `:448`
+- **Remediation.** Centralize transitions in one helper.
+- **Regression gate.** Property-based transition-table test.
 
----
-
-### SOLID-SEC-024 -- `unstake_tokens` uses raw `-=`
+### SOLID-SEC-024 -- Raw `-=` in `unstake_tokens`
 
 - **Severity:** LOW
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/issuer-registry/src/lib.rs:285`
-- **Description.** Protected earlier by `require!(staker_account.amount_staked >= amount)`
-  (line 263). Same function at line 251 does `amount_staked += amount`
-  without `checked_add`.
-- **Impact.** Not currently exploitable. Style / hardening only.
-- **Remediation.** `checked_add` / `checked_sub` everywhere on u64
-  balance math. Adopt clippy lints `arithmetic_side_effects`.
-- **Regression gate.** clippy rule in CI.
-- **Blocks:** nothing, hygiene.
+- **Remediation.** `checked_add` / `checked_sub` on all u64 math.
+  Clippy `arithmetic_side_effects`.
+- **Regression gate.** Clippy CI.
 
----
-
-### SOLID-SEC-025 -- `CheckIssuerStatus` ungated, never called
+### SOLID-SEC-025 -- Ungated `CheckIssuerStatus`
 
 - **Severity:** INFO
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `programs/issuer-registry/src/lib.rs:577-582,883-886`
-- **Description.** No signer, no caller check, no on-chain invocation.
-  Makes `CLAUDE.md`'s "on-chain fallback via CPI" option look wired up
-  when it is not.
-- **Impact.** Misleading. No security implication.
-- **Remediation.** Either wire it up (addresses SOLID-SEC-004 partially)
-  or delete it.
-- **Regression gate.** n/a.
-- **Blocks:** nothing, clarity.
+- **Remediation.** Wire up (addresses SOLID-SEC-004 partially) or
+  delete.
 
----
-
-### SOLID-SEC-026 -- `Credential::verify_integrity` never called on-chain
+### SOLID-SEC-026 -- `verify_integrity` never called
 
 - **Severity:** INFO
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
 - **Evidence:** `crates/solid-core/src/credential.rs`
-- **Description.** Its purpose is SDK-side sanity. The "commitment
-  matches attestation data" assertion is only as strong as the
-  off-chain issuance path.
-- **Impact.** Documentation clarity. No security implication.
-- **Remediation.** Add a docstring at the function noting it is an
-  SDK-internal invariant, not a consensus check.
-- **Regression gate.** n/a.
-- **Blocks:** nothing, documentation.
+- **Remediation.** Docstring noting it's SDK-internal, not consensus.
 
----
-
-### SOLID-SEC-027 -- `IMPROVEMENTS_ROADMAP.md` has stale checkboxes
+### SOLID-SEC-027 -- Stale roadmap checkboxes
 
 - **Severity:** INFO
 - **Status:** Open
-- **Introduced:** 2026-04-22
-- **Last updated:** 2026-04-22
-- **Evidence:** `docs/IMPROVEMENTS_ROADMAP.md` (all 37 checkboxes unticked
-  despite ~24 items closed in code)
-- **Description.** The canonical backlog per `CLAUDE.md:102-103` is
-  stale and directly contradicts `docs/POST_REMEDIATION_AUDIT.md`.
-- **Impact.** Misleads future auditors. An auditor acting only on the
-  roadmap would re-open items already closed.
-- **Remediation.** Flip closed items in the same PR that cites the
-  underlying commit. Add `scripts/check_docs.py` to enforce that closed
-  items in the registry and the roadmap agree.
-- **Regression gate.** CI job that diff-checks the roadmap against
-  the registry's status board.
-- **Blocks:** nothing, documentation integrity.
+- **Evidence:** `docs/IMPROVEMENTS_ROADMAP.md` (37 items all `[ ]`)
+- **Remediation.** Flip closed items. `scripts/check_docs.py`
+  enforces agreement with this registry.
 
 ---
+
+### Findings introduced by the 2026-04-22 v0.4 audit pass
 
 ### SOLID-SEC-028 -- CLAUDE.md and test README document wrong WASM build path
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22 (v0.4 audit pass)
-- **Last updated:** 2026-04-22
+- **Introduced:** 2026-04-22 (v0.4 audit)
 - **Evidence:**
   - `CLAUDE.md:49-50` (wrong build command: `crates/solid-core`)
   - `tests/integration/README.md:19-20` (same wrong command)
-  - Real bridge: `wasm/src/lib.rs` (305 lines, all exports present and correct)
+  - Real bridge: `wasm/src/lib.rs` (305 lines, exports present)
   - `crates/solid-core/src/` has zero `#[wasm_bindgen]` exports
-- **Description.** The real WASM bridge at `wasm/src/lib.rs` is complete and production-quality.
-  However, CLAUDE.md and the test README both document `wasm-pack build crates/solid-core` as
-  the build command, which produces an empty pkg. Any developer following the documented sequence
-  gets a broken SDK with no error message. This makes SOLID-SEC-009 and SOLID-SEC-010 untestable
-  even after all code fixes are applied.
-- **Impact.** Every new contributor and every CI run that follows the docs produces a non-functional
-  WASM layer. Silent failure: the SDK falls back to JS re-implementations or crashes at runtime.
+- **Description.** The real WASM bridge at `wasm/src/lib.rs` is
+  complete and production-quality. However, CLAUDE.md and the test
+  README both document `wasm-pack build crates/solid-core` as the
+  build command, which produces an empty pkg. Any developer
+  following the documented sequence gets a broken SDK with no error
+  message. Combined with SOLID-SEC-009 (the CI/SDK fracture), both
+  must be fixed for E2E to work.
+- **Impact.** Every new contributor and every CI run that follows
+  the docs produces a non-functional WASM layer. Silent failure.
 - **Remediation.** Change both files to:
   `wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release`
-  Remove the `wasm` feature from `crates/solid-core/Cargo.toml` or add a clear comment that the
-  feature is unused and the real bridge is in the `wasm/` crate.
-- **Regression gate.** CI step `wasm_bridge_smoke`: build pkg from `wasm/`, call
-  `computeHardenedNullifier`, assert 32-byte non-zero result.
-- **Blocks:** SOLID-SEC-009, SOLID-SEC-010, all E2E testing. Close in Phase 1.
+- **Regression gate.** `wasm_bridge_smoke` CI step: build pkg from
+  `wasm/`, call `computeHardenedNullifier`, assert non-zero.
+- **Blocks:** SOLID-SEC-009, SOLID-SEC-010, all E2E. Close in Phase 1.
 
----
-
-### SOLID-SEC-029 -- `IdentityAnchor` always has `enabled=1`; padding slots over-constrained
+### SOLID-SEC-029 -- `IdentityAnchor` always `enabled = 1`; padding slots over-constrained
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22 (v0.4 audit pass)
-- **Last updated:** 2026-04-22
+- **Introduced:** 2026-04-22 (v0.4 audit; folds in master-audit BUG-NEW-02)
 - **Evidence:** `circuits/lib/identity_anchor.circom:46-53`
-  ```
-  globalInclusion.enabled <== 1;   // always enabled, even for schemaHash=0 slots
-  ```
-- **Description.** `CredentialAtom` correctly guards zero-schema padding slots with
-  `enabled = 1 - isZero(schemaHash)`. However `IdentityAnchor`, instantiated once per
-  credential slot at `batch_credential_query.circom:111-122`, always sets
-  `globalInclusion.enabled = 1`. For a padding slot (schemaHash=0), the circuit still
-  requires a valid Merkle inclusion proof for the identity leaf derived from
-  `Poseidon(BabyPbk(Poseidon(masterKey, 0)).Ax, ..., revocationNonce)`. The global tree
-  would need to pre-store these zero-schema derived entries, which is architecturally wrong
-  and not the intended design.
-- **Impact.** The batch circuit cannot generate a proof for fewer than NUM_CREDS=4 active
-  credentials without populating the global tree with nonsensical zero-schema identity leaves.
-  Any holder with 1, 2, or 3 active credentials cannot prove. Medium severity because a
-  workaround exists (always populate 4 credentials) but it leaks metadata and forces unnecessary
-  credential tree entries.
-- **Remediation.** Pass an `enabled` signal into `IdentityAnchor`:
-  in the template declaration: `signal input enabled;`
-  change: `globalInclusion.enabled <== enabled;`
-  in `batch_credential_query.circom:114`, add: `anchors[i].enabled <== 1 - isZero[i].out;`
-  This is a circuit change -- bundle with SOLID-SEC-001 in the Phase 1 circuit revision.
-- **Regression gate.** Circuit witness test: 3-credential batch (1 padding slot) generates a
-  valid witness without any zero-schema global tree entry.
-- **Blocks:** Correct multi-credential proofs. Bundle fix with SOLID-SEC-001.
-
----
+- **Description.** `CredentialAtom` correctly guards zero-schema
+  padding slots with `enabled = 1 - isZero(schemaHash)`. However
+  `IdentityAnchor`, instantiated once per credential slot at
+  `batch_credential_query.circom:111-122`, always sets
+  `globalInclusion.enabled = 1`. For a padding slot (schemaHash=0)
+  the circuit still requires a valid Merkle inclusion proof for the
+  derived identity leaf. The global tree would need zero-schema
+  derived entries pre-loaded, which is architecturally wrong.
+- **Impact.** Batch circuit cannot generate proofs for fewer than
+  NUM_CREDS=4 active credentials. Any holder with 1, 2, or 3
+  credentials cannot prove cleanly.
+- **Remediation.** Pass `enabled` into `IdentityAnchor`; gate
+  `globalInclusion.enabled <== enabled`. Circuit change -- bundle
+  with SOLID-SEC-001, SOLID-SEC-004, SOLID-SEC-008 in the Phase 1
+  trusted setup.
+- **Regression gate.** Circuit witness test: 3-credential batch
+  (1 padding slot) generates a valid witness without any
+  zero-schema global tree entry.
 
 ### SOLID-SEC-030 -- `transfer_slashed_lamports` can drain `stake_vault` to zero
 
 - **Severity:** MEDIUM
 - **Status:** Open
-- **Introduced:** 2026-04-22 (v0.4 audit pass)
-- **Last updated:** 2026-04-22
+- **Introduced:** 2026-04-22 (v0.4 audit; folds in master-audit BUG-NEW-03)
 - **Evidence:** `programs/issuer-registry/src/lib.rs:1192-1206`
-- **Description.** `transfer_slashed_lamports` uses raw lamport manipulation to move funds from
-  the shared `PDA([b"stake-vault"])` to `dao_treasury`. When `slash_amount == vault_lamports`,
-  the vault drops to 0 lamports. A 0-lamport account that is not explicitly closed via a `close`
-  constraint is garbage-collected by the Solana runtime. This permanently destroys the shared
-  stake vault PDA, making all future `register_issuer` SOL deposits fail with "account not found".
-  This is also the mechanism underlying SOLID-SEC-014 (single shared vault) -- per-issuer vaults
-  in Phase 3 would naturally fix this, but we need a short-term guard.
-- **Impact.** Triggered when the last remaining issuer's entire stake is slashed. Unlikely in
-  production but possible in a catastrophic scenario or adversarial test. Destroys the DAO's
-  staking infrastructure until manually reinitialized.
-- **Remediation.** Add before the lamport transfer:
+- **Description.** `transfer_slashed_lamports` uses raw lamport
+  manipulation to move funds from the shared
+  `PDA([b"stake-vault"])` to `dao_treasury`. When
+  `slash_amount == vault_lamports`, the vault drops to 0 lamports.
+  A 0-lamport account not explicitly closed is garbage-collected by
+  the Solana runtime. This permanently destroys the shared stake
+  vault PDA; future `register_issuer` SOL deposits fail with
+  "account not found". This is the acute form of SOLID-SEC-014
+  (single shared vault); per-issuer vaults in Phase 2 close the
+  structural concern.
+- **Impact.** Triggered when the last remaining issuer's entire
+  stake is slashed. Destroys DAO staking infrastructure.
+- **Remediation.**
   ```rust
   let min_bal = Rent::get()?.minimum_balance(0);
   require!(
@@ -847,33 +509,183 @@ regression gate that must ship with the fix.
       ErrorCode::StakeVaultWouldGoBelow
   );
   ```
-  Add `StakeVaultWouldGoBelow` to the error enum.
-- **Regression gate.** Unit test: calling slash with `amount == vault_lamports` fails with
-  `StakeVaultWouldGoBelow`. Separate test: calling slash with `amount == vault_lamports - min_bal`
-  succeeds (leaves the vault at exactly the rent floor).
-- **Blocks:** Production safety. Close in Phase 1.
+- **Regression gate.** Unit test: slash with
+  `amount == vault_lamports` fails; slash with
+  `amount == vault_lamports - min_bal` succeeds.
+
+---
+
+### Findings introduced by the 2026-04-22 master consolidated audit (renumbered after v0.4 collision)
+
+### SOLID-SEC-031 -- `bufToDecimal` LE interpretation of Solana pubkey
+
+- **Severity:** HIGH (pending end-to-end serialization trace; may
+  escalate to CRITICAL if confirmed)
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-06; renumbered
+  from 028)
+- **Evidence:**
+  - `ts-sdk/packages/holder/src/index.ts:391-397` (bufToDecimal
+    walks buf.length-1 -> 0, treats buf[0] as LSB = LE)
+  - `ts-sdk/packages/holder/src/index.ts:322`
+    (`verifierAddress: bufToDecimal(VERIFIER_ID_BYTES)`)
+  - `programs/zk-verifier/src/lib.rs:174-178` (on-chain
+    `require!(public_inputs[28] == ID.to_bytes())`)
+- **Description.** `bufToDecimal` is correct for LE-encoded field
+  elements but interprets a Solana pubkey as LE. If the round-trip
+  re-packs the resulting bigint via a BE `bigintToBytes32`,
+  `public_inputs[28]` will be reverse of `ID.to_bytes()` and the
+  on-chain check fails for every proof.
+- **Impact.** If the pack is BE: every E2E verification fails.
+  Explains missing devnet deploy.
+- **Remediation.** Separate helpers `bigintFromBytesLE` /
+  `bigintFromBytesBE`; BE for Solana pubkeys.
+- **Regression gate.** `vector_verifier_id_roundtrip` added to
+  cross-language suite.
+
+### SOLID-SEC-032 -- `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time check
+
+- **Severity:** HIGH
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-02; renumbered
+  from 029)
+- **Evidence:** `crates/solid-light/src/cpi_helpers.rs:54-59`
+- **Description.** Hand-decoded base58 pubkey stored as a 32-byte
+  constant. The P0-2 owner-check on `global_tree` / `schema_tree_N`
+  depends on this constant. `scripts/check_program_ids.py` does
+  NOT validate it. Future redeploy that updates `Anchor.toml` but
+  not this constant silently reopens the forged-trust-root attack.
+- **Remediation.** Rust `#[test]` decoding base58 from build-time
+  constant; extend `check_program_ids.py`.
+- **Regression gate.** `schema_registry_id_bytes_matches_anchor_toml`.
+
+### SOLID-SEC-033 -- Identity cohesion catch-22 (E2E blocker)
+
+- **Severity:** HIGH
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit BUG-NEW-01; renumbered
+  from 030)
+- **Evidence:**
+  - `ts-sdk/packages/holder/src/index.ts:250-255` (compare against
+    `masterPublicKey.x`)
+  - `ts-sdk/packages/holder/src/index.ts:281-285` (circuit leaf uses
+    `deriveCredentialKey(masterPrivateKey, c.schemaHash)`)
+  - `circuits/lib/identity_anchor.circom:24-43`
+    (`identityState = Poseidon(derived.Ax, derived.Ay, revocNonce)`)
+- **Description.** SEC-17 cohesion check compares
+  `cred.holderPubKeyX` to master pubkey X. Circuit derives
+  per-schema keypair and anchors `identityState` using the DERIVED
+  key. No branch produces a provable witness.
+- **Impact.** No correctly-issued credential can produce a verifying
+  proof via the current holder SDK. Most likely reason E2E has
+  never been run successfully.
+- **Remediation.** Derive the per-schema pubkey inside the cohesion
+  check and compare against that.
+- **Regression gate.** `cohesion_check_passes_for_derived_key`.
+
+### SOLID-SEC-034 -- Missing PDA seed constraint on `issuer_account`
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-03; renumbered
+  from 033)
+- **Evidence:** `programs/issuer-registry/src/lib.rs:799-823,861`
+- **Description.** `SubmitFraudProof` and `SlashIssuer` contexts
+  declare `#[account(mut)] pub issuer_account: Account<'info,
+  IssuerAccount>` with no seed constraint. PDA seed derivation is
+  the primary guard elsewhere (`approve_via_trust_anchor`,
+  `withdraw_after_cooldown`).
+- **Remediation.** Add identical seed constraint.
+- **Regression gate.** Unit test: non-canonical PDA fails.
+
+### SOLID-SEC-035 -- `set_binding_status` unfreeze without timelock
+
+- **Severity:** LOW
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-05; renumbered
+  from 034)
+- **Evidence:** `programs/schema-registry/src/lib.rs:322-349`
+- **Description.** Unfreeze from `STATUS_FROZEN` to `STATUS_ACTIVE`
+  requires only the current authority; no timelock.
+- **Remediation.** Either 24h timelock, or document the trade-off
+  explicitly in `adr/0009-dao-voting-plus-trust-anchor-bypass.md`.
+
+### SOLID-SEC-036 -- Stale nullifier module docstring
+
+- **Severity:** LOW
+- **Status:** Open
+- **Introduced:** 2026-04-22 (corrected from master-audit NEW-SEC-07;
+  renumbered from 035)
+- **Evidence:** `crates/solid-core/src/nullifier.rs:1-8`
+- **Description.** Module docstring describes the 3-argument
+  nullifier; implementation at `:23-40` is the correct 5-argument
+  hardened formula. Doc-only mismatch.
+- **Remediation.** Update the module doc.
+
+### SOLID-SEC-037 -- `WithdrawAfterCooldown` missing authority constraint
+
+- **Severity:** INFO
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-01; renumbered
+  from 036)
+- **Evidence:** `programs/issuer-registry/src/lib.rs:995-1005`
+- **Description.** No `constraint = issuer_account.authority ==
+  issuer_authority.key()`, unlike `WithdrawStake` at `:788`. Seed
+  derivation is primary guard.
+- **Remediation.** Add the constraint for parity.
+
+### SOLID-SEC-038 -- Master-audit informational cluster
+
+- **Severity:** INFO
+- **Status:** Open
+- **Introduced:** 2026-04-22 (master-audit NEW-SEC-04, NEW-SEC-08,
+  NEW-SEC-10; renumbered from 037)
+- **Description.** Three informational hygiene items:
+  - `borrow` in `negate_g1_point` is `i16`; add a comment.
+  - `SchemaTreeBinding` writer 145 bytes, reader 113 bytes
+    (forward-compat); document in `verify_schema_root_binding`.
+  - `GreaterThan(8)` on `orSum` (max 4); document the bound.
+- **Remediation.** Code comments only.
 
 ---
 
 ## History
 
-| Date       | Audit                                                | Findings added | Findings closed |
-|------------|------------------------------------------------------|----------------|-----------------|
-| 2026-04-22 | `sec/audits/2026-04-22_v0.3_comprehensive_audit.md`  | SOLID-SEC-001 .. SOLID-SEC-027 | 0 |
-| 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md` | SOLID-SEC-028, SOLID-SEC-029, SOLID-SEC-030 | 0 |
+| Date       | Audit                                                                | New IDs                                   | IDs closed |
+|------------|----------------------------------------------------------------------|-------------------------------------------|------------|
+| 2026-04-22 | `sec/audits/2026-04-22_v0.3_comprehensive_audit.md`                  | SOLID-SEC-001..027                        | 0          |
+| 2026-04-22 | `sec/audits/2026-04-22_v0.3_antigravity_deep_system_audit.md`        | (folded into master)                      | 0          |
+| 2026-04-22 | `sec/audits/2026-04-22_v0.3_master_audit.md`                         | SOLID-SEC-031..038 (renumbered after v0.4 collision) | 0 |
+| 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`   | SOLID-SEC-028..030                        | 0          |
+
+### Note on the 2026-04-22 numbering
+
+The v0.4 audit and the master consolidated audit were authored in
+parallel branches. v0.4 landed on `main` first with SOLID-SEC-028,
+029, 030 occupying those IDs. Per `sec/README.md` ("IDs are stable,
+never reused"), the master audit's originally-proposed 028..037
+were renumbered on merge:
+
+- Two findings (master-audit IdentityAnchor `enabled` and
+  `stake_vault` GC) were identical to v0.4's 029 and 030 and were
+  collapsed into those IDs; the master-audit evidence was added to
+  the existing entries.
+- The other eight master-audit findings were renumbered to
+  SOLID-SEC-031..038 in order.
 
 ---
 
 ## Next-cycle checklist (for the auditor running the next pass)
 
-1. For every `Fixed` status here, verify the referenced commit lands
-   the claimed regression test and the fix addresses the root cause.
-   Flip `Fixed -> Verified` or reopen with a child entry
-   `SOLID-SEC-NNN.1`.
-2. For every `Open` status here older than 90 days, decide:
-   escalate severity, accept-as-`Won't Fix` with compensating control,
-   or flag as a milestone slip.
-3. Run the full audit methodology against any code changed since the
-   last snapshot. Net-new findings append here.
-4. Update the summary table counts and the `Last audit` header at top.
-5. Create the new snapshot under `sec/audits/<date>_<version>_<slug>.md`.
+1. For every `Fixed` status, verify the referenced commit lands the
+   claimed regression test and addresses root cause. Flip
+   `Fixed -> Verified` or reopen with child entry `SOLID-SEC-NNN.1`.
+2. For every `Open` status older than 90 days, decide: escalate
+   severity, accept-as-`Won't Fix` with compensating control, or flag
+   as milestone slip.
+3. Run full audit methodology against all code changed since last
+   snapshot. Net-new findings append here.
+4. Update summary counts and the "Last audit" header.
+5. Create new snapshot under `sec/audits/<date>_<version>_<slug>.md`.
+6. Cross-reference all new IDs with `plan/IMPLEMENTATION_PLAN.md` to
+   ensure each has a phase assignment and regression gate.
