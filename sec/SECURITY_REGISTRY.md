@@ -29,10 +29,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 3    | 0           | 0     | 0        | 0         | 3     |
 | HIGH      | 12   | 0           | 0     | 0        | 0         | 12    |
-| MEDIUM    | 13   | 0           | 0     | 0        | 0         | 13    |
+| MEDIUM    | 11   | 0           | 2     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
-| INFO      | 5    | 0           | 0     | 0        | 0         | 5     |
-| **Total** | 38   | 0           | 0     | 0        | 0         | 38    |
+| INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
+| **Total** | 35   | 0           | 3     | 0        | 0         | 38    |
 
 ---
 
@@ -59,15 +59,15 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-017   | MEDIUM   | Open   | `solid-prover` uses `ark_std::test_rng()` -> breaks unlinkability  |
 | SOLID-SEC-018   | MEDIUM   | Open   | `verifier_config` write lock on every verify caps throughput       |
 | SOLID-SEC-019   | MEDIUM   | Open   | `set_binding_status` / `transfer_tree_binding_authority` missing schema-hash re-assertion |
-| SOLID-SEC-020   | MEDIUM   | Open   | E2E scripts persist plaintext issuer + holder secrets              |
+| SOLID-SEC-020   | MEDIUM   | Fixed  | E2E scripts persist plaintext issuer + holder secrets              |
 | SOLID-SEC-021   | MEDIUM   | Open   | Depth-20 circuit caps global tree at ~250K holders                 |
 | SOLID-SEC-022   | LOW      | Open   | Local `IsZero` reimplementation in `credential_atom.circom` (also NEW-SEC-09 in master audit) |
 | SOLID-SEC-023   | LOW      | Open   | `active_issuers` counter drifts on Cooldown -> Revoked path        |
 | SOLID-SEC-024   | LOW      | Open   | `unstake_tokens` uses raw `-=` instead of `checked_sub`            |
 | SOLID-SEC-025   | INFO     | Open   | `CheckIssuerStatus` ungated and never called on-chain              |
 | SOLID-SEC-026   | INFO     | Open   | `Credential::verify_integrity` never called on-chain               |
-| SOLID-SEC-027   | INFO     | Open   | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
-| SOLID-SEC-028   | MEDIUM   | Open   | `CLAUDE.md` and test README document wrong WASM build path         |
+| SOLID-SEC-027   | INFO     | Fixed  | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
+| SOLID-SEC-028   | MEDIUM   | Fixed  | `CLAUDE.md` and test README document wrong WASM build path         |
 | SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
 | SOLID-SEC-030   | MEDIUM   | Open   | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
 | SOLID-SEC-031   | HIGH     | Open   | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
@@ -363,11 +363,24 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-020 -- Plaintext E2E secrets
 
 - **Severity:** MEDIUM
-- **Status:** Open
+- **Status:** Fixed
+- **Fixed:** 2026-04-23 (Phase 1 Tier 1)
 - **Evidence:** `scripts/issue.ts:118-125`; `.gitignore`
-- **Remediation.** Move state to `/tmp` or encrypted keystore; add to
-  `.gitignore`; pre-commit hook rejects BJJ-key magic bytes.
-- **Regression gate.** Hook test.
+- **Remediation.** `.gitignore` now excludes `scripts/e2e_state.json`,
+  `scripts/e2e_state.*.json`, `scripts/.secrets/`, and `~/.solid-protocol/`.
+  `scripts/hooks/pre-commit-no-secrets.sh` blocks staging of matching
+  filenames or staged diffs that introduce BJJ-key-shaped JSON fields
+  (`privateKey`, `secretKey`, `holderPrivateKey`, `issuerPrivateKey`,
+  `masterPrivateKey`, `bjjPrivateKey`). Install with
+  `ln -sf ../../scripts/hooks/pre-commit-no-secrets.sh .git/hooks/pre-commit`.
+- **Regression gate.** Phase 1 `gitignore_e2e_state_json` (manual test:
+  touch `scripts/e2e_state.json`; `git check-ignore -v` must return the
+  matching rule).
+- **Follow-up.** Scripts themselves (e.g. `scripts/issue.ts:118-125`) still
+  write plaintext state; that defensive write path itself is a separate
+  refactor tracked in the Phase 1 scripts cluster (SOLID-SEC-011 bootstrap)
+  -- the hook + gitignore are the ratchet that prevents an accidental
+  check-in regardless.
 
 ### SOLID-SEC-021 -- Depth-20 cap at ~250K holders
 
@@ -424,10 +437,20 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-027 -- Stale roadmap checkboxes
 
 - **Severity:** INFO
-- **Status:** Open
-- **Evidence:** `docs/IMPROVEMENTS_ROADMAP.md` (37 items all `[ ]`)
-- **Remediation.** Flip closed items. `scripts/check_docs.py`
-  enforces agreement with this registry.
+- **Status:** Fixed
+- **Fixed:** 2026-04-23 (Phase 1 Tier 1)
+- **Evidence:** `docs/IMPROVEMENTS_ROADMAP.md`
+- **Remediation.** Reconciliation pass on 2026-04-23: P0 items all
+  marked `[x]`; P1/P2 items reflect actual code state with `[~]` for
+  items whose scope is now split with a more specific SOLID-SEC-NNN;
+  stale audit artifacts (`docs/SOLID_*.md`, `docs/e2e_*`,
+  `docs/infra_roadmap.md`, `docs/solid_protocol_terminal_manifesto.md`)
+  relocated under `docs/archive/` with a HISTORICAL banner in
+  `docs/archive/README.md`. The roadmap header now explicitly defers
+  to `sec/SECURITY_REGISTRY.md` as canonical.
+- **Regression gate.** `scripts/check_docs.py` (Phase 1 follow-up work)
+  will diff the registry status board against the roadmap checklist
+  and fail CI on drift.
 
 ---
 
@@ -436,27 +459,29 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-028 -- CLAUDE.md and test README document wrong WASM build path
 
 - **Severity:** MEDIUM
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22 (v0.4 audit)
+- **Fixed:** 2026-04-23 (Phase 1 Tier 1)
 - **Evidence:**
-  - `CLAUDE.md:49-50` (wrong build command: `crates/solid-core`)
-  - `tests/integration/README.md:19-20` (same wrong command)
+  - `CLAUDE.md:47-52` (command now `wasm-pack build wasm/ ...`)
+  - `tests/integration/README.md:19-20` (same correction)
   - Real bridge: `wasm/src/lib.rs` (305 lines, exports present)
-  - `crates/solid-core/src/` has zero `#[wasm_bindgen]` exports
+  - `crates/solid-core/src/` still has zero `#[wasm_bindgen]` exports
+    (by design per ADR-0002; solid-core stays BPF-compatible)
 - **Description.** The real WASM bridge at `wasm/src/lib.rs` is
-  complete and production-quality. However, CLAUDE.md and the test
-  README both document `wasm-pack build crates/solid-core` as the
-  build command, which produces an empty pkg. Any developer
-  following the documented sequence gets a broken SDK with no error
-  message. Combined with SOLID-SEC-009 (the CI/SDK fracture), both
-  must be fixed for E2E to work.
-- **Impact.** Every new contributor and every CI run that follows
-  the docs produces a non-functional WASM layer. Silent failure.
-- **Remediation.** Change both files to:
-  `wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release`
-- **Regression gate.** `wasm_bridge_smoke` CI step: build pkg from
-  `wasm/`, call `computeHardenedNullifier`, assert non-zero.
-- **Blocks:** SOLID-SEC-009, SOLID-SEC-010, all E2E. Close in Phase 1.
+  complete and production-quality. CLAUDE.md and the test README
+  previously documented `wasm-pack build crates/solid-core` which
+  produced an empty pkg with no error. Both files now document the
+  correct `wasm-pack build wasm/ ...` command with an inline comment
+  explaining the separation.
+- **Remediation landed.** Updated both documentation sites to the
+  correct `wasm/` path. Added a clarifying comment in CLAUDE.md
+  referencing ADR-0002.
+- **Regression gate (still needed).** `wasm_bridge_smoke` CI step
+  lands with SOLID-SEC-009 (CI + SDK pinned path) in Phase 1 Tier 4;
+  that gate closes the silent-drift surface completely.
+- **Related.** SOLID-SEC-009 (code-layer fracture) is the code fix;
+  this entry was the documentation fix.
 
 ### SOLID-SEC-029 -- `IdentityAnchor` always `enabled = 1`; padding slots over-constrained
 

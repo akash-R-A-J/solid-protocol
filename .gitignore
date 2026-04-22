@@ -32,3 +32,11 @@ tools/solid-prover/target
 # The repo pins Cargo.lock at format v3 so anchor-cli 0.30.1 (which bundles a
 # pre-1.78 cargo in platform-tools) can parse it.  Regenerate with
 # `nix develop --command cargo generate-lockfile` if you need to refresh deps.
+
+# SOLID-SEC-020: local E2E state files contain plaintext BJJ / Solana keypairs.
+# They must never be committed. scripts/hooks/pre-commit-no-secrets.sh is the
+# defense-in-depth gate; these patterns are the first line.
+scripts/e2e_state.json
+scripts/e2e_state.*.json
+scripts/.secrets/
+~/.solid-protocol/

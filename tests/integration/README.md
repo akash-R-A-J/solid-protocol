@@ -16,7 +16,7 @@ Prerequisites (same as the root README):
 # From repo root
 anchor build
 cd circuits && npm install && node scripts/setup.js && cd ..
-wasm-pack build crates/solid-core --target nodejs \
+wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
 cd ts-sdk && npm ci && npm run build && cd ..
 

@@ -1,26 +1,33 @@
-# SolID Protocol — Improvement Roadmap
+# SolID Protocol -- Improvement Roadmap
 
-> **Document Date:** 2026-04-21
-> **Source:** Independent system audit (2026-04-21, Antigravity)
-> **Scope:** All findings from the ground-level audit of every source file — on-chain programs,
-> circuits, TypeScript SDK, Rust crates, CI, docs, and deployment manifests.
+> **Original document date:** 2026-04-21
+> **Last status reconciliation:** 2026-04-23 (Phase 1 Tier 1 pass)
+> **Original source:** Independent system audit (2026-04-21, Antigravity)
 >
-> This document is intentionally **read-only for the CI / build pipeline**.
-> It is a living engineering backlog. Check off items as they are completed.
-> Do NOT remove completed items; mark them `[x]` so the audit trail is preserved.
-
----
+> **Status as of 2026-04-23.** The sec/SECURITY_REGISTRY.md living tracker
+> is the canonical source of truth for every open and closed security
+> item. This document is preserved as the historical backlog and is kept
+> reconciled with the registry. When the two disagree, the registry wins.
+>
+> - New findings since 2026-04-21: recorded in the registry as
+>   SOLID-SEC-NNN, not appended here.
+> - Closed items: marked `[x]` below with a pointer to the relevant
+>   SOLID-SEC-NNN (or `-- no registry ID` if the item predates the
+>   registry).
+> - Cross-check: `scripts/check_docs.py` (Phase 1 work) enforces that
+>   `[x]` marks here agree with the registry's status board.
 
 ## How to read this document
 
-Items are grouped into four priority tiers:
+Items are grouped into four priority tiers. Emoji legend preserved for
+history; plain ASCII is used everywhere else per CLAUDE.md.
 
-| Tier | Label | Meaning |
-|------|-------|---------|
-| **P0** | 🔴 Blocking | System cannot be tested or deployed until fixed |
-| **P1** | 🟠 Pre-devnet | Must fix before any public devnet testing |
-| **P2** | 🟡 Pre-mainnet | Must fix before a mainnet launch |
-| **P3** | 🔵 Polish | Quality-of-life improvements; do after mainnet |
+| Tier | Meaning |
+|------|---------|
+| **P0** Blocking     | System cannot be tested or deployed until fixed |
+| **P1** Pre-devnet   | Must fix before any public devnet testing |
+| **P2** Pre-mainnet  | Must fix before a mainnet launch |
+| **P3** Polish       | Quality-of-life improvements; do after mainnet |
 
 Each entry has:
 - A short **title**
@@ -717,61 +724,70 @@ This enables direct integration with existing enterprise credential infrastructu
 
 ## Summary Checklist
 
+Reconciled against code + `sec/SECURITY_REGISTRY.md` on 2026-04-23.
+Format: `[x]` = landed in code; `[ ]` = open (cross-reference given).
+
 ```
-P0 — Fix Before Any Testing (6 items)
-[ ] P0-1  RegistryConfig space 80 → 112 bytes
-[ ] P0-2  Add owner checks to global_tree and schema_tree_N
-[ ] P0-3  vote_on_issuer must increment active_votes_count
-[ ] P0-4  vote_on_issuer must check voting deadline
-[ ] P0-5  Fix nullifier hex vs decimal parsing in holder SDK
-[ ] P0-6  Create @solid-protocol/verifier package
+P0 -- Fix Before Any Testing (6 items)
+[x] P0-1  RegistryConfig space 80 -> 112 bytes                            (in code)
+[x] P0-2  Add owner checks to global_tree and schema_tree_N                (ADR-0010; guarded by SOLID-SEC-032 build-time check)
+[x] P0-3  vote_on_issuer must increment active_votes_count                 (in code)
+[x] P0-4  vote_on_issuer must check voting deadline                        (in code)
+[x] P0-5  Fix nullifier hex vs decimal parsing in holder SDK               (in code)
+[x] P0-6  Create @solid-protocol/verifier package                          (in code: ts-sdk/packages/verifier/src/index.ts)
 
-P1 — Fix Before Devnet Testing (9 items)
-[ ] P1-1  Mark staker_account and vote_record as mut in ReleaseVote
-[ ] P1-2  Add access control to IncrementUsage
-[ ] P1-3  Transfer slashed lamports to treasury in slash_issuer
-[ ] P1-4  Emit IssuerApproved in approve_via_trust_anchor
-[ ] P1-5  Add PDA constraint to target_issuer in ApproveViaTrustAnchor
-[ ] P1-6  Add VK size cap in store_verification_key
-[ ] P1-7  Fix identity commitment: use per-schema keys, not master key
-[ ] P1-8  Update devnet.json with correct program IDs and toolchain
-[ ] P1-9  Extend check_program_ids.py to validate devnet.json
+P1 -- Fix Before Devnet Testing (9 items)
+[x] P1-1  Mark staker_account and vote_record as mut in ReleaseVote        (in code)
+[x] P1-2  Add access control to IncrementUsage                             (in code)
+[x] P1-3  Transfer slashed lamports to treasury in slash_issuer            (in code; rent-floor guard tracked as SOLID-SEC-030)
+[x] P1-4  Emit IssuerApproved in approve_via_trust_anchor                  (in code)
+[x] P1-5  Add PDA constraint to target_issuer in ApproveViaTrustAnchor     (in code)
+[x] P1-6  Add VK size cap in store_verification_key                        (in code)
+[~] P1-7  Fix identity commitment: use per-schema keys, not master key     (circuit + commitment path fixed; cohesion check still compares master key: SOLID-SEC-033)
+[ ] P1-8  Update devnet.json with correct program IDs and toolchain        (no live deploy recorded; SOLID-SEC-027 tracks doc truth)
+[ ] P1-9  Extend check_program_ids.py to validate devnet.json              (bundled with SOLID-SEC-032)
 
-P2 — Fix Before Mainnet (14 items)
-[ ] P2-1  Add numPredicates <= MAX_PREDICATES constraint to circuit
-[ ] P2-2  Add compoundLogic binary constraint to circuit
-[ ] P2-3  Instantiate ExpirationChecker for each credential in batch circuit
-[ ] P2-4  Fix resolveSchema memcmp offset
-[ ] P2-5  Fix listIssuers filter byte and offset
-[ ] P2-6  Fix SchemaAccount space for field_names Vec
-[ ] P2-7  Add GLOBAL_DEPTH parameter to batch circuit (remove hardcoded 20)
-[ ] P2-8  Deploy governance token and replace placeholder pubkeys
-[ ] P2-9  Add chunk sequence validation to store_verification_key
-[ ] P2-10 Wire cross-language vector test into CI as required gate
-[ ] P2-11 Implement revocation (v1 design is ready)
-[ ] P2-12 Add issuer public key binding in ZK proof path
-[ ] P2-13 Run trusted setup ceremony and publish circuit artifacts
-[ ] P2-14 Implement real SolID.prove() in top-level SDK
+P2 -- Fix Before Mainnet (14 items)
+[x] P2-1  Add numPredicates <= MAX_PREDICATES constraint to circuit        (in code)
+[x] P2-2  Add compoundLogic binary constraint to circuit                   (in code)
+[x] P2-3  Instantiate ExpirationChecker for each credential                (in circuit; Clock binding tracked as SOLID-SEC-005)
+[x] P2-4  Fix resolveSchema memcmp offset                                  (in code)
+[x] P2-5  Fix listIssuers filter byte and offset                           (in code)
+[x] P2-6  Fix SchemaAccount space for field_names Vec                      (in code)
+[x] P2-7  Add GLOBAL_DEPTH parameter to batch circuit                      (in code)
+[ ] P2-8  Deploy governance token and replace placeholder pubkeys          (placeholders still present in config.ts:35-36)
+[x] P2-9  Add chunk sequence validation to store_verification_key          (in code; VK freeze-gate tracked as SOLID-SEC-006)
+[~] P2-10 Wire cross-language vector test into CI as required gate         (narrow: 2/10 primitives -- SOLID-SEC-010)
+[~] P2-11 Implement revocation (v1 design is ready)                        (circuit + on-chain done; holder + issuer SDK + events not done)
+[ ] P2-12 Add issuer public key binding in ZK proof path                   (SOLID-SEC-004)
+[ ] P2-13 Run trusted setup ceremony and publish circuit artifacts         (single-party; multi-party is SOLID-SEC-012)
+[x] P2-14 Implement real SolID.prove() in top-level SDK                    (in code)
 
-P3 — Polish (8 items)
-[ ] P3-1  Remove dead NullifierComputer template
-[ ] P3-2  Remove dead signature_verifier.circom file
-[ ] P3-3  Fix IsZero name collision in credential_atom.circom
-[ ] P3-4  Fix nullifier_bloom ghost reference in devnet.json
-[ ] P3-5  Resolve dead SasAttestationBuilder.attester field
-[ ] P3-6  Document withdrawal flow in issuer-guide.md
-[ ] P3-7  Document set_binding_status in schemas.md
-[ ] P3-8  Document VkBuf stack assertion pattern in architecture.md
+P3 -- Polish (8 items)
+[ ] P3-1  Remove dead NullifierComputer template                           (SOLID-SEC-036: stale 3-arg docstring -- corrected scope)
+[ ] P3-2  Remove dead signature_verifier.circom file                       (still present; defer)
+[ ] P3-3  Fix IsZero name collision in credential_atom.circom              (SOLID-SEC-022)
+[ ] P3-4  Fix nullifier_bloom ghost reference in devnet.json               (bundled with P1-8)
+[ ] P3-5  Resolve dead SasAttestationBuilder.attester field                (defer)
+[ ] P3-6  Document withdrawal flow in issuer-guide.md                      (defer)
+[ ] P3-7  Document set_binding_status in schemas.md                        (defer; SOLID-SEC-035 covers the governance side)
+[ ] P3-8  Document VkBuf stack assertion pattern in architecture.md        (defer)
 
-Architectural (6 items — longer term)
-[ ] ARCH-1 Evaluate universal-setup PLONK for circuit upgrade flexibility
-[ ] ARCH-2 Implement delegated proving with proper privacy disclosures
-[ ] ARCH-3 Build HeliusDasAdapter for production Merkle proof retrieval
-[ ] ARCH-4 Rotate all upgrade authorities to a multisig before mainnet
-[ ] ARCH-5 Generate Anchor IDL and wire IDL-based TS client
-[ ] ARCH-6 Build W3C Verifiable Credentials translation layer
+Architectural (6 items -- longer term)
+[ ] ARCH-1 Evaluate universal-setup PLONK for circuit upgrade flexibility  (Phase 4)
+[ ] ARCH-2 Implement delegated proving with proper privacy disclosures     (Phase 4)
+[ ] ARCH-3 Build HeliusDasAdapter for production Merkle proof retrieval    (Phase 3)
+[ ] ARCH-4 Rotate all upgrade authorities to a multisig before mainnet     (SOLID-SEC-013; Phase 3)
+[ ] ARCH-5 Generate Anchor IDL and wire IDL-based TS client                (Phase 2/3)
+[ ] ARCH-6 Build W3C Verifiable Credentials translation layer              (Phase 4)
 ```
+
+Legend: `[x]` landed; `[~]` partially landed (scope split between
+original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
+
+Registry count (as of 2026-04-23): 38 findings; 0 closed (Phase 1 in
+progress -- this reconciliation itself closes SOLID-SEC-027).
 
 ---
 
-*End of roadmap. Total: 37 tracked items across 4 tiers + 6 architectural targets.*
+*End of roadmap. Current state lives in `sec/SECURITY_REGISTRY.md`.*

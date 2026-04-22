@@ -45,8 +45,11 @@ Run from the repo root:
 # Circuits (produces .wasm and .zkey for the current circuit)
 cd circuits && npm install && node scripts/setup.js && cd ..
 
-# WASM bridge for the TS SDK
-wasm-pack build crates/solid-core --target nodejs \
+# WASM bridge for the TS SDK.
+# The canonical bridge lives in the top-level `wasm/` crate, not in
+# `crates/solid-core` (which stays BPF-compatible and has no `#[wasm_bindgen]`
+# exports). SOLID-SEC-028 / ADR-0002.
+wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
 
 # Anchor programs
