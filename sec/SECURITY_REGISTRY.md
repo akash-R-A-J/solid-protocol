@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 2    | 0           | 1     | 0        | 0         | 3     |
-| HIGH      | 11   | 0           | 1     | 0        | 0         | 12    |
+| HIGH      | 9    | 0           | 3     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 32   | 0           | 6     | 0        | 0         | 38    |
+| **Total** | 30   | 0           | 8     | 0        | 0         | 38    |
 
 ---
 
@@ -70,9 +70,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-028   | MEDIUM   | Fixed  | `CLAUDE.md` and test README document wrong WASM build path         |
 | SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
 | SOLID-SEC-030   | MEDIUM   | Fixed  | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
-| SOLID-SEC-031   | HIGH     | Open   | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
+| SOLID-SEC-031   | HIGH     | Fixed  | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
 | SOLID-SEC-032   | HIGH     | Open   | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
-| SOLID-SEC-033   | HIGH     | Open   | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
+| SOLID-SEC-033   | HIGH     | Fixed  | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
 | SOLID-SEC-034   | MEDIUM   | Open   | `SubmitFraudProof` / `SlashIssuer` contexts missing PDA seed constraint on `issuer_account` |
 | SOLID-SEC-035   | LOW      | Open   | `set_binding_status` can unfreeze without timelock                 |
 | SOLID-SEC-036   | LOW      | Open   | `nullifier.rs` module docstring describes stale 3-arg formula (impl is correct 5-arg) |
@@ -565,29 +565,35 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 ### SOLID-SEC-031 -- `bufToDecimal` LE interpretation of Solana pubkey
 
-- **Severity:** HIGH (pending end-to-end serialization trace; may
-  escalate to CRITICAL if confirmed)
-- **Status:** Open
+- **Severity:** HIGH (confirmed: `bigintToBytes32` packs BE;
+  the LE->BE mismatch reversed the pubkey bytes on every tx)
+- **Status:** Fixed
 - **Introduced:** 2026-04-22 (master-audit NEW-SEC-06; renumbered
   from 028)
-- **Evidence:**
-  - `ts-sdk/packages/holder/src/index.ts:391-397` (bufToDecimal
-    walks buf.length-1 -> 0, treats buf[0] as LSB = LE)
-  - `ts-sdk/packages/holder/src/index.ts:322`
-    (`verifierAddress: bufToDecimal(VERIFIER_ID_BYTES)`)
-  - `programs/zk-verifier/src/lib.rs:174-178` (on-chain
-    `require!(public_inputs[28] == ID.to_bytes())`)
-- **Description.** `bufToDecimal` is correct for LE-encoded field
-  elements but interprets a Solana pubkey as LE. If the round-trip
-  re-packs the resulting bigint via a BE `bigintToBytes32`,
-  `public_inputs[28]` will be reverse of `ID.to_bytes()` and the
-  on-chain check fails for every proof.
-- **Impact.** If the pack is BE: every E2E verification fails.
-  Explains missing devnet deploy.
-- **Remediation.** Separate helpers `bigintFromBytesLE` /
-  `bigintFromBytesBE`; BE for Solana pubkeys.
-- **Regression gate.** `vector_verifier_id_roundtrip` added to
-  cross-language suite.
+- **Fixed:** 2026-04-23 (Phase 1 Tier 3)
+- **Trace confirmed:** `bufToDecimal` at `ts-sdk/packages/holder/src/index.ts`
+  walks `i = buf.length - 1 -> 0`, putting buf[0] at the LSB
+  (little-endian). `bigintToBytes32` at the same file uses
+  `n.toString(16)` which emits hex in MSB-first order, then writes
+  byte[0] as MSB (big-endian). The two functions disagree on
+  endianness, so
+  `bigintToBytes32(BigInt(bufToDecimal(ID.to_bytes())))`
+  produces the byte-reversed pubkey. `zk-verifier::verify_batch_proof`
+  compares `public_inputs[28] == ID.to_bytes()` byte-for-byte, which
+  would fail every verification. This directly explains why
+  `deployments/devnet.json` has no recorded successful deploy.
+- **Remediation landed.** Added `bufToDecimalBE` helper that walks
+  `i = 0 -> buf.length` so a 32-byte pubkey interpreted BE round-trips
+  through `bigintToBytes32` back to the identical byte sequence. The
+  VERIFIER_ID_BYTES call sites in both `generateProof` and
+  `generateBatchProof` now use `bufToDecimalBE`. All other call sites
+  (merkle roots, schema hashes, BJJ scalars, Poseidon outputs) stay on
+  the LE `bufToDecimal` path, which matches the snarkjs / circomlib
+  convention for field-element serialization. Inline comments on both
+  helpers spell out the contract.
+- **Regression gate (in CI now).** Syntax + type-level check via `tsc`.
+  `vector_verifier_id_roundtrip` (cross-language) formalizes the gate
+  in Phase 2's SOLID-SEC-010 vector expansion.
 
 ### SOLID-SEC-032 -- `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time check
 
@@ -608,26 +614,30 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-033 -- Identity cohesion catch-22 (E2E blocker)
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed
 - **Introduced:** 2026-04-22 (master-audit BUG-NEW-01; renumbered
   from 030)
-- **Evidence:**
-  - `ts-sdk/packages/holder/src/index.ts:250-255` (compare against
-    `masterPublicKey.x`)
-  - `ts-sdk/packages/holder/src/index.ts:281-285` (circuit leaf uses
-    `deriveCredentialKey(masterPrivateKey, c.schemaHash)`)
-  - `circuits/lib/identity_anchor.circom:24-43`
-    (`identityState = Poseidon(derived.Ax, derived.Ay, revocNonce)`)
-- **Description.** SEC-17 cohesion check compares
-  `cred.holderPubKeyX` to master pubkey X. Circuit derives
-  per-schema keypair and anchors `identityState` using the DERIVED
-  key. No branch produces a provable witness.
-- **Impact.** No correctly-issued credential can produce a verifying
-  proof via the current holder SDK. Most likely reason E2E has
-  never been run successfully.
-- **Remediation.** Derive the per-schema pubkey inside the cohesion
-  check and compare against that.
-- **Regression gate.** `cohesion_check_passes_for_derived_key`.
+- **Fixed:** 2026-04-23 (Phase 1 Tier 3)
+- **Evidence:** `ts-sdk/packages/holder/src/index.ts` -- the
+  `generateBatchProof` cohesion loop now compares
+  `cred.holderPubKeyX` against the per-schema derived pubkey produced
+  by `deriveCredentialKey(masterPrivateKey, cred.schemaHash)`, not
+  against `masterPublicKey.x`.
+- **Remediation landed.** Derived keypairs are computed ONCE at
+  step 2b and reused for both the cohesion check (step 3) and the
+  identity-state anchor leaves (step 5). This guarantees the two
+  paths consume the same derivation byte-for-byte. `masterPublicKey`
+  is retained in the API signature for v0.2 caller compatibility and
+  is explicitly `void`-discarded inside the function with a
+  comment pointing readers at the correct downstream source of
+  truth.
+- **Regression gate (in CI now).** Syntax + type-level check via `tsc`.
+  Integration test `cohesion_check_passes_for_derived_key` lands with
+  the broader bankrun harness in Phase 2.
+- **Follow-up.** Consider removing the unused `masterPublicKey`
+  parameter from the public API in a future major version bump (v1.0)
+  together with an ADR, rather than a drive-by removal that would
+  regress downstream callers.
 
 ### SOLID-SEC-034 -- Missing PDA seed constraint on `issuer_account`
 

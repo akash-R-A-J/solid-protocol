@@ -168,7 +168,14 @@ export async function generateProof(
     queryValues,
     numPredicates: query.predicates.length,
     compoundLogic: query.compoundLogic === 'AND' ? 0 : 1,
-    verifierAddress: bufToDecimal(VERIFIER_ID_BYTES),
+    // SOLID-SEC-031: Solana pubkeys must be interpreted as big-endian so
+    // that the round-trip through `bigintToBytes32` (which packs BE) lands
+    // byte-for-byte equal to `ID.to_bytes()` on-chain -- the exact equality
+    // `verify_batch_proof` requires (see `public_inputs[28] == ID.to_bytes()`).
+    // Field elements (merkle roots, schema hashes, BJJ scalars) stay on
+    // the LE `bufToDecimal` path because that matches the snarkjs /
+    // circomlib convention for field-element serialization.
+    verifierAddress: bufToDecimalBE(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
 
@@ -240,19 +247,52 @@ export async function generateBatchProof(
     });
 
   const sortedCredentials = sortedCredsWithIndices.map(x => x.cred);
-  
+
   // 2. Create index mapping [originalIndex] -> [newPosition]
   const indexMap = new Map<number, number>();
   sortedCredsWithIndices.forEach((x, newIdx) => {
       indexMap.set(x.originalIndex, newIdx);
   });
 
-  // 3. SEC-17: Identity Cohesion — Validate all credentials belong to the master identity
-  for (const cred of sortedCredentials) {
-      if (Buffer.from(cred.holderPubKeyX).compare(masterPublicKey.x) !== 0) {
-          throw new Error("Identity Cohesion Failure: Credential does not belong to master identity");
-      }
+  // 2b. Derive per-schema keypairs ONCE so the cohesion check (step 3) and
+  // the identity-state anchor computation (step 5) consume identical keys.
+  // Required by SOLID-SEC-033.
+  const derivedKeypairs: BJJKeypair[] = sortedCredentials.map(c =>
+    deriveCredentialKey(masterPrivateKey, c.schemaHash)
+  );
+
+  // 3. SEC-17 / SOLID-SEC-033: Identity Cohesion.
+  //
+  // The circuit's IdentityAnchor derives a per-schema BabyJubJub keypair
+  // from (masterPrivateKey, schemaHash) and anchors the identity-state
+  // Merkle leaf to the DERIVED public key, not the master. Cohesion must
+  // therefore compare `cred.holderPubKeyX` against the derived pubkey.
+  //
+  // Comparing against `masterPublicKey.x` (pre-fix behavior) creates a
+  // catch-22: either the credential stores the master key (cohesion
+  // passes here, circuit commitment fails downstream because the leaf
+  // uses the derived key), or it stores the derived key (cohesion fails
+  // here, proof never starts). Neither branch ever produces a valid
+  // witness. That is why no correctly-issued credential could be proved
+  // before this fix.
+  for (let i = 0; i < sortedCredentials.length; i++) {
+    const cred = sortedCredentials[i];
+    const derivedX = derivedKeypairs[i].public_key_x;
+    if (Buffer.from(cred.holderPubKeyX).compare(derivedX) !== 0) {
+      throw new Error(
+        "Identity Cohesion Failure: credential holderPubKeyX does not match " +
+        "the per-schema derived pubkey for its schemaHash. Either the " +
+        "credential was issued to the wrong key, or the holder's master " +
+        "private key does not match the credential's intended holder."
+      );
+    }
   }
+
+  // `masterPublicKey` is now only an externally-supplied hint, kept for API
+  // compatibility with v0.2 callers. Intentionally unreferenced: the derived
+  // pubkey computed inside the circuit is the only authoritative identity
+  // used downstream.
+  void masterPublicKey;
 
   // 4. Fetch per-credential Merkle proofs (per-schema SPL AC trees).
   const credentialProofs = await Promise.all(
@@ -263,23 +303,16 @@ export async function generateBatchProof(
 
   // 5. Fetch a per-credential global inclusion proof.
   //
-  //    BUG-04 fix: The circuit's `IdentityAnchor` derives a per-schema
-  //    BabyJubJub keypair via
-  //        credPriv_i = Poseidon(masterKey, schemaHash_i)
-  //        (credAx_i, credAy_i) = BabyPbk(credPriv_i)
-  //    and computes the global-tree leaf as
-  //        identityState_i = Poseidon(credAx_i, credAy_i, revocationNonce).
+  // BUG-04 / SOLID-SEC-033: The circuit's `IdentityAnchor` derives a
+  // per-schema BabyJubJub keypair via
+  //     credPriv_i = Poseidon(masterKey, schemaHash_i)
+  //     (credAx_i, credAy_i) = BabyPbk(credPriv_i)
+  // and computes the global-tree leaf as
+  //     identityState_i = Poseidon(credAx_i, credAy_i, revocationNonce).
   //
-  //    The pre-remediation SDK used the naive master-key leaf
-  //        Poseidon(masterPK.x, masterPK.y, revocationNonce)
-  //    for every credential and fetched one shared global proof. Because
-  //    the circuit runs NUM_CREDS IdentityAnchors — each with its own
-  //    schema-derived key — the global-tree membership would never match.
-  //
-  //    We now derive the per-schema keypair and fetch one global proof per
-  //    credential, matching the circuit exactly.
-  const perSchemaAnchors = sortedCredentials.map(c => {
-    const kp: BJJKeypair = deriveCredentialKey(masterPrivateKey, c.schemaHash);
+  // We reuse the keypairs derived in step 2b so the cohesion check and
+  // the anchor leaves consume the exact same derivation.
+  const perSchemaAnchors = derivedKeypairs.map(kp => {
     const leaf = computeIdentityState(kp.public_key_x, kp.public_key_y, revocationNonce);
     return { keypair: kp, leaf };
   });
@@ -319,7 +352,14 @@ export async function generateBatchProof(
     numPredicates: query.predicates.length,
     compoundLogic: query.compoundLogic === 'AND' ? 0 : 1,
 
-    verifierAddress: bufToDecimal(VERIFIER_ID_BYTES),
+    // SOLID-SEC-031: Solana pubkeys must be interpreted as big-endian so
+    // that the round-trip through `bigintToBytes32` (which packs BE) lands
+    // byte-for-byte equal to `ID.to_bytes()` on-chain -- the exact equality
+    // `verify_batch_proof` requires (see `public_inputs[28] == ID.to_bytes()`).
+    // Field elements (merkle roots, schema hashes, BJJ scalars) stay on
+    // the LE `bufToDecimal` path because that matches the snarkjs /
+    // circomlib convention for field-element serialization.
+    verifierAddress: bufToDecimalBE(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
 
@@ -388,9 +428,38 @@ export async function verifyProofLocally(
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
+/**
+ * Interpret a byte buffer as a little-endian integer (field-element
+ * convention). `buf[0]` is treated as the least-significant byte.
+ *
+ * Use this for circuit field elements: Poseidon outputs, BJJ scalars,
+ * merkle roots, schema hashes, salts, issuer signature components.
+ * Do NOT use this for Solana pubkeys -- use `bufToDecimalBE` instead
+ * (see SOLID-SEC-031).
+ */
 function bufToDecimal(buf: Uint8Array): string {
   let result = 0n;
   for (let i = buf.length - 1; i >= 0; i--) {
+    result = result * 256n + BigInt(buf[i]);
+  }
+  return result.toString();
+}
+
+/**
+ * Interpret a byte buffer as a big-endian integer. `buf[0]` is treated as
+ * the most-significant byte.
+ *
+ * Use this specifically for Solana program/account pubkeys when feeding
+ * them into the circuit as field elements. The on-chain verifier
+ * compares `public_inputs[28] == ID.to_bytes()` byte-for-byte. The SDK's
+ * proof-submission path packs the bigint via `bigintToBytes32` which is
+ * already BE; feeding the integer a matching BE interpretation here
+ * makes the round-trip yield the same bytes on both ends. See
+ * SOLID-SEC-031 for the full trace.
+ */
+function bufToDecimalBE(buf: Uint8Array): string {
+  let result = 0n;
+  for (let i = 0; i < buf.length; i++) {
     result = result * 256n + BigInt(buf[i]);
   }
   return result.toString();
