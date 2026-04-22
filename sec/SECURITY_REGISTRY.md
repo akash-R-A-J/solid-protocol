@@ -3,10 +3,10 @@
 Canonical, living tracker for every security finding across every audit.
 One file. No fragmentation. Nothing deleted.
 
-- Protocol version under review: v0.3 (April 2026, post-remediation)
-- Last audit: 2026-04-22 (`sec/audits/2026-04-22_v0.3_comprehensive_audit.md`)
+- Protocol version under review: v0.4 (April 2026, second audit pass)
+- Last audit: 2026-04-22 (`sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`)
 - Last registry update: 2026-04-22
-- Next audit target: after Phase 1 close-out (see audit snapshot, Section 7)
+- Next audit target: after Phase 1 close-out (see build plan Section 7)
 
 See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
@@ -18,10 +18,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 3    | 0           | 0     | 0        | 0         | 3     |
 | HIGH      | 9    | 0           | 0     | 0        | 0         | 9     |
-| MEDIUM    | 9    | 0           | 0     | 0        | 0         | 9     |
+| MEDIUM    | 12   | 0           | 0     | 0        | 0         | 12    |
 | LOW       | 3    | 0           | 0     | 0        | 0         | 3     |
 | INFO      | 3    | 0           | 0     | 0        | 0         | 3     |
-| **Total** | 27   | 0           | 0     | 0        | 0         | 27    |
+| **Total** | 30   | 0           | 0     | 0        | 0         | 30    |
 
 ---
 
@@ -56,6 +56,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-025   | INFO     | Open   | `CheckIssuerStatus` ungated and never called on-chain              |
 | SOLID-SEC-026   | INFO     | Open   | `Credential::verify_integrity` never called on-chain               |
 | SOLID-SEC-027   | INFO     | Open   | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
+| SOLID-SEC-028   | MEDIUM   | Open   | `CLAUDE.md` and test README document wrong WASM build path (`crates/solid-core` instead of `wasm/`) |
+| SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots forced to prove global inclusion |
+| SOLID-SEC-030   | MEDIUM   | Open   | `transfer_slashed_lamports` can drain `stake_vault` to 0, garbage-collecting the shared PDA |
 
 ---
 
@@ -757,11 +760,107 @@ regression gate that must ship with the fix.
 
 ---
 
+### SOLID-SEC-028 -- CLAUDE.md and test README document wrong WASM build path
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-22 (v0.4 audit pass)
+- **Last updated:** 2026-04-22
+- **Evidence:**
+  - `CLAUDE.md:49-50` (wrong build command: `crates/solid-core`)
+  - `tests/integration/README.md:19-20` (same wrong command)
+  - Real bridge: `wasm/src/lib.rs` (305 lines, all exports present and correct)
+  - `crates/solid-core/src/` has zero `#[wasm_bindgen]` exports
+- **Description.** The real WASM bridge at `wasm/src/lib.rs` is complete and production-quality.
+  However, CLAUDE.md and the test README both document `wasm-pack build crates/solid-core` as
+  the build command, which produces an empty pkg. Any developer following the documented sequence
+  gets a broken SDK with no error message. This makes SOLID-SEC-009 and SOLID-SEC-010 untestable
+  even after all code fixes are applied.
+- **Impact.** Every new contributor and every CI run that follows the docs produces a non-functional
+  WASM layer. Silent failure: the SDK falls back to JS re-implementations or crashes at runtime.
+- **Remediation.** Change both files to:
+  `wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release`
+  Remove the `wasm` feature from `crates/solid-core/Cargo.toml` or add a clear comment that the
+  feature is unused and the real bridge is in the `wasm/` crate.
+- **Regression gate.** CI step `wasm_bridge_smoke`: build pkg from `wasm/`, call
+  `computeHardenedNullifier`, assert 32-byte non-zero result.
+- **Blocks:** SOLID-SEC-009, SOLID-SEC-010, all E2E testing. Close in Phase 1.
+
+---
+
+### SOLID-SEC-029 -- `IdentityAnchor` always has `enabled=1`; padding slots over-constrained
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-22 (v0.4 audit pass)
+- **Last updated:** 2026-04-22
+- **Evidence:** `circuits/lib/identity_anchor.circom:46-53`
+  ```
+  globalInclusion.enabled <== 1;   // always enabled, even for schemaHash=0 slots
+  ```
+- **Description.** `CredentialAtom` correctly guards zero-schema padding slots with
+  `enabled = 1 - isZero(schemaHash)`. However `IdentityAnchor`, instantiated once per
+  credential slot at `batch_credential_query.circom:111-122`, always sets
+  `globalInclusion.enabled = 1`. For a padding slot (schemaHash=0), the circuit still
+  requires a valid Merkle inclusion proof for the identity leaf derived from
+  `Poseidon(BabyPbk(Poseidon(masterKey, 0)).Ax, ..., revocationNonce)`. The global tree
+  would need to pre-store these zero-schema derived entries, which is architecturally wrong
+  and not the intended design.
+- **Impact.** The batch circuit cannot generate a proof for fewer than NUM_CREDS=4 active
+  credentials without populating the global tree with nonsensical zero-schema identity leaves.
+  Any holder with 1, 2, or 3 active credentials cannot prove. Medium severity because a
+  workaround exists (always populate 4 credentials) but it leaks metadata and forces unnecessary
+  credential tree entries.
+- **Remediation.** Pass an `enabled` signal into `IdentityAnchor`:
+  in the template declaration: `signal input enabled;`
+  change: `globalInclusion.enabled <== enabled;`
+  in `batch_credential_query.circom:114`, add: `anchors[i].enabled <== 1 - isZero[i].out;`
+  This is a circuit change -- bundle with SOLID-SEC-001 in the Phase 1 circuit revision.
+- **Regression gate.** Circuit witness test: 3-credential batch (1 padding slot) generates a
+  valid witness without any zero-schema global tree entry.
+- **Blocks:** Correct multi-credential proofs. Bundle fix with SOLID-SEC-001.
+
+---
+
+### SOLID-SEC-030 -- `transfer_slashed_lamports` can drain `stake_vault` to zero
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-22 (v0.4 audit pass)
+- **Last updated:** 2026-04-22
+- **Evidence:** `programs/issuer-registry/src/lib.rs:1192-1206`
+- **Description.** `transfer_slashed_lamports` uses raw lamport manipulation to move funds from
+  the shared `PDA([b"stake-vault"])` to `dao_treasury`. When `slash_amount == vault_lamports`,
+  the vault drops to 0 lamports. A 0-lamport account that is not explicitly closed via a `close`
+  constraint is garbage-collected by the Solana runtime. This permanently destroys the shared
+  stake vault PDA, making all future `register_issuer` SOL deposits fail with "account not found".
+  This is also the mechanism underlying SOLID-SEC-014 (single shared vault) -- per-issuer vaults
+  in Phase 3 would naturally fix this, but we need a short-term guard.
+- **Impact.** Triggered when the last remaining issuer's entire stake is slashed. Unlikely in
+  production but possible in a catastrophic scenario or adversarial test. Destroys the DAO's
+  staking infrastructure until manually reinitialized.
+- **Remediation.** Add before the lamport transfer:
+  ```rust
+  let min_bal = Rent::get()?.minimum_balance(0);
+  require!(
+      vault_lamports.saturating_sub(slash_amount) >= min_bal,
+      ErrorCode::StakeVaultWouldGoBelow
+  );
+  ```
+  Add `StakeVaultWouldGoBelow` to the error enum.
+- **Regression gate.** Unit test: calling slash with `amount == vault_lamports` fails with
+  `StakeVaultWouldGoBelow`. Separate test: calling slash with `amount == vault_lamports - min_bal`
+  succeeds (leaves the vault at exactly the rent floor).
+- **Blocks:** Production safety. Close in Phase 1.
+
+---
+
 ## History
 
 | Date       | Audit                                                | Findings added | Findings closed |
 |------------|------------------------------------------------------|----------------|-----------------|
 | 2026-04-22 | `sec/audits/2026-04-22_v0.3_comprehensive_audit.md`  | SOLID-SEC-001 .. SOLID-SEC-027 | 0 |
+| 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md` | SOLID-SEC-028, SOLID-SEC-029, SOLID-SEC-030 | 0 |
 
 ---
 
