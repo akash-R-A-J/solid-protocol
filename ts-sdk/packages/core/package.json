@@ -4,12 +4,13 @@
   "description": "Core WASM bindings and typed re-exports for SolID Protocol",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "wasm"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "jest"
-  },
-  "dependencies": {
-    "@solid-protocol/wasm": "file:../../../wasm/pkg"
   },
   "devDependencies": {
     "typescript": "^5.3.0"

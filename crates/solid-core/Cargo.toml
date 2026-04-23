@@ -7,7 +7,10 @@ description = "Core cryptographic primitives for SolID Protocol"
 
 [features]
 default = []
-wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:js-sys"]
+# NOTE: `solid-core` stays strictly BPF-compatible and exposes zero
+# `#[wasm_bindgen]` symbols. The WASM bridge for the TS SDK lives in
+# `wasm/` (crate `solid-wasm`) as a separate workspace member.  See
+# ADR-0002 / SOLID-SEC-009 / SOLID-SEC-028.
 
 [dependencies]
 light-poseidon = "0.2"
@@ -26,9 +29,6 @@ argon2 = "0.5"
 blake2 = "0.10"
 hex = { workspace = true }
 thiserror = { workspace = true }
-wasm-bindgen = { version = "0.2", optional = true }
-serde-wasm-bindgen = { version = "0.6", optional = true }
-js-sys = { version = "0.3", optional = true }
 
 [dev-dependencies]
 ark-std = { workspace = true }

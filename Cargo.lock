@@ -2638,16 +2638,13 @@ dependencies = [
  "ark-std 0.4.0",
  "blake2",
  "hex",
- "js-sys",
  "light-poseidon",
  "num-bigint",
  "num-traits",
  "rand 0.8.6",
  "serde",
- "serde-wasm-bindgen",
  "serde_json",
  "thiserror 1.0.69",
- "wasm-bindgen",
 ]
 
 [[package]]

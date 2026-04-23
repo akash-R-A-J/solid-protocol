@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 2    | 0           | 1     | 0        | 0         | 3     |
-| HIGH      | 8    | 0           | 4     | 0        | 0         | 12    |
+| HIGH      | 7    | 0           | 5     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 29   | 0           | 9     | 0        | 0         | 38    |
+| **Total** | 28   | 0           | 10    | 0        | 0         | 38    |
 
 ---
 
@@ -48,7 +48,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
 | SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
 | SOLID-SEC-008   | HIGH     | Open   | Nullifier does not include epoch / global root                     |
-| SOLID-SEC-009   | HIGH     | Open   | WASM bridge fractured across 3 locations                           |
+| SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
 | SOLID-SEC-011   | HIGH     | Open   | E2E scripts bugged: zkey name, missing import, missing issuer flow |
 | SOLID-SEC-012   | HIGH     | Open   | Trusted setup is single-party with timestamp entropy               |
@@ -256,21 +256,44 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-009 -- WASM bridge fractured across 3 locations
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-23)
 - **Introduced:** 2026-04-22
-- **Evidence:** `crates/solid-core/Cargo.toml:10`; `wasm/src/lib.rs`;
+- **Evidence (pre-fix):** `crates/solid-core/Cargo.toml:10`;
+  `wasm/src/lib.rs`;
   `.github/workflows/ci.yml:196-197,256-257,301-303`;
   `ts-sdk/packages/core/package.json`
-- **Description.** `Cargo.toml` declares a `wasm` feature in
+- **Description.** `Cargo.toml` declared a `wasm` feature on
   `solid-core` with zero `#[wasm_bindgen]` exports; the real bridge
-  lives in `wasm/`; CI builds from `crates/solid-core`; SDK imports
-  from `../../../wasm/pkg` which neither CI nor any script creates.
-  See SOLID-SEC-028 for the documentation variant of this defect.
+  lived in `wasm/`; CI built from `crates/solid-core` (empty `pkg`);
+  SDK imported from `../../../wasm/pkg` which neither CI nor any
+  script created. See SOLID-SEC-028 for the doc variant of the same
+  defect.
 - **Impact.** Silent drift between Rust primitives and TS SDK
-  consumers.
-- **Remediation.** Keep `wasm/` standalone (solid-core must remain
-  BPF-compatible). Fix CI + SDK pinned path.
-- **Regression gate.** CI job `wasm_bridge_smoke`.
+  consumers; a consumer who ran `npm ci` would import an empty
+  module and fail at runtime, not at build.
+- **Remediation (landed).** One source of truth per artifact:
+  - `wasm/` stays standalone; `crates/solid-core` is BPF-only, with
+    the dead `wasm` feature + `wasm-bindgen`/`js-sys`/
+    `serde-wasm-bindgen` deps deleted
+    (`crates/solid-core/Cargo.toml`, Cargo.lock).
+  - All three CI invocations (`wasm`, `sdk`,
+    `cross_language_vectors`) now run
+    `wasm-pack build wasm/ --target nodejs --out-dir
+    ts-sdk/packages/core/wasm --release`
+    (`.github/workflows/ci.yml`). The `wasm` job now hard-asserts
+    the expected artifacts exist on disk.
+  - `ts-sdk/packages/core/package.json` no longer depends on a
+    non-existent `@solid-protocol/wasm` package; the import is a
+    relative runtime path `../wasm/solid_wasm.js` from
+    `dist/index.js` (`ts-sdk/packages/core/src/index.ts`).
+  - Stale references in `docs/system_architecture.md`,
+    `docs/MODULE_CONTRACTS.md` reconciled to reality.
+- **Regression gate.** New CI job `wasm_bridge_smoke`
+  (`.github/workflows/ci.yml`) builds the bridge, builds
+  `@solid-protocol/core`, and runs `scripts/wasm_bridge_smoke.mjs`,
+  which exercises both Poseidon code paths through the SDK's
+  compiled entry point and asserts a non-zero 32-byte digest plus
+  distinct digests for distinct inputs.
 
 ### SOLID-SEC-010 -- Cross-language vectors 2/10 primitives
 

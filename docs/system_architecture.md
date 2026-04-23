@@ -195,9 +195,9 @@ crates/
 │   │   ├── schema.rs                 # Schema hash computation
 │   │   ├── query.rs                  # Query types + compound logic
 │   │   ├── credential.rs             # Credential types + serialization
-│   │   ├── merkle.rs                 # Merkle proof types (Light-compatible)
-│   │   └── wasm.rs                   # #[wasm_bindgen] exports (feature-gated)
-│   ├── Cargo.toml                    # features = ["wasm", "solana-program"]
+│   │   └── merkle.rs                 # Merkle proof types (SPL AC compatible)
+│   ├── Cargo.toml                    # no wasm_bindgen exports here; the
+│   │                                 # bridge lives in `wasm/` (solid-wasm)
 │   └── tests/
 │
 ├── solid-sdk/                        # Rust SDK (issuer CLI, server-side)
@@ -226,21 +226,37 @@ crates/
 
 ### 2.4 WASM Module (`solid-wasm`)
 
-Compiled from `solid-core` with `wasm-pack`. Exposes all crypto functions to JavaScript/TypeScript.
+Standalone workspace crate at `wasm/`. Depends on `solid-core` (no
+feature gate) and compiles with `wasm-pack` to a browser/node bundle.
+`solid-core` itself stays strictly BPF-compatible and exposes zero
+`#[wasm_bindgen]` symbols. See ADR-0002 and SOLID-SEC-009 for the
+canonical layout.
 
 ```
 wasm/
-├── Cargo.toml                        # depends on solid-core with feature = "wasm"
-├── src/
-│   └── lib.rs                        # #[wasm_bindgen] bridge functions
-├── pkg/                              # wasm-pack output (auto-generated)
-│   ├── solid_wasm.js                 # JS glue code
-│   ├── solid_wasm_bg.wasm            # Compiled WASM binary
-│   ├── solid_wasm.d.ts               # TypeScript type definitions
-│   └── package.json                  # npm-publishable
-└── tests/
-    └── web.rs                        # wasm-bindgen-test
+├── Cargo.toml                        # depends on solid-core (no features)
+└── src/
+    └── lib.rs                        # #[wasm_bindgen] bridge functions
+
+ts-sdk/packages/core/wasm/            # wasm-pack output (out-dir target)
+├── solid_wasm.js                     # JS glue code (nodejs target)
+├── solid_wasm_bg.wasm                # Compiled WASM binary
+├── solid_wasm.d.ts                   # TypeScript type definitions
+└── package.json                      # npm metadata
 ```
+
+Canonical build command (from repo root):
+
+```
+wasm-pack build wasm/ --target nodejs \
+    --out-dir ts-sdk/packages/core/wasm --release
+```
+
+`@solid-protocol/core` imports the compiled bundle via the relative
+path `../wasm/solid_wasm.js`, resolved at runtime from `dist/index.js`.
+There is no `@solid-protocol/wasm` npm package and no `wasm/pkg/` dir —
+the out-dir is the consumer dir by design (one source of truth per
+artifact).
 
 ### 2.5 TypeScript SDK (Thin Wrapper over WASM)
 
@@ -1246,8 +1262,9 @@ solid-protocol/                           # "SolID" — Solana Identity
 │
 ├── crates/                               # ═══ RUST CORE ═══
 │   ├── solid-core/                       # 🔑 Core crypto (Poseidon, BJJ, commitments)
-│   │   ├── src/                          #    Shared by programs + WASM + CLI
-│   │   ├── Cargo.toml                    #    features = ["wasm", "solana-program"]
+│   │   ├── src/                          #    Shared by programs + CLI.
+│   │   ├── Cargo.toml                    #    Stays BPF-compatible; no wasm_bindgen
+│   │   │                                 #    exports. Bridge lives in `wasm/`.
 │   │   └── tests/
 │   ├── solid-sdk/                        # Rust SDK (issuer server, verifier backend)
 │   │   ├── src/
@@ -1263,9 +1280,10 @@ solid-protocol/                           # "SolID" — Solana Identity
 │   └── schema-registry/                  # Modular schema management
 │
 ├── wasm/                                 # ═══ WASM BUILD ═══
-│   ├── Cargo.toml                        # depends on solid-core[wasm]
-│   ├── src/lib.rs                        # #[wasm_bindgen] bridge
-│   └── pkg/                              # wasm-pack output → npm publishable
+│   ├── Cargo.toml                        # depends on solid-core (no features)
+│   └── src/lib.rs                        # #[wasm_bindgen] bridge.  Output dir
+│                                         # is `ts-sdk/packages/core/wasm/`
+│                                         # (see section 2.4, SOLID-SEC-009).
 │       ├── solid_wasm.js
 │       ├── solid_wasm_bg.wasm
 │       ├── solid_wasm.d.ts
@@ -1516,22 +1534,15 @@ pub fn compute_nullifier(
 ### 12.5 TypeScript Consuming WASM
 
 ```typescript
-// ts-sdk/packages/core/src/wasm-loader.ts
-import init, {
-    compute_data_hash,
-    compute_attestation_commitment,
-    generate_bjj_keypair,
-    sign_commitment,
-    compute_nullifier,
-} from "@solid-protocol/wasm";
+// ts-sdk/packages/core/src/index.ts (initWasm)
+// The wasm-pack output lives at `ts-sdk/packages/core/wasm/`, a
+// sibling of `dist/`. The relative path resolves at runtime from
+// `dist/index.js`; see SOLID-SEC-009.
+let wasmModule: any = null;
 
-let initialized = false;
-
-export async function ensureWasmLoaded(): Promise<void> {
-    if (!initialized) {
-        await init(); // Loads the .wasm binary
-        initialized = true;
-    }
+export async function initWasm(): Promise<void> {
+    if (wasmModule) return;
+    wasmModule = await import('../wasm/solid_wasm.js');
 }
 
 // Re-export typed wrappers

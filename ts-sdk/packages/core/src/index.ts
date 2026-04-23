@@ -61,11 +61,20 @@ let wasmModule: any = null;
 
 /**
  * Initialize the WASM module. Must be called before any crypto operations.
+ *
+ * The bridge is built from `wasm/src/lib.rs` (crate `solid-wasm`) by
+ * running `wasm-pack build wasm/ --target nodejs --out-dir
+ * ts-sdk/packages/core/wasm --release` from the repo root. At runtime
+ * the compiled entry point is at `dist/index.js`, so `../wasm`
+ * resolves to `ts-sdk/packages/core/wasm/` where wasm-pack emits its
+ * package.json + `solid_wasm.js`. See SOLID-SEC-009 / ADR-0002.
  */
 export async function initWasm(): Promise<void> {
   if (wasmModule) return;
-  // Dynamic import of the WASM package
-  wasmModule = await import('@solid-protocol/wasm');
+  // The module is built out-of-band; path is resolved at runtime.
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — ambient types come from wasm/solid_wasm.d.ts once built
+  wasmModule = await import('../wasm/solid_wasm.js');
 }
 
 function ensureInit() {

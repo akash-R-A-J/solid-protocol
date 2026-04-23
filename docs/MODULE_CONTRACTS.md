@@ -841,9 +841,13 @@ Anchor programs.
 
 ### 5.3 wasm/ (WASM bridge crate)
 
-**Crate:** wasm/ (NOT crates/solid-core, despite what CLAUDE.md says -- SEC-028)
+**Crate:** wasm/ (package `solid-wasm`). Separate workspace member.
+`crates/solid-core` stays strictly BPF-compatible and has zero
+`#[wasm_bindgen]` exports (ADR-0002 / SOLID-SEC-009 / SOLID-SEC-028).
 **Build:** `wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release`
-**Output:** wasm/pkg/ (or ts-sdk/packages/core/wasm/ if using --out-dir)
+**Output:** `ts-sdk/packages/core/wasm/` -- consumed by `@solid-protocol/core`
+via the relative runtime import `../wasm/solid_wasm.js`. There is no
+`wasm/pkg/` dir and no separate `@solid-protocol/wasm` npm package.
 
 **What it is:** wasm-bindgen bridge exposing solid-core primitives to JavaScript via WASM.
 
@@ -1243,8 +1247,8 @@ snarkjs + circuit.wasm + .zkey
     v
 @solid-protocol/holder
     |-- @solid-protocol/core (wasm re-exports, types)
-    |       |-- wasm/pkg/ (built from wasm/src/lib.rs)
-    |               |-- solid-core (Rust library)
+    |       |-- ts-sdk/packages/core/wasm/ (wasm-pack output dir)
+    |               |-- solid-wasm (wasm/) --> solid-core (Rust library)
     |
     v
 @solid-protocol/verifier

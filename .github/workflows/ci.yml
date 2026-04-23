@@ -173,8 +173,14 @@ jobs:
           anchor idl build -p schema_registry > /dev/null
 
   # ───────────────────────── 5. WASM BRIDGE ─────────────────────────
+  # Canonical bridge lives in `wasm/` (crate `solid-wasm`), not in
+  # `crates/solid-core` (which stays BPF-compatible and exposes zero
+  # `#[wasm_bindgen]` symbols).  Output is written into the consumer
+  # package (`ts-sdk/packages/core/wasm/`) so the TS SDK can resolve
+  # it via a relative import — one source of truth per artifact
+  # (ADR-0002 / SOLID-SEC-028).
   wasm:
-    name: wasm (solid-core → @solid-protocol/core)
+    name: wasm (solid-wasm → ts-sdk/packages/core/wasm)
     needs: toolchain
     runs-on: ubuntu-latest
     steps:
@@ -193,8 +199,56 @@ jobs:
       - name: Build wasm bridge
         run: |
           export PATH="$PWD/.toolchain/bin:$PATH"
-          cd crates/solid-core
-          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
+          wasm-pack build wasm/ --target nodejs \
+            --out-dir ../ts-sdk/packages/core/wasm --release
+      - name: Verify expected artifacts
+        run: |
+          test -f ts-sdk/packages/core/wasm/solid_wasm.js
+          test -f ts-sdk/packages/core/wasm/solid_wasm_bg.wasm
+          test -f ts-sdk/packages/core/wasm/solid_wasm.d.ts
+          test -f ts-sdk/packages/core/wasm/package.json
+
+  # ───────────────────────── 5b. WASM BRIDGE SMOKE TEST ─────────────────────────
+  # End-to-end check that the SDK's pinned import path actually
+  # reaches into the just-built wasm artifact and that a real Poseidon
+  # call returns a non-zero digest. Hard gates SOLID-SEC-009: a broken
+  # SDK build would have produced an empty `pkg` dir before; now it
+  # fails here instead of at a downstream consumer.
+  wasm_bridge_smoke:
+    name: wasm bridge smoke (SDK pinned path reaches real artifact)
+    needs: [toolchain, wasm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ts-sdk/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Build wasm bridge
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          wasm-pack build wasm/ --target nodejs \
+            --out-dir ../ts-sdk/packages/core/wasm --release
+      - name: Install workspace deps + build core
+        working-directory: ts-sdk
+        run: |
+          npm ci
+          npm run build --workspace=@solid-protocol/core
+      - name: Smoke-test the SDK pinned import path
+        working-directory: ts-sdk/packages/core
+        run: node ../../../scripts/wasm_bridge_smoke.mjs
 
   # ───────────────────────── 6. CIRCUITS (compile only) ─────────────────────────
   circuits:
@@ -253,8 +307,8 @@ jobs:
       - name: Rebuild wasm (nodejs target)
         run: |
           export PATH="$PWD/.toolchain/bin:$PATH"
-          cd crates/solid-core
-          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
+          wasm-pack build wasm/ --target nodejs \
+            --out-dir ../ts-sdk/packages/core/wasm --release
       - name: Install workspace deps
         working-directory: ts-sdk
         run: npm ci
@@ -299,9 +353,9 @@ jobs:
       - name: Build wasm + SDK
         run: |
           export PATH="$PWD/.toolchain/bin:$PATH"
-          cd crates/solid-core
-          wasm-pack build --target nodejs --out-dir ../../ts-sdk/packages/core/wasm --release
-          cd ../../ts-sdk && npm ci && npm run build
+          wasm-pack build wasm/ --target nodejs \
+            --out-dir ../ts-sdk/packages/core/wasm --release
+          cd ts-sdk && npm ci && npm run build
       - name: Run TS-side vector check
         working-directory: ts-sdk
         run: npx ts-node --project ../tsconfig.json ../tests/vectors/check_vectors.ts
