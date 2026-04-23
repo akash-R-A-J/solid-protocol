@@ -101,31 +101,37 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
     // value greater than 1 silently behaves like AND.
     compoundLogic * (compoundLogic - 1) === 0;
 
-    // ========================================================================
-    // STEP 0: Identity Binding
-    //   Each credential uses its own schema-derived key. The batch circuit
-    //   needs one global-tree inclusion proof per credential because every
-    //   schema has a distinct identity leaf
-    //   Poseidon(derivedAx_i, derivedAy_i, revocationNonce).
-    // ========================================================================
-    component anchors[NUM_CREDS];
-    for (var i = 0; i < NUM_CREDS; i++) {
-        anchors[i] = IdentityAnchor(GLOBAL_DEPTH);
-        anchors[i].masterIdentityKey <== masterIdentityKey;
-        anchors[i].revocationNonce <== revocationNonce;
-        anchors[i].schemaHash <== schemaHashes[i];
-        anchors[i].globalRoot <== globalRoot;
-        for (var j = 0; j < GLOBAL_DEPTH; j++) {
-            anchors[i].globalSiblings[j] <== globalSiblings[i][j];
-            anchors[i].globalPathIndices[j] <== globalPathIndices[i][j];
-        }
+    // SOLID-SEC-001: bound every `queryCredentialIndices[i]` into
+    // `[0, NUM_CREDS)` and every `queryFieldIndices[i]` into
+    // `[0, NUM_FIELDS)`.  Without these, `BatchFieldSelector` silently
+    // accepts out-of-range indices, which allows a prover to "point"
+    // a predicate at a credential or field that never enters the
+    // integrity / expiration / inclusion chain.  Combined with
+    // `compoundLogic == OR`, that silently admits unconstrained
+    // predicates.  `LessThan(8)` is sufficient: both bounds are
+    // <= 64 in every current instantiation.
+    component credIdxChecks[MAX_PREDICATES];
+    component fieldIdxChecks[MAX_PREDICATES];
+    for (var i = 0; i < MAX_PREDICATES; i++) {
+        credIdxChecks[i] = LessThan(8);
+        credIdxChecks[i].in[0] <== queryCredentialIndices[i];
+        credIdxChecks[i].in[1] <== NUM_CREDS;
+        credIdxChecks[i].out === 1;
+
+        fieldIdxChecks[i] = LessThan(8);
+        fieldIdxChecks[i].in[0] <== queryFieldIndices[i];
+        fieldIdxChecks[i].in[1] <== NUM_FIELDS;
+        fieldIdxChecks[i].out === 1;
     }
 
     // ========================================================================
-    // STEP 0.5: Canonical Ordering and Zero-Schema Integrity
+    // STEP 0: Canonical Ordering and Zero-Schema Integrity
     //   - schemaHashes strictly ascending for active credentials.
     //   - schemaHash == 0 forces every per-credential private input to zero,
     //     preventing a prover from smuggling data through inactive slots.
+    //
+    //   Moved above STEP 0.5 (identity anchors) for SOLID-SEC-029 so
+    //   `isZero[i].out` is in scope when we wire `anchors[i].enabled`.
     // ========================================================================
     component isZero[NUM_CREDS];
     component ordering[NUM_CREDS - 1];
@@ -154,6 +160,32 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
         signal nextNotZero;
         nextNotZero <== 1 - isZero[i+1].out;
         nextNotZero * (1 - ordering[i].out) === 0;
+    }
+
+    // ========================================================================
+    // STEP 0.5: Identity Binding
+    //   Each credential uses its own schema-derived key. The batch circuit
+    //   needs one global-tree inclusion proof per credential because every
+    //   schema has a distinct identity leaf
+    //   Poseidon(derivedAx_i, derivedAy_i, revocationNonce).
+    //
+    //   SOLID-SEC-029: pass `enabled = 1 - isZero[i].out` so that padding
+    //   slots skip the global-tree inclusion check (the STEP-0 integrity
+    //   constraints already zero out every per-credential signal in
+    //   inactive slots, so they cannot be used to smuggle state).
+    // ========================================================================
+    component anchors[NUM_CREDS];
+    for (var i = 0; i < NUM_CREDS; i++) {
+        anchors[i] = IdentityAnchor(GLOBAL_DEPTH);
+        anchors[i].enabled <== 1 - isZero[i].out;
+        anchors[i].masterIdentityKey <== masterIdentityKey;
+        anchors[i].revocationNonce <== revocationNonce;
+        anchors[i].schemaHash <== schemaHashes[i];
+        anchors[i].globalRoot <== globalRoot;
+        for (var j = 0; j < GLOBAL_DEPTH; j++) {
+            anchors[i].globalSiblings[j] <== globalSiblings[i][j];
+            anchors[i].globalPathIndices[j] <== globalPathIndices[i][j];
+        }
     }
 
     // ========================================================================

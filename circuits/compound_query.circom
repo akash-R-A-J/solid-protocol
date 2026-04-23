@@ -63,6 +63,19 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
 
     compoundLogic * (compoundLogic - 1) === 0;
 
+    // SOLID-SEC-001: bound every `queryFieldIndices[i]` into
+    // `[0, NUM_FIELDS)`. Without this, `FieldSelector` silently
+    // accepts out-of-range indices, which lets the prover point a
+    // predicate at nothing and trivially satisfy it (particularly
+    // under OR).
+    component fieldIdxChecks[MAX_PREDICATES];
+    for (var i = 0; i < MAX_PREDICATES; i++) {
+        fieldIdxChecks[i] = LessThan(8);
+        fieldIdxChecks[i].in[0] <== queryFieldIndices[i];
+        fieldIdxChecks[i].in[1] <== NUM_FIELDS;
+        fieldIdxChecks[i].out === 1;
+    }
+
     // Schema must be non-zero. The batch circuit tolerates zero-schema
     // padding because it is multi-credential; compound_query is single-credential
     // and a zero schema here would mean there is nothing to prove.
@@ -73,7 +86,11 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
     // ================================================================
     // STEP 0: Identity Binding (Bind PrivKey to PubKey)
     // ================================================================
+    //   SOLID-SEC-029 compat: compound_query is single-credential;
+    //   schema is constrained non-zero above, so the anchor is
+    //   always active.
     component anchor = IdentityAnchor(GLOBAL_DEPTH);
+    anchor.enabled <== 1;
     anchor.masterIdentityKey <== masterIdentityKey;
     anchor.revocationNonce <== revocationNonce;
     anchor.schemaHash <== schemaHash;

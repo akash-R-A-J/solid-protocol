@@ -27,12 +27,12 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
-| CRITICAL  | 1    | 0           | 2     | 0        | 0         | 3     |
+| CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 6    | 0           | 6     | 0        | 0         | 12    |
-| MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
+| MEDIUM    | 9    | 0           | 4     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 26   | 0           | 12    | 0        | 0         | 38    |
+| **Total** | 24   | 0           | 14    | 0        | 0         | 38    |
 
 ---
 
@@ -40,7 +40,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 | ID              | Severity | Status | Title                                                              |
 |-----------------|----------|--------|--------------------------------------------------------------------|
-| SOLID-SEC-001   | CRITICAL | Open   | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
+| SOLID-SEC-001   | CRITICAL | Fixed  | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
 | SOLID-SEC-002   | CRITICAL | Fixed  | `register_schema` Poseidon integrity check commented out           |
 | SOLID-SEC-003   | CRITICAL | Fixed  | `issue_credential` missing schema + tree pubkey binding            |
 | SOLID-SEC-004   | HIGH     | Open   | No in-circuit issuer pubkey binding; revoked issuers still verify  |
@@ -68,7 +68,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-026   | INFO     | Open   | `Credential::verify_integrity` never called on-chain               |
 | SOLID-SEC-027   | INFO     | Fixed  | `docs/IMPROVEMENTS_ROADMAP.md` has stale unticked checkboxes       |
 | SOLID-SEC-028   | MEDIUM   | Fixed  | `CLAUDE.md` and test README document wrong WASM build path         |
-| SOLID-SEC-029   | MEDIUM   | Open   | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
+| SOLID-SEC-029   | MEDIUM   | Fixed  | `IdentityAnchor` always has `enabled=1`; padding slots over-constrained |
 | SOLID-SEC-030   | MEDIUM   | Fixed  | `transfer_slashed_lamports` can drain `stake_vault` to zero        |
 | SOLID-SEC-031   | HIGH     | Fixed  | `bufToDecimal` LE interpretation of Solana pubkey risks breaking `verifierAddress` match |
 | SOLID-SEC-032   | HIGH     | Fixed  | `SCHEMA_REGISTRY_ID_BYTES` hardcoded without build-time validation |
@@ -86,23 +86,40 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-001 -- Batch circuit query indices unconstrained
 
 - **Severity:** CRITICAL
-- **Status:** Open
+- **Status:** Fixed (circuit; 2026-04-23)
 - **Introduced:** 2026-04-22
-- **Evidence:**
+- **Evidence (pre-fix):**
   `circuits/batch_credential_query.circom:56-59,216-217`;
-  `circuits/lib/predicate_evaluator.circom:85-112`
+  `circuits/lib/predicate_evaluator.circom:85-112`;
+  `circuits/compound_query.circom` (analogous via `FieldSelector`).
 - **Description.** `queryCredentialIndices[MAX_PREDICATES]` and
-  `queryFieldIndices[MAX_PREDICATES]` are public inputs with no range
-  constraints. `BatchFieldSelector` returns 0 for any out-of-range
-  index; a prover sets `credIndex = 1000`, `queryValue = 0`,
-  `operator = EQ` and satisfies `result = 1` for any predicate.
-- **Impact.** Full soundness break on batch proofs. `compound_query.circom`
-  has the same exposure via `FieldSelector`.
-- **Remediation.** Add `LessThan(8)` range checks on every index.
-  Requires new trusted setup (combine with SOLID-SEC-004,
-  SOLID-SEC-008, SOLID-SEC-029).
-- **Regression gate.** Property-based witness test with 1000 random
-  out-of-range indices; on-chain rejection integration test.
+  `queryFieldIndices[MAX_PREDICATES]` were public inputs with no
+  range constraints.  `BatchFieldSelector` returns 0 for any
+  out-of-range index; a prover set `credIndex = 1000`,
+  `queryValue = 0`, `operator = EQ` and satisfied `result = 1` for
+  any predicate, which -- under OR compound logic -- trivially
+  satisfied the whole query.
+- **Impact.** Full soundness break on batch proofs.
+- **Remediation (landed).**
+  - `circuits/batch_credential_query.circom`: every
+    `queryCredentialIndices[i]` is now constrained
+    `< NUM_CREDS` and every `queryFieldIndices[i]` is constrained
+    `< NUM_FIELDS` via `LessThan(8)` components (width is
+    sufficient for both bounds).
+  - `circuits/compound_query.circom`: same range check on
+    `queryFieldIndices[i]` (single-credential; no credIndex array).
+  - Because circuit changes invalidate the existing zkey, this
+    fix is bundled with SOLID-SEC-029 (anchor enable gate) into
+    ONE circuit revision and ONE TESTNET single-party
+    trusted-setup run.  `circuits/scripts/setup.js` produces the
+    new `batch_credential_query_final.zkey` (see SOLID-SEC-011 for
+    the filename reconciliation); the PR body records the zkey
+    sha256 that setup.js prints.
+- **Regression gate.** Property-based witness test with random
+  out-of-range indices (scheduled with Phase 2 circuit test harness;
+  requires compiled wasm + circomlibjs).  Integration test
+  `compile_and_setup_smoke` in CI compiles the circuit and runs
+  `scripts/setup.js`, asserting the zkey + VK are produced.
 
 ### SOLID-SEC-002 -- `register_schema` integrity check disabled
 
@@ -594,27 +611,39 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-029 -- `IdentityAnchor` always `enabled = 1`; padding slots over-constrained
 
 - **Severity:** MEDIUM
-- **Status:** Open
+- **Status:** Fixed (circuit; 2026-04-23)
 - **Introduced:** 2026-04-22 (v0.4 audit; folds in master-audit BUG-NEW-02)
-- **Evidence:** `circuits/lib/identity_anchor.circom:46-53`
-- **Description.** `CredentialAtom` correctly guards zero-schema
-  padding slots with `enabled = 1 - isZero(schemaHash)`. However
+- **Evidence (pre-fix):** `circuits/lib/identity_anchor.circom:46-53`
+- **Description.** `CredentialAtom` correctly guarded zero-schema
+  padding slots with `enabled = 1 - isZero(schemaHash)`, but
   `IdentityAnchor`, instantiated once per credential slot at
-  `batch_credential_query.circom:111-122`, always sets
-  `globalInclusion.enabled = 1`. For a padding slot (schemaHash=0)
-  the circuit still requires a valid Merkle inclusion proof for the
-  derived identity leaf. The global tree would need zero-schema
-  derived entries pre-loaded, which is architecturally wrong.
-- **Impact.** Batch circuit cannot generate proofs for fewer than
-  NUM_CREDS=4 active credentials. Any holder with 1, 2, or 3
-  credentials cannot prove cleanly.
-- **Remediation.** Pass `enabled` into `IdentityAnchor`; gate
-  `globalInclusion.enabled <== enabled`. Circuit change -- bundle
-  with SOLID-SEC-001, SOLID-SEC-004, SOLID-SEC-008 in the Phase 1
-  trusted setup.
+  `batch_credential_query.circom:111-122`, always set
+  `globalInclusion.enabled = 1`.  For a padding slot (schemaHash=0)
+  the circuit still required a valid Merkle inclusion proof for the
+  derived identity leaf, so the global tree would have needed
+  zero-schema derived entries pre-loaded -- architecturally wrong.
+- **Impact.** Batch circuit could not generate proofs for fewer
+  than NUM_CREDS=4 active credentials. Any holder with 1, 2, or 3
+  credentials could not prove cleanly.
+- **Remediation (landed).**
+  - `circuits/lib/identity_anchor.circom`: new `enabled` signal
+    input (bit-constrained via `enabled * (enabled - 1) === 0`);
+    `globalInclusion.enabled <== enabled` replaces the hardcoded 1.
+  - `circuits/batch_credential_query.circom`: STEP-0 / STEP-0.5
+    reordered so `isZero[i]` is in scope before anchors[i] is
+    instantiated; `anchors[i].enabled <== 1 - isZero[i].out` --
+    padding slots skip the Merkle check while the STEP-0 integrity
+    constraints still force every per-credential signal to zero.
+  - `circuits/compound_query.circom`: `anchor.enabled <== 1` (the
+    circuit rejects zero schemas up front, so anchors are always
+    active; the new input just keeps the template signature
+    consistent).
+  - Bundled into the same circuit revision + TESTNET trusted-setup
+    run as SOLID-SEC-001.
 - **Regression gate.** Circuit witness test: 3-credential batch
   (1 padding slot) generates a valid witness without any
-  zero-schema global tree entry.
+  zero-schema global tree entry (scheduled with the Phase 2
+  circuit test harness).
 
 ### SOLID-SEC-030 -- `transfer_slashed_lamports` can drain `stake_vault` to zero
 
