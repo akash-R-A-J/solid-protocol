@@ -6,7 +6,7 @@
     "compile": "circom batch_credential_query.circom --r1cs --wasm --sym --c --output build/ -l node_modules/circomlib/circuits",
     "compile:compound": "circom compound_query.circom --r1cs --wasm --sym --c --output build/ -l node_modules/circomlib/circuits",
     "setup": "node scripts/setup.js",
-    "test": "mocha test/ --timeout 60000"
+    "test": "mocha 'test/**/*.test.js' --timeout 180000"
   },
   "dependencies": {
     "circomlib": "^2.0.5"
@@ -15,6 +15,7 @@
     "mocha": "^10.2.0",
     "chai": "^4.3.7",
     "snarkjs": "^0.7.0",
-    "ffjavascript": "^0.2.59"
+    "ffjavascript": "^0.2.59",
+    "circom_tester": "^0.0.20"
   }
 }

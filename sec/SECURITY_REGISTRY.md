@@ -119,11 +119,13 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
     new `batch_credential_query_final.zkey` (see SOLID-SEC-011 for
     the filename reconciliation); the PR body records the zkey
     sha256 that setup.js prints.
-- **Regression gate.** Property-based witness test with random
-  out-of-range indices (scheduled with Phase 2 circuit test harness;
-  requires compiled wasm + circomlibjs).  Integration test
-  `compile_and_setup_smoke` in CI compiles the circuit and runs
-  `scripts/setup.js`, asserting the zkey + VK are produced.
+- **Regression gate (landed).** Mocha property test at
+  `circuits/test/batch_range_checks.test.js` drives the isolated
+  template at `circuits/test/templates/range_check_isolated.circom`;
+  happy path + two boundary cases + 100 random out-of-range
+  credential indices + 100 random out-of-range field indices, all
+  in a single mocha `describe`.  CI job `circuit_witness_tests` in
+  `.github/workflows/ci.yml` is the hard gate.
 
 ### SOLID-SEC-002 -- `register_schema` integrity check disabled
 
@@ -402,11 +404,13 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
     `$TMPDIR/solid-e2e-$uid/state.json` fallback) with mode 0700
     directories and 0600 files; never under the repo working tree.
     Folds in the SOLID-SEC-020 follow-up.
-- **Regression gate.** A CI `e2e_localnet` job that runs the full
-  pipeline against solana-test-validator is scheduled for Phase 2;
-  the host-side test gate for now is that every Rust + TS touched
-  file type-checks clean and the smoke script
-  `scripts/wasm_bridge_smoke.mjs` (SEC-009) passes.
+- **Regression gate (landed).** CI job `e2e_localnet` in
+  `.github/workflows/ci.yml` spins up `solana-test-validator` with
+  all three `.so` binaries preloaded, runs `anchor build`, compiles
+  the circuit, runs the TESTNET setup ceremony, then executes
+  `initialize.ts -> bootstrap_issuer.ts -> issue.ts -> prove.ts` in
+  that order.  A failure at any step fails the job.  On green, a
+  stranger CAN run the pipeline from a clean checkout.
 
 ### SOLID-SEC-012 -- Trusted setup single-party
 
@@ -644,10 +648,16 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
     consistent).
   - Bundled into the same circuit revision + TESTNET trusted-setup
     run as SOLID-SEC-001.
-- **Regression gate.** Circuit witness test: 3-credential batch
-  (1 padding slot) generates a valid witness without any
-  zero-schema global tree entry (scheduled with the Phase 2
-  circuit test harness).
+- **Regression gate (landed).** Mocha test at
+  `circuits/test/padding_slot.test.js` drives the isolated template
+  at `circuits/test/templates/anchor_enabled_isolated.circom`:
+  (1) `enabled=0`, `schemaHash=0`, garbage siblings -> witness
+  succeeds (padding slot);
+  (2) `enabled=1`, garbage `globalRoot` -> witness rejects (active
+  slot must prove inclusion);
+  (3) `enabled=2` -> rejected by the new bit-constraint on the
+  enable flag.
+  CI job `circuit_witness_tests` in `.github/workflows/ci.yml`.
 
 ### SOLID-SEC-030 -- `transfer_slashed_lamports` can drain `stake_vault` to zero
 

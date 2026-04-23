@@ -279,6 +279,40 @@ jobs:
           name: r1cs
           path: target/circuits/
 
+  # ───────────────────────── 6b. CIRCUIT WITNESS TESTS ─────────────────────────
+  # Regression gates for SOLID-SEC-001 (query-index range checks) and
+  # SOLID-SEC-029 (IdentityAnchor enable gate).  The tests drive
+  # isolated templates under `circuits/test/templates/` via
+  # circom_tester; this is a strictly stronger signal than "the
+  # main circuit compiles" because the assertions fire on out-of-
+  # range or bit-violating witnesses.  When Phase 2 lands the
+  # SEC-004 / SEC-008 circuit revision, the harness here is what
+  # guards the added constraints.
+  circuit_witness_tests:
+    name: circuit witness tests (SEC-001, SEC-029 regression gates)
+    needs: toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Install circuits/ npm deps
+        working-directory: circuits
+        run: npm install
+      - name: Run mocha witness tests
+        working-directory: circuits
+        run: |
+          export PATH="$PWD/../.toolchain/bin:$PATH"
+          npm test
+
   # ───────────────────────── 7. SDK (TypeScript) ─────────────────────────
   sdk:
     name: sdk (TypeScript build + unit tests)
@@ -373,3 +407,106 @@ jobs:
           python-version: '3.11'
       - name: Run check_program_ids.py
         run: python3 scripts/check_program_ids.py
+
+  # ───────────────────────── 10. E2E LOCALNET ─────────────────────────
+  # The SOLID-SEC-011 regression gate that Phase 1 deferred to
+  # Phase 2.  Runs the full E2E pipeline against
+  # `solana-test-validator` in the background:
+  #
+  #   anchor deploy
+  #   initialize.ts    (register schema, bindings, VK upload)
+  #   bootstrap_issuer.ts   (governance mint + DAO approval)
+  #   issue.ts         (credential issuance)
+  #   prove.ts         (Groth16 proof + on-chain verify + replay reject)
+  #
+  # Any step failing fails the job.  On green, we have evidence that
+  # a stranger can run the pipeline from a clean checkout.
+  #
+  # Note: uses the single-party TESTNET zkey produced by
+  # `circuits/scripts/setup.js` (SOLID-SEC-012 multi-party ceremony
+  # is a Phase 3 deliverable).
+  e2e_localnet:
+    name: e2e localnet (SEC-011 regression gate)
+    needs: [toolchain, anchor, wasm, circuits]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          target: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .toolchain
+            ~/.cargo/bin
+            ~/.cargo/registry
+          key: ${{ needs.toolchain.outputs.cache-key }}
+      - name: Install root workspace deps
+        run: npm install
+      - name: Install ts-sdk workspace deps
+        working-directory: ts-sdk
+        run: npm ci
+      - name: Build wasm bridge
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          wasm-pack build wasm/ --target nodejs \
+            --out-dir ../ts-sdk/packages/core/wasm --release
+      - name: Build ts-sdk packages
+        working-directory: ts-sdk
+        run: npm run build
+      - name: Compile circuits and run trusted setup (TESTNET)
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          cd circuits
+          npm install
+          npm run compile
+          node scripts/setup.js
+      - name: Anchor build
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          anchor build --no-idl
+          anchor idl build -p zk_verifier > target/idl/zk_verifier.json
+          anchor idl build -p issuer_registry > target/idl/issuer_registry.json
+          anchor idl build -p schema_registry > target/idl/schema_registry.json
+      - name: Start test validator (background)
+        run: |
+          export PATH="$PWD/.toolchain/bin:$PATH"
+          solana-test-validator \
+            --reset --quiet \
+            --bpf-program BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2 target/deploy/zk_verifier.so \
+            --bpf-program CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR target/deploy/issuer_registry.so \
+            --bpf-program DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT target/deploy/schema_registry.so \
+            >/tmp/validator.log 2>&1 &
+          echo $! > /tmp/validator.pid
+          # Wait for RPC readiness
+          for i in $(seq 1 60); do
+            if solana --url http://127.0.0.1:8899 cluster-version >/dev/null 2>&1; then
+              echo "validator ready"; break
+            fi
+            sleep 1
+          done
+          solana config set --url http://127.0.0.1:8899
+          solana airdrop 100 || true
+      - name: Run E2E pipeline
+        env:
+          SOLID_RPC_URL: http://127.0.0.1:8899
+        run: |
+          npm run init-onchain
+          npm run bootstrap-issuer
+          npm run issue
+          npm run prove
+      - name: Dump validator log on failure
+        if: failure()
+        run: tail -n 400 /tmp/validator.log || true
+      - name: Stop test validator
+        if: always()
+        run: |
+          if [ -f /tmp/validator.pid ]; then
+            kill "$(cat /tmp/validator.pid)" || true
+          fi
