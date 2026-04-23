@@ -841,6 +841,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-22 | `sec/audits/2026-04-22_v0.3_antigravity_deep_system_audit.md`        | (folded into master)                      | 0          |
 | 2026-04-22 | `sec/audits/2026-04-22_v0.3_master_audit.md`                         | SOLID-SEC-031..038 (renumbered after v0.4 collision) | 0 |
 | 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`   | SOLID-SEC-028..030                        | 0          |
+| 2026-04-23 | `sec/audits/2026-04-23_v0.5_phase1_closeout.md`                      | --                                        | SOLID-SEC-001, -002, -003, -005, -009, -011, -020, -027, -028, -029, -030, -031, -032, -033 (14 Phase 1 items) |
 
 ### Note on the 2026-04-22 numbering
 

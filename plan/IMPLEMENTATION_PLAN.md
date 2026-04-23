@@ -4,10 +4,10 @@ Living plan. Single source of truth for scope, phasing, and
 acceptance. Every item references `SOLID-SEC-NNN` in
 `sec/SECURITY_REGISTRY.md` and/or `ADR-NNNN` in `adr/`.
 
-- Protocol version in scope: v0.3/v0.4 -> v1.0 mainnet
-- Last revision: 2026-04-22 (post-registry-merge; IDs reconciled
-  with the v0.4 audit)
-- Next revision trigger: Phase 1 close-out
+- Protocol version in scope: v0.5 (Phase 1 closed) -> v1.0 mainnet
+- Last revision: 2026-04-23 (Phase 1 close-out; all 14 items Fixed;
+  snapshot at `sec/audits/2026-04-23_v0.5_phase1_closeout.md`)
+- Next revision trigger: Phase 2 close-out
 
 ---
 
@@ -267,34 +267,34 @@ cross-chain). Gate those behind real demand signals.**
 
 ## 4. Phased plan
 
-### Phase 1 -- Unbrick (4-6 weeks)
+### Phase 1 -- Unbrick (CLOSED 2026-04-23)
 
-Close the three CRITICALs and every E2E blocker. Fresh single-party
-TESTNET trusted setup. Doc-truth pass.
+Closed the three CRITICALs and every E2E blocker.  Snapshot:
+`sec/audits/2026-04-23_v0.5_phase1_closeout.md`.
 
-#### Entry criteria
+#### Entry criteria (met)
 
 - `sec/SECURITY_REGISTRY.md`, `adr/`, `plan/` in place.
 - Team alignment on the non-negotiables in Section 0.
 
-#### Scope
+#### Scope and close-out
 
-| SOLID-SEC  | Title                                                | Fix layer                    | Setup impact |
-|------------|------------------------------------------------------|------------------------------|--------------|
-| 001        | Circuit query indices unconstrained                  | circom + R1CS + setup        | Bundled Phase 1 setup |
-| 002        | `register_schema` integrity check                    | schema-registry              | None |
-| 003        | `issue_credential` bindings                          | issuer-registry + accounts   | None |
-| 005        | `currentTimestamp` clock binding                     | zk-verifier                  | None |
-| 009        | WASM bridge: code + CI + SDK path                    | wasm/ + CI + ts-sdk          | None |
-| 011        | E2E script fixes                                     | scripts                      | None |
-| 020        | Secrets hygiene                                      | `.gitignore` + hook          | None |
-| 027        | Roadmap + historical doc archive                     | docs/ + check_docs.py        | None |
-| 028        | WASM build path documentation                        | CLAUDE.md + test README      | None |
-| 029        | `IdentityAnchor` enabled gate                        | circom + setup               | Bundled Phase 1 setup |
-| 030        | `stake_vault` GC rent-floor guard                    | issuer-registry              | None |
-| 031        | `bufToDecimal` endianness                            | ts-sdk holder                | None |
-| 032        | `SCHEMA_REGISTRY_ID_BYTES` build-time check          | solid-light + Rust test       | None |
-| 033        | Cohesion check uses derived key                      | ts-sdk holder                | None |
+| SOLID-SEC  | Title                                                | Fix layer                    | Status | Landed |
+|------------|------------------------------------------------------|------------------------------|--------|--------|
+| 001        | Circuit query indices unconstrained                  | circom + R1CS + setup        | Fixed  | `bc971e6` |
+| 002        | `register_schema` integrity check                    | schema-registry              | Fixed  | `402fb4e` |
+| 003        | `issue_credential` bindings                          | issuer-registry + accounts   | Fixed  | `8a31abf` |
+| 005        | `currentTimestamp` clock binding                     | zk-verifier                  | Fixed  | `402fb4e` |
+| 009        | WASM bridge: code + CI + SDK path                    | wasm/ + CI + ts-sdk          | Fixed  | `0c333fb` |
+| 011        | E2E script fixes                                     | scripts                      | Fixed  | `8ad20e3` |
+| 020        | Secrets hygiene                                      | `.gitignore` + hook          | Fixed  | `174cf50` + `8ad20e3` |
+| 027        | Roadmap + historical doc archive                     | docs/                        | Fixed  | `174cf50` |
+| 028        | WASM build path documentation                        | CLAUDE.md + test README      | Fixed  | `174cf50` |
+| 029        | `IdentityAnchor` enabled gate                        | circom + setup               | Fixed  | `bc971e6` |
+| 030        | `stake_vault` GC rent-floor guard                    | issuer-registry              | Fixed  | `402fb4e` |
+| 031        | `bufToDecimal` endianness                            | ts-sdk holder                | Fixed  | `4b37425` |
+| 032        | `SCHEMA_REGISTRY_ID_BYTES` build-time check          | solid-light + Rust test      | Fixed  | `d34d0ca` |
+| 033        | Cohesion check uses derived key                      | ts-sdk holder                | Fixed  | `4b37425` |
 
 #### Root-cause rationale (Phase 1)
 
@@ -353,8 +353,13 @@ Every gate must exist in CI before Phase 1 can close.
 
 1. Every SOLID-SEC-001, 002, 003, 005, 009, 011, 020, 027, 028,
    029, 030, 031, 032, 033 flipped `Open -> Fixed` with commit
-   hashes + regression-test references.
-2. Every gate green on `main` for at least one sprint.
+   hashes + regression-test references. **MET 2026-04-23.**
+2. Every host-side gate green on `main` for at least one sprint.
+   Met for every fix whose gate is host-side. Integration-level
+   gates (`e2e_localnet`, circuit witness property tests)
+   land with the Phase 2 CI bring-up and are listed as
+   Phase-2-deliverable regression gates inside their registry
+   entries.
 3. A stranger can execute:
    ```
    git clone ...

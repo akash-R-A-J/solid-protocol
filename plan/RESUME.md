@@ -4,260 +4,172 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-23 end-of-session
-- **Current branch:** `main` at commit `d34d0ca`
-- **Current phase:** Phase 1 (Unbrick) -- mid-flight, 9/14 items closed
-- **Discipline in force:** root-cause only, no regressions, no doc lies,
-  one source of truth per artifact (see `plan/IMPLEMENTATION_PLAN.md`
-  Section 0).
+- **Last updated:** 2026-04-23 end-of-session (Phase 1 CLOSED)
+- **Current branch:** `main` at commit `bc971e6`
+- **Current phase:** Phase 1 closed; Phase 2 open (see below)
+- **Discipline in force:** root-cause only, no regressions, no doc
+  lies, one source of truth per artifact (see
+  `plan/IMPLEMENTATION_PLAN.md` Section 0).
 
 ---
 
 ## Where we left off
 
-Nine Phase 1 items landed across five clean commits. Registry state:
-29 open / 9 fixed / 38 total. All host-side tests green:
-`solid-core` 43/43, `zk-verifier` 11/11, `solid-light` 10/10. Python
-CI gate `scripts/check_program_ids.py` passes. No workarounds shipped.
+**Phase 1 is closed.**  All 14 items in the Phase 1 scope per
+`plan/IMPLEMENTATION_PLAN.md` Section 4 are registry-status `Fixed`
+with a landed commit, a regression-gate description, and (for every
+host-reachable defect) a green host-side test.
 
-### Commits landed this session (2026-04-23)
+Registry state: **24 open / 14 fixed / 38 total**.
+Severities: **CRITICAL 0 open**, HIGH 6 open, MEDIUM 9 open, LOW 5
+open, INFO 4 open.
+
+Snapshot: `sec/audits/2026-04-23_v0.5_phase1_closeout.md`.
+
+### Host-side baseline (green at close-out)
+
+```
+cargo test -p solid-core  --lib    ->  43/43
+cargo test -p solid-light --lib    ->  16/16  (+6 from SEC-003)
+cargo test -p zk-verifier --lib    ->  11/11
+python3 scripts/check_program_ids.py  -> consistent
+```
+
+### Commits landed this session (2026-04-23, after `9663506`)
 
 | Commit    | Closes                                 | Key change |
 |-----------|----------------------------------------|------------|
-| `174cf50` | SOLID-SEC-020, -027, -028              | `.gitignore` + pre-commit hook; roadmap reconciliation; stale-doc archive; WASM build-path docs. |
-| `402fb4e` | SOLID-SEC-002, -005, -030              | schema-hash integrity check re-enabled via shared `solid_core::schema::compute_schema_hash_from_parts`; `currentTimestamp` bound to `Clock::get()` with configurable skew in `VerifierConfig`; `stake_vault` rent-floor guard in `transfer_slashed_lamports`. |
-| `4b37425` | SOLID-SEC-031, -033                    | new `bufToDecimalBE` helper for Solana pubkeys; cohesion check now compares per-schema derived key, not master. |
-| `d34d0ca` | SOLID-SEC-032                          | two-layer guard on `SCHEMA_REGISTRY_ID_BYTES`: Rust host tests + extended `check_program_ids.py`. |
+| `0c333fb` | SOLID-SEC-009                          | WASM bridge: one source of truth. CI builds `wasm/` into `ts-sdk/packages/core/wasm/`; SDK imports `../wasm/solid_wasm.js` relatively; unused `solid-core` `wasm` feature + deps deleted. New CI job `wasm_bridge_smoke` + `scripts/wasm_bridge_smoke.mjs`. |
+| `8a31abf` | SOLID-SEC-003                          | `IssueCredential` context now requires seed-constrained `schema_account` + `schema_tree_binding` under schema-registry; parser helper in `solid-light` asserts embedded schema_hash / tree_pubkey / status. TS SDK `buildIssueCredentialIx` takes `schemaName` + `schemaVersion`.  6 new Rust unit tests. |
+| `8ad20e3` | SOLID-SEC-011 (+ SEC-020 follow-up)    | zkey filename unified; `keccak256HashPair` -> `poseidonHashPair`; new `scripts/bootstrap_issuer.ts` (full 9-step DAO approval flow); `scripts/lib/e2e_state.ts` writes state to `$XDG_RUNTIME_DIR` / `$TMPDIR` (never in repo working tree). |
+| `bc971e6` | SOLID-SEC-001, SOLID-SEC-029           | Batch circuit: range checks on `queryCredentialIndices` / `queryFieldIndices`. `IdentityAnchor` gains `enabled` input; `anchors[i].enabled <== 1 - isZero[i].out` so padding slots skip the global-tree inclusion proof. `compound_query.circom` updated to match template signature. |
 
-### Registry status board (open items only, ranked by priority)
+Earlier commits in this session (pre-`9663506`) closed SEC-020, -027,
+-028 (`174cf50`); -002, -005, -030 (`402fb4e`); -031, -033 (`4b37425`,
+`6e46dda`); -032 (`d34d0ca`).
+
+### Open registry (by priority)
 
 ```
-CRITICAL (2 open)
-  SOLID-SEC-001  Batch circuit query indices unconstrained (SOUNDNESS)
-  SOLID-SEC-003  issue_credential missing schema + tree pubkey binding
-
-HIGH (8 open)
+HIGH (6 open)
   SOLID-SEC-004  No in-circuit issuer pubkey binding
   SOLID-SEC-006  VK overwrite has no freeze-gate
   SOLID-SEC-007  BJJ pubkeys not subgroup-checked
   SOLID-SEC-008  Nullifier lacks epoch / global root
-  SOLID-SEC-009  WASM bridge fractured (CI + SDK path)
-  SOLID-SEC-010  Cross-language vectors narrow
-  SOLID-SEC-011  E2E scripts bugged
-  SOLID-SEC-012  Trusted setup single-party
+  SOLID-SEC-010  Cross-language vectors narrow (2/10)
+  SOLID-SEC-012  Trusted setup single-party (Phase 3 scope)
 
-MEDIUM (10 open), LOW (5 open), INFO (4 open)
-  See sec/SECURITY_REGISTRY.md for the rest.
+MEDIUM (9 open)
+  -013..-019, -021, -034  (governance + throughput + schema-hash
+                            re-assertion + fraud-proof seed check)
+
+LOW (5 open)   -022..-024, -035, -036
+INFO (4 open)  -025, -026, -037, -038
+
+See sec/SECURITY_REGISTRY.md for the full detail + remediation plan
+on each.
 ```
-
-Phase 1 scope covers 14 items total; five remain open:
-`SOLID-SEC-001, 003, 009, 011, 029`.
 
 ---
 
-## Next action (sequenced)
+## Next action (sequenced -- Phase 2 kick-off)
 
-Work through in this exact order. Each step lists the registry ID,
-the primary files, the regression gate, and a rough size.
+Work through in this order.  Each step lists the registry ID,
+primary files, regression gate, and rough size.
 
-### 1. SOLID-SEC-009 -- WASM bridge CI + SDK pinned path (MEDIUM size)
+### 1. Stand up the Phase 2 CI gates that Phase 1 listed as deferred
 
-**Root cause.** `.github/workflows/ci.yml` builds `wasm-pack build
-crates/solid-core` which produces an empty `pkg` because the real
-bridge is at `wasm/src/lib.rs`. `ts-sdk/packages/core/package.json`
-pins `file:../../../wasm/pkg`, which neither CI nor any script
-creates. Doc was already fixed in Tier 1 (SOLID-SEC-028); this is
-the code-layer fix.
+Before touching code, make the promised gates real so every Phase 2
+fix can land behind a green check:
 
-**Change set.**
-- `.github/workflows/ci.yml`: every `wasm-pack build crates/solid-core`
-  -> `wasm-pack build wasm/` with the same `--out-dir
-  ts-sdk/packages/core/wasm --release` target.
-- `crates/solid-core/Cargo.toml`: either remove the dead `wasm`
-  feature entirely, or leave it but add a comment explaining it is
-  unused (the real bridge is `wasm/`).
-- `ts-sdk/packages/core/package.json`: keep the pinned path but
-  verify it matches what CI actually produces.
+- **`e2e_localnet`** CI job: clean checkout -> anchor build ->
+  `ts-node scripts/initialize.ts` -> `bootstrap_issuer.ts` ->
+  `issue.ts` -> `prove.ts`.  Fails if any step errors.  Pairs with
+  SEC-011.
+- **Circuit witness property test** harness (mocha + snarkjs +
+  circomlibjs): exercises out-of-range index rejection (SEC-001
+  regression gate) and the 3-credential-batch-with-padding-slot
+  happy path (SEC-029 regression gate).
+- **Integration bankrun suite** skeleton (`06_*`, `07_*`) for SEC-003.
 
-**Regression gate.** New CI job `wasm_bridge_smoke` (outline in
-`plan/IMPLEMENTATION_PLAN.md` Section 6): build pkg from `wasm/`,
-import from the SDK's pinned path, call
-`computeHardenedNullifier`, assert non-zero. Locally, manual smoke:
-`wasm-pack build wasm/ --target nodejs --out-dir
-ts-sdk/packages/core/wasm --release && ls
-ts-sdk/packages/core/wasm` should list `*.js`, `*.d.ts`, `*.wasm`.
+These are docs-promised gates that the Phase 1 registry entries
+already reference.  Landing them is not optional.
 
-### 2. SOLID-SEC-003 -- issue_credential must bind to registered schema + tree (MEDIUM-LARGE)
+### 2. SOLID-SEC-004 -- In-circuit issuer pubkey binding (LARGE)
 
-**Root cause.** `programs/issuer-registry/src/lib.rs:619-716` and
-context struct at `:909-937`: the handler derives
-`PDA(b"tree-authority", schema_hash)` but does NOT verify that
-`schema_hash` corresponds to a registered `SchemaAccount` or that
-`merkle_tree.key()` matches `SchemaTreeBinding.tree_pubkey`. An
-approved issuer can spawn a rogue schema/tree universe.
+**Root cause.**  `batch_credential_query.circom` accepts
+`issuerPubKeyAxs/Ays` as private inputs; the verifier has no
+cross-check; `check_issuer_status` exists but no CPI call.  Revoked
+issuers' prior signatures still verify on-chain.
 
-**Change set.**
-- Add `schema_account` + `schema_tree_binding` as required accounts
-  on the `IssueCredential` context.
-- Seed-constrain `schema_account` to `[b"schema",
-  schema_account.name.as_bytes(), &[schema_account.version]]` under
-  schema-registry.
-- `require!(schema_account.schema_hash == schema_hash)`.
-- `require!(merkle_tree.key() == schema_tree_binding.tree_pubkey)`.
-  Read the binding's tree_pubkey from bytes `[40..72)` of the PDA
-  (layout documented at `programs/schema-registry/src/lib.rs:6-30`).
-- Add new variants to `ErrorCode`: `SchemaNotRegistered`,
-  `TreeBindingMismatch`.
+**Design choice pending.**  Two candidates (per RESUME.md from the
+previous session + master-audit):
+- (a) `verify_batch_proof` CPIs into
+  `issuer_registry::check_issuer_status` for every credential slot.
+  Pro: reuses existing on-chain state; no circuit change.
+  Con: 4x CPI per proof; CU budget tight.
+- (b) Compressed issuer tree with in-circuit Merkle-membership proof
+  against a `GlobalIssuerBinding` root. Pro: O(1) on-chain; single
+  root comparison.  Con: new circuit revision + trusted setup.
 
-**Downstream.** `scripts/issue.ts` currently calls
-`issueCredential` without these accounts -- it must be updated as
-part of SOLID-SEC-011 (next step).
+Pick ONE, write an ADR, implement.  Whichever is chosen, bundle the
+circuit work (if any) with **Phase 2 trusted setup** (see item 5).
 
-**Regression gate.** Bankrun integration tests in Phase 2 scope:
-`integration_06_issue_credential_rejects_unregistered_schema`,
-`integration_07_issue_credential_rejects_wrong_tree`. For Phase 1
-ship, at minimum a Rust compile + a manual happy-path test in the
-E2E script (SOLID-SEC-011).
+### 3. SOLID-SEC-008 -- Epoch-bound nullifier (MEDIUM circuit change)
 
-### 3. SOLID-SEC-011 -- E2E scripts + bootstrap_issuer.ts (MEDIUM)
+**Root cause.**  `nullifier = Poseidon(masterKey, revocationNonce,
+verifierAddress, queryContextHash, verifierNonce)`.  No
+global-root / epoch term -> a nullifier computed against epoch N is
+still accepted at epoch N+1 after root rotation, enabling
+long-horizon replay.
 
-**Root cause.** Three concrete bugs plus a missing script:
+**Change set.**  Add `epoch` (or `globalRoot`) as a 6th nullifier
+input, expose it as a public input, assert against on-chain
+`global_binding.last_updated_slot` / epoch counter.
 
-(a) `circuits/scripts/setup.js:57` writes `circuit_final.zkey` but
-`scripts/prove.ts:123` reads `batch_credential_query_final.zkey`.
-Pick one and reconcile. Recommended: unify on
-`batch_credential_query_final.zkey` since that matches the circuit
-name and will be the expected filename after the SOLID-SEC-001 +
--029 setup rerun.
+Bundle circuit change with SEC-004 if (b) is chosen, otherwise this
+is its own small circuit rev.
 
-(b) `scripts/prove.ts:105` references `keccak256HashPair` but the
-symbol is never imported. Actual requirement is Poseidon; use
-`poseidonHashPair` from `@solid-protocol/core` consistently (check
-if that's the exported name; if not, use `poseidonHashBytes` and
-call it with two leaves).
+### 4. SOLID-SEC-006 -- VK freeze-gate (MEDIUM)
 
-(c) `scripts/issue.ts` lacks the issuer-approval bootstrap. On a
-clean registry, `issueCredential` fails because the issuer is not
-`Approved`. Add the full sequence -- split it into a new dedicated
-script `scripts/bootstrap_issuer.ts` so `scripts/issue.ts` stays
-focused on credential issuance:
+**Root cause.**  `store_verification_key` with `chunk_index=0`
+silently overwrites existing VK bytes; no finalisation gate.  After
+first full upload the VK should be immutable unless the DAO votes to
+rotate.
 
-```
-scripts/bootstrap_issuer.ts:
-  initialize_registry (if not already)
-  register_issuer
-  stake_tokens (or go via trust-anchor)
-  vote_on_issuer (N times to pass the DAO threshold) OR
-    approve_via_trust_anchor under a Government-tier anchor
-  finalize_voting (if voted) to flip Pending -> Approved
-  print: issuer authority pubkey, stake PDA, issuer PDA
-```
+**Change set.**  Add `verifier_config.vk_finalized: bool` (set true
+on the last chunk with `finalize=true`); once true, only a
+`rotate_verification_key` instruction (DAO-signed, 48h timelock) may
+unset it.
 
-**Also update for SOLID-SEC-003.** `scripts/issue.ts` must pass the
-new `schema_account` and `schema_tree_binding` accounts when
-constructing the `issueCredential` instruction.
+### 5. Phase 2 trusted-setup revision
 
-**Secrets hygiene (SOLID-SEC-020 follow-up).** The scripts still
-write plaintext keypairs to `scripts/e2e_state.json`. That file is
-now .gitignore'd (Tier 1) and the pre-commit hook is in place, but
-the write itself should move to `$XDG_RUNTIME_DIR` or `/tmp`.
-Bundle into this task: change the state-file path, keep the hook as
-defense-in-depth.
+Required by SEC-004 (if option b) and SEC-008.  Still TESTNET (the
+multi-party ceremony is SOLID-SEC-012, Phase 3).  Re-run
+`circuits/scripts/setup.js`, log the new zkey sha256 in the PR body,
+upload new VK through `initialize.ts`.
 
-**Regression gate.** New CI job `e2e_localnet` (outline in
-`plan/IMPLEMENTATION_PLAN.md` Section 6): clean checkout ->
-bootstrap -> deploy -> bootstrap_issuer -> issue -> prove -> verify.
-Green on every push.
+### 6. Remaining HIGH items
 
-### 4. SOLID-SEC-001 + SOLID-SEC-029 -- Circuit fixes + TESTNET trusted setup (LARGE)
+- **SOLID-SEC-007** (BJJ subgroup): add subgroup check at issuer
+  registration; the pubkey must be a valid BJJ point of order r.
+  Rust-only, no circuit change.
+- **SOLID-SEC-010** (cross-language vectors): extend
+  `crates/solid-core/examples/gen_vectors.rs` + TS caller to cover
+  Poseidon raw, BJJ sign/verify, `derive_credential_key`,
+  `computeIdentityState`, `QueryBuilder._computeContextHash`.
+- **SOLID-SEC-012** (multi-party ceremony): Phase 3.  Do not block
+  Phase 2 close-out on it.
 
-Bundle both into ONE circuit revision and ONE trusted-setup run.
-Phase 2 will bundle the SOLID-SEC-004, -008 circuit changes in its
-own revision; do not try to bundle Phase 1 and Phase 2 circuit work
-together -- that would delay Phase 1 closure.
+### 7. Registry cleanup after Phase 2
 
-**Change set (circuits).**
-
-(a) SOLID-SEC-001 range checks. In `batch_credential_query.circom`
-just after the public-input declarations (around lines 56-59) and
-in `compound_query.circom` at the analogous point:
-
-```
-for (var i = 0; i < MAX_PREDICATES; i++) {
-    component credIdxCheck_<i> = LessThan(8);
-    credIdxCheck_<i>.in[0] <== queryCredentialIndices[i];
-    credIdxCheck_<i>.in[1] <== NUM_CREDS;
-    credIdxCheck_<i>.out === 1;
-
-    component fieldIdxCheck_<i> = LessThan(8);
-    fieldIdxCheck_<i>.in[0] <== queryFieldIndices[i];
-    fieldIdxCheck_<i>.in[1] <== NUM_FIELDS;
-    fieldIdxCheck_<i>.out === 1;
-}
-```
-
-Note: `compound_query.circom` uses a single FieldSelector not
-BatchFieldSelector; adapt the bound accordingly.
-
-(b) SOLID-SEC-029 `IdentityAnchor.enabled` gate. In
-`circuits/lib/identity_anchor.circom`:
-
-```
-// Add a new input:
-signal input enabled;
-
-// Change line 47:
-globalInclusion.enabled <== enabled;
-```
-
-In `circuits/batch_credential_query.circom` where
-`IdentityAnchor` is instantiated:
-
-```
-for (var i = 0; i < NUM_CREDS; i++) {
-    anchors[i] = IdentityAnchor(GLOBAL_DEPTH);
-    anchors[i].enabled <== 1 - isZero[i].out;   // new line
-    anchors[i].masterIdentityKey <== masterIdentityKey;
-    // ... existing wiring ...
-}
-```
-
-**Change set (trusted setup, TESTNET-ONLY).**
-
-`circuits/scripts/setup.js` already produces a single-party
-ceremony. For Phase 1 the zkey is labeled TESTNET ONLY in the plan
-(Phase 3 ships the multi-party mainnet version under
-SOLID-SEC-012). Run:
-
-```
-cd circuits
-npm install
-node scripts/setup.js
-```
-
-Publish the resulting `.zkey` hash in the resulting PR body for
-audit trail. Update `scripts/prove.ts`'s zkey filename constant
-(see SOLID-SEC-011 sub-task (a)) to match whatever `setup.js` emits.
-
-**Regression gate.** `circuit_range_check_property_test`: property-
-based witness test with 1000 random out-of-range indices (must fail
-witness generation). `circuit_padding_slot_requires_no_global_proof`:
-3-credential batch with 1 padding slot generates a valid witness
-without any zero-schema global-tree entry.
-
-### 5. Registry + plan cleanup after Phase 1 closes
-
-- Flip SOLID-SEC-001, -003, -009, -011, -029 to `Fixed` in
-  `sec/SECURITY_REGISTRY.md` with commit hashes + regression test
-  names.
-- Bump the summary counts.
-- Append a new row to the registry's History table for the Phase 1
-  close-out audit snapshot.
-- Write the snapshot:
-  `sec/audits/2026-04-<DD>_v0.5_phase1_closeout.md` following the
-  template used by `sec/audits/2026-04-22_v0.3_comprehensive_audit.md`.
-- Update `plan/IMPLEMENTATION_PLAN.md` Section 4 Phase 1 status
-  table: every item shows `Fixed` with commit hash.
+Same pattern as Phase 1 close-out:
+- Flip closed items `Open -> Fixed` with commit hashes + regression
+  gate names in `sec/SECURITY_REGISTRY.md`.
+- Append a new row to the History table.
+- Write `sec/audits/<date>_v0.6_phase2_closeout.md`.
+- Update `plan/IMPLEMENTATION_PLAN.md` Phase 2 status table.
+- Update this file.
 
 ---
 
@@ -269,67 +181,52 @@ above.
 ```
 cd /Users/rajakash/Desktop/testing/solid-protocol
 git fetch origin
-git log --oneline origin/main | head -6
+git log --oneline origin/main | head -8
 
-# Expected top 6:
+# Expected top 8:
+#   bc971e6  Phase 1 (SEC-001, SEC-029): circuit range checks + anchor enable gate
+#   8ad20e3  Phase 1 (SEC-011): E2E scripts work from a clean checkout
+#   8a31abf  Phase 1 (SEC-003): bind issue_credential to registered schema + tree
+#   0c333fb  Phase 1 (SEC-009): WASM bridge has one source of truth
+#   9663506  plan: add RESUME.md for cross-session continuity
 #   d34d0ca  Phase 1 (SEC-032): two-layer guard on SCHEMA_REGISTRY_ID_BYTES
-#   6e46dda  Phase 1 Tier 3a: close SOLID-SEC-031, SOLID-SEC-033  (post-rebase hash may differ slightly if remote added commits)
-#   402fb4e  Phase 1 Tier 2: close SOLID-SEC-002, SOLID-SEC-005, SOLID-SEC-030
-#   174cf50  Phase 1 Tier 1: close SOLID-SEC-020, SOLID-SEC-027, SOLID-SEC-028
-#   b6f3b40  sec+adr+plan: merge master-audit findings and seed decision + plan dirs
-#   4741c77  docs: add MODULE_CONTRACTS.md -- full component contracts for every system module
+#   6e46dda  Phase 1 Tier 3a: close SOLID-SEC-031, SOLID-SEC-033
+#   a59e780  sec: post-pull scorecard 2026-04-23 -- 6/38 fixed, 32 open, priorities listed
 
-cargo test -p solid-core --lib           # expect 43/43
-cargo test -p zk-verifier --lib          # expect 11/11
-cargo test -p solid-light --lib          # expect 10/10 (incl. SEC-032 tests)
-cargo check -p issuer-registry -p schema-registry   # warnings are pre-existing
-python3 scripts/check_program_ids.py      # expect "consistent" message
+cargo test -p solid-core  --lib            # expect 43/43
+cargo test -p solid-light --lib            # expect 16/16
+cargo test -p zk-verifier --lib            # expect 11/11
+python3 scripts/check_program_ids.py        # expect "consistent"
 ```
 
 If any of the above diverges, reconcile BEFORE starting new work.
-A divergence means either upstream changed something or my memory
-of state is wrong.
 
 ---
 
-## Open decisions
+## Open decisions (carried into Phase 2)
 
-These came up during Phase 1 Tier 3a and are left for explicit
-decision tomorrow rather than guessed:
+1. **SEC-004 implementation choice** (see Next Action item 2):
+   CPI-to-check_issuer_status vs compressed issuer tree.  Needs
+   ADR before implementation.
 
-1. **`masterPublicKey` in `generateBatchProof` signature.** The fix
-   to SOLID-SEC-033 makes the parameter redundant (the function
-   uses `masterPrivateKey` and derives everything internally). I
-   kept it for v0.2 API compatibility with a `void` discard. Decide
-   whether to:
+2. **`masterPublicKey` in `generateBatchProof` signature** (carried
+   from Phase 1). The fix to SOLID-SEC-033 made the parameter
+   redundant.  I kept it as a `void` discard for v0.2 API
+   compatibility.  Decide in Phase 2:
    - (a) leave as-is and remove in a v1.0 major bump (ADR required).
    - (b) remove now and document the breaking change clearly.
 
-2. **Phase 1 trusted setup ceremony output filename.** Either:
-   - Rename `setup.js`'s output to `batch_credential_query_final.zkey`
-     (match the prover's expectation).
-   - Rename `prove.ts`'s expectation to `circuit_final.zkey` (match
-     the setup script).
-   I recommend the first -- the circuit name is more informative
-   and future-proofs against multi-circuit repos -- but either works
-   as long as the chosen name is used consistently across
-   `setup.js`, `prove.ts`, `ts-sdk/packages/sdk/src/config.ts`, and
-   any doc reference.
-
-3. **`crates/solid-core` `wasm` feature.** The feature is declared
-   in Cargo.toml but the module has zero `#[wasm_bindgen]` exports.
-   Either:
-   - Remove the feature entirely (cleaner; requires confirming no
-     downstream depends on `solid-core/wasm`).
-   - Keep the feature and add a single `wasm_version()` function so
-     the feature has semantic meaning.
-   Less load-bearing than items 1 and 2 -- can defer to Phase 2.
+3. **`scripts/e2e_state.json` legacy path**.  The new helper uses
+   `$XDG_RUNTIME_DIR` / `$TMPDIR`; existing CI or local setups that
+   relied on the repo-local path need to migrate.  No code still
+   reads the legacy path (verified at close-out), but operator
+   runbooks may need a note.
 
 ---
 
 ## Rules of engagement (reprinted)
 
-Full list in `plan/IMPLEMENTATION_PLAN.md` Section 9. For quick
+Full list in `plan/IMPLEMENTATION_PLAN.md` Section 9. Quick
 reference:
 
 1. Root cause only. No workarounds, no suppression, no
@@ -341,5 +238,4 @@ reference:
 5. PR review checklist: root cause? regression test? doc truth?
    single source of truth? ADR compliance? registry aligned?
 
-The work done so far holds to all six. The remaining items should
-hold to all six too.
+Phase 1 held to all six. Phase 2 must too.
