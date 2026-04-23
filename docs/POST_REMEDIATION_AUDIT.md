@@ -383,12 +383,24 @@ monotonicity check added in this pass caps root-rollback damage.
 
 ### next_vk_chunk field in VerifierConfig
 
-Adds 2 bytes to VerifierConfig.SPACE. The constant was updated from
-32 + 8 + 1 + 1 + 1 = 43 to 32 + 8 + 1 + 1 + 1 + 2 = 45. This is
+Adds 2 bytes to VerifierConfig.SPACE when it landed; after the
+SOLID-SEC-005 `timestamp_skew_seconds: u32` field landed the
+constant is now:
+    32 authority
+  +  8 proof_count
+  +  1 vk_initialized
+  +  1 paused
+  +  1 bump
+  +  2 next_vk_chunk
+  +  4 timestamp_skew_seconds
+  = 49 bytes total (VerifierConfig::SPACE).
+
+Source of truth: `programs/zk-verifier/src/lib.rs:612-616`. This is
 backwards-incompatible for any existing deployment that ran against
-the pre-remediation binary; the account must be closed and reinit'd
-before store_verification_key can be called under the new code path.
-Documented in DEPLOYMENT_AND_TESTING.md mainnet checklist.
+a pre-remediation or pre-SEC-005 binary; the account must be closed
+and reinit'd before `store_verification_key` can be called under the
+new code path. Documented in DEPLOYMENT_AND_TESTING.md mainnet
+checklist.
 
 ### Circuit signature change and trusted setup
 

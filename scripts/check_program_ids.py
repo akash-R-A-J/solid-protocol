@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-check_program_ids.py — Hard-gate against Anchor.toml ↔ deployments drift.
+check_program_ids.py — Hard-gate against Anchor.toml ↔ declare_id ↔ deployments drift.
 
 Runs in CI and locally.  Fails fast when the program IDs declared in
 `Anchor.toml` (the source of truth consumed by the circuits, the TS SDK, and
-`declare_id!` macros in the on-chain programs) diverge from the IDs actually
-recorded in `deployments/<cluster>.json`.
+`declare_id!` macros in the on-chain programs) diverge from:
+
+  (1) the `declare_id!(...)` literal in each program's `src/lib.rs`;
+  (2) the `SCHEMA_REGISTRY_PROGRAM_ID` literal in
+      `crates/solid-light/src/cpi_helpers.rs` (SOLID-SEC-032);
+  (3) the program IDs recorded in `deployments/<cluster>.json`;
+  (4) the presence of a `deployments/<cluster>.json` for every non-localnet
+      cluster declared in Anchor.toml (SOLID-SEC-040, Phase 2 prelude).
 
 Exit code 0: everything consistent.
 Exit code 1: drift detected — prints an actionable diff.
@@ -192,6 +198,32 @@ def main() -> int:
                     f"{cluster}: Anchor.toml `{program}` = {expected!r} "
                     f"≠ deployments/{cluster}.json `{program}` = {deployed_id!r}"
                 )
+
+    # (2b) Every non-local cluster declared in Anchor.toml must have a matching
+    # deployment manifest.  Without this, deleting deployments/<cluster>.json
+    # silently passes this gate even though CLAUDE.md's invariant is
+    # "Anchor.toml, declare_id, and deployments all agree".  `localnet` is the
+    # development stub and is not expected to have a published manifest.
+    NON_LOCAL_CLUSTERS_REQUIRING_MANIFEST = {
+        c for c in anchor.keys() if c != "localnet"
+    }
+    for cluster in NON_LOCAL_CLUSTERS_REQUIRING_MANIFEST:
+        if cluster not in deployments:
+            failures.append(
+                f"Anchor.toml declares [programs.{cluster}] but "
+                f"deployments/{cluster}.json is missing.  "
+                "Either restore the manifest (via scripts/regen_devnet_manifest.py "
+                f"or the cluster-specific equivalent) or drop the "
+                f"[programs.{cluster}] section from Anchor.toml."
+            )
+        else:
+            # Manifest exists; ensure every program from Anchor.toml appears.
+            for program in PROGRAM_KEYS:
+                if program not in deployments[cluster]:
+                    failures.append(
+                        f"deployments/{cluster}.json is missing `{program}`; "
+                        f"Anchor.toml [programs.{cluster}] declares it."
+                    )
 
     if failures:
         print("Program-ID consistency FAILED:", file=sys.stderr)

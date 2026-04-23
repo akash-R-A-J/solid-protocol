@@ -466,15 +466,17 @@ alt_bn128 pairing check, and atomically registers the nullifier to prevent repla
 
 **State accounts:**
 
-`VerifierConfig` PDA seeds=[b"verifier-config"], space=45:
+`VerifierConfig` PDA seeds=[b"verifier-config"], space=49:
 ```
-authority: Pubkey         (32)
-vk_initialized: bool      (1)
-paused: bool              (1)
-proof_count: u64          (8)
-next_vk_chunk: u8         (1)
-timestamp_skew_secs: u16  (2, PENDING: SEC-005 fix)
+authority: Pubkey             (32)
+proof_count: u64              (8)
+vk_initialized: bool          (1)
+paused: bool                  (1)
+bump: u8                      (1)
+next_vk_chunk: u16            (2)
+timestamp_skew_seconds: u32   (4)
 ```
+Source of truth: `programs/zk-verifier/src/lib.rs:595-616`.
 
 `VkStorage` PDA seeds=[b"vk-storage", config_pda]:
 ```

@@ -30,9 +30,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 6    | 0           | 6     | 0        | 0         | 12    |
 | MEDIUM    | 9    | 0           | 4     | 0        | 0         | 13    |
-| LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
-| INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 24   | 0           | 14    | 0        | 0         | 38    |
+| LOW       | 6    | 0           | 2     | 0        | 0         | 8     |
+| INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
+| **Total** | 25   | 0           | 17    | 0        | 0         | 42    |
 
 ---
 
@@ -78,6 +78,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-036   | LOW      | Open   | `nullifier.rs` module docstring describes stale 3-arg formula (impl is correct 5-arg) |
 | SOLID-SEC-037   | INFO     | Open   | `WithdrawAfterCooldown` missing explicit authority constraint (seeds provide partial protection) |
 | SOLID-SEC-038   | INFO     | Open   | Master-audit informational cluster: `i16` borrow signedness, reader/writer size asymmetry, `GreaterThan(8)` bound comment |
+| SOLID-SEC-039   | LOW      | Fixed  | `scripts/bootstrap_issuer.ts` test-only DAO parameters deployable to mainnet by mistake |
+| SOLID-SEC-040   | LOW      | Fixed  | `scripts/check_program_ids.py` silently passed when `deployments/<cluster>.json` was absent |
+| SOLID-SEC-041   | LOW      | Open   | `circuits/build/verification_key.json` uploaded by `initialize.ts` is not content-addressed |
+| SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
 
 ---
 
@@ -831,6 +835,101 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
   - `GreaterThan(8)` on `orSum` (max 4); document the bound.
 - **Remediation.** Code comments only.
 
+### SOLID-SEC-039 -- `bootstrap_issuer.ts` runnable against mainnet
+
+- **Severity:** LOW
+- **Status:** Fixed (2026-04-23, Phase 2 prelude)
+- **Introduced:** 2026-04-23 (landed with SOLID-SEC-011 in commit
+  `8ad20e3`; surfaced during Phase 2 entry review)
+- **Evidence (pre-fix):** `scripts/bootstrap_issuer.ts` defaulted to
+  `http://127.0.0.1:8899` but honored `SOLID_RPC_URL` with no guard;
+  the script's baked-in parameters (20-second voting period,
+  1-lamport min stake, freshly-minted governance supply) are test-
+  only and would have been irreversibly installed into
+  `initialize_registry` on the first run against a fresh real
+  cluster.  Idempotency saves a re-run, not the first run.
+- **Impact.** Footgun.  Operator mistake + first-run-of-cluster =
+  real DAO initialized with joke parameters.  Not exploitable by an
+  attacker, but recoverable only by closing + re-initialising the
+  `RegistryConfig` PDA.
+- **Remediation (landed).** Refuse to run when `SOLID_RPC_URL`
+  does not match `localhost|127.0.0.1|0.0.0.0` unless
+  `SOLID_ALLOW_NON_LOCALNET=1` is set.  The opt-in flag is
+  documented alongside the override knobs for voting period / stake
+  so a non-local run must consciously set production parameters.
+- **Regression gate.** Host-side: running with any non-local RPC
+  exits with code 2 and a clear error.  CI `e2e_localnet` job
+  (Phase 2 deliverable) exercises the happy path.
+
+### SOLID-SEC-040 -- `check_program_ids.py` silent on missing manifest
+
+- **Severity:** LOW
+- **Status:** Fixed (2026-04-23, Phase 2 prelude)
+- **Introduced:** 2026-04-22 (script authored without the
+  manifest-presence invariant)
+- **Evidence (pre-fix):** `scripts/check_program_ids.py` iterated
+  `deployments/*.json` but treated "no manifests" as consistent.
+  Deleting `deployments/devnet.json` while Anchor.toml kept
+  `[programs.devnet]` silently passed the gate -- contradicting
+  CLAUDE.md's "Anchor.toml, declare_id, and deployments all agree"
+  invariant.
+- **Impact.** Deployment drift could land silently, caught only at
+  deploy time.
+- **Remediation (landed).** The script now asserts that every
+  non-`localnet` cluster declared in Anchor.toml has a matching
+  `deployments/<cluster>.json` containing every program in
+  `PROGRAM_KEYS`.
+- **Regression gate.** Manual check confirmed (move manifest
+  aside -> exit 1 with actionable error; restore -> exit 0).
+  The pre-existing CI job `program_id_consistency` runs this
+  script on every push.
+
+### SOLID-SEC-041 -- VK JSON artifact not content-addressed
+
+- **Severity:** LOW
+- **Status:** Open
+- **Introduced:** 2026-04-22 (initialize.ts design)
+- **Evidence:** `scripts/initialize.ts:245-278` uploads whatever
+  `circuits/build/verification_key.json` happens to be on disk;
+  `circuits/scripts/setup.js` prints a sha256 of the zkey but
+  neither the zkey hash nor a VK hash is cross-checked at upload
+  time.
+- **Impact.** An operator pointing `initialize.ts` at a stale
+  `circuits/build/` after a source-tree `git pull` uploads the old
+  VK against new circuit code; every subsequent real proof
+  verifies as invalid and presents as a chain-side problem rather
+  than a build-side problem.
+- **Remediation.** Either commit a
+  `circuits/build/verification_key.sha256` against the current
+  circuit revision and fail `initialize.ts` on mismatch, or require
+  `SOLID_VK_SHA256=<hex>` to match the computed hash of the uploaded
+  bytes.  Hooks into the SOLID-SEC-012 multi-party attestation work
+  later.
+- **Regression gate.** A CI step that, after compiling + running
+  `setup.js`, asserts the VK+zkey hashes match a pinned expected
+  pair (the pin regenerates on every sanctioned circuit rev).
+
+### SOLID-SEC-042 -- `VerifierConfig::SPACE` doc drift
+
+- **Severity:** INFO
+- **Status:** Fixed (2026-04-23, Phase 2 prelude)
+- **Introduced:** SEC-005 fix (`402fb4e`, Phase 1 Tier 2)
+- **Evidence (pre-fix):** `docs/POST_REMEDIATION_AUDIT.md:386-388`
+  still documented the constant as `= 45` bytes
+  (pre-`timestamp_skew_seconds`).  `docs/MODULE_CONTRACTS.md:469`
+  documented `space=45` with a stale field table claiming
+  `next_vk_chunk: u8` (actual: `u16`) and
+  `timestamp_skew_secs: u16` (actual: `u32`), tagged PENDING when
+  the fix had already landed.  Source of truth is
+  `programs/zk-verifier/src/lib.rs:615`.
+- **Impact.** Doc lies.  No code bug; violates the "no doc lies"
+  non-negotiable in `plan/IMPLEMENTATION_PLAN.md` Section 0.
+- **Remediation (landed).** Both docs updated to match the source
+  of truth (`SPACE = 49`, layout reconciled).
+- **Regression gate.** Future drift is caught on eyeball review;
+  a CI linter for "cite source-of-truth line number for every
+  numerical SPACE claim" is a possible Phase 3 hygiene item.
+
 ---
 
 ## History
@@ -842,6 +941,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-22 | `sec/audits/2026-04-22_v0.3_master_audit.md`                         | SOLID-SEC-031..038 (renumbered after v0.4 collision) | 0 |
 | 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`   | SOLID-SEC-028..030                        | 0          |
 | 2026-04-23 | `sec/audits/2026-04-23_v0.5_phase1_closeout.md`                      | --                                        | SOLID-SEC-001, -002, -003, -005, -009, -011, -020, -027, -028, -029, -030, -031, -032, -033 (14 Phase 1 items) |
+| 2026-04-23 | Phase 2 prelude (code review surfaced new items; in-session fix)     | SOLID-SEC-039, -040, -041, -042           | SOLID-SEC-039, -040, -042 (3 of 4 fixed same commit) |
 
 ### Note on the 2026-04-22 numbering
 

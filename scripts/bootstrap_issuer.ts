@@ -65,6 +65,33 @@ const STAKE_AMOUNT = BigInt(
 );
 const MIN_STAKE_LAMPORTS = new anchor.BN(1); // Community tier multiplier = 1
 
+// SOLID-SEC-039: refuse to run against non-localnet RPC unless the operator
+// opts in explicitly.  The script installs test-only parameters (20-second
+// voting period, 1-lamport min stake, freshly-minted governance supply); a
+// stray run against a real cluster would bake those into the first
+// `initialize_registry` call for that cluster.  The downstream idempotent
+// branch saves re-runs but not the very first deployment -- which is
+// exactly when this script would be most dangerous.
+//
+// `SOLID_ALLOW_NON_LOCALNET=1` is the explicit override; the registry
+// entry documents the runbook for real deployments.
+const ALLOW_NON_LOCALNET = process.env.SOLID_ALLOW_NON_LOCALNET === '1';
+const RPC_IS_LOCAL = /\b(localhost|127\.0\.0\.1|0\.0\.0\.0)\b/.test(RPC_URL);
+if (!RPC_IS_LOCAL && !ALLOW_NON_LOCALNET) {
+  console.error(
+    `[bootstrap_issuer] Refusing to run against non-localnet RPC.\n` +
+    `  SOLID_RPC_URL = ${RPC_URL}\n` +
+    `\nThis script installs test-only DAO parameters (20-second voting\n` +
+    `period, 1-lamport min stake, freshly-minted governance supply).\n` +
+    `Running against devnet / mainnet would bake those into\n` +
+    `initialize_registry.  If you know what you are doing, re-run with\n` +
+    `SOLID_ALLOW_NON_LOCALNET=1 and override the test-only parameters\n` +
+    `via SOLID_VOTING_PERIOD_SECONDS / SOLID_STAKE_AMOUNT / SOLID_MIN_STAKE_LAMPORTS.\n` +
+    `\nSee sec/SECURITY_REGISTRY.md SOLID-SEC-039 for the runbook.`,
+  );
+  process.exit(2);
+}
+
 const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
 const wallet = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, 'utf-8'))),

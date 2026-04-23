@@ -20,11 +20,19 @@ authoritative.
 with a landed commit, a regression-gate description, and (for every
 host-reachable defect) a green host-side test.
 
-Registry state: **24 open / 14 fixed / 38 total**.
-Severities: **CRITICAL 0 open**, HIGH 6 open, MEDIUM 9 open, LOW 5
-open, INFO 4 open.
+Registry state post-Phase-1-close: 24 open / 14 fixed / 38 total.
+After the Phase 2 prelude (same-session code review surfaced 4 new
+items; 3 fixed in the prelude commit, 1 carried open):
+**25 open / 17 fixed / 42 total**.
+Severities (post-prelude): **CRITICAL 0 open**, HIGH 6 open,
+MEDIUM 9 open, LOW 6 open, INFO 4 open.
 
 Snapshot: `sec/audits/2026-04-23_v0.5_phase1_closeout.md`.
+Prelude adds: SOLID-SEC-039 (bootstrap_issuer mainnet footgun --
+Fixed), SOLID-SEC-040 (check_program_ids missing-manifest gap --
+Fixed), SOLID-SEC-042 (VerifierConfig::SPACE doc drift -- Fixed),
+SOLID-SEC-041 (VK artifact not content-addressed -- Open; Phase 2
+scope).
 
 ### Host-side baseline (green at close-out)
 
@@ -63,7 +71,7 @@ MEDIUM (9 open)
   -013..-019, -021, -034  (governance + throughput + schema-hash
                             re-assertion + fraud-proof seed check)
 
-LOW (5 open)   -022..-024, -035, -036
+LOW (6 open)   -022..-024, -035, -036, -041
 INFO (4 open)  -025, -026, -037, -038
 
 See sec/SECURITY_REGISTRY.md for the full detail + remediation plan
