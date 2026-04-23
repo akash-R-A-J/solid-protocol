@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 1    | 0           | 2     | 0        | 0         | 3     |
-| HIGH      | 7    | 0           | 5     | 0        | 0         | 12    |
+| HIGH      | 6    | 0           | 6     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 27   | 0           | 11    | 0        | 0         | 38    |
+| **Total** | 26   | 0           | 12    | 0        | 0         | 38    |
 
 ---
 
@@ -50,7 +50,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-008   | HIGH     | Open   | Nullifier does not include epoch / global root                     |
 | SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
-| SOLID-SEC-011   | HIGH     | Open   | E2E scripts bugged: zkey name, missing import, missing issuer flow |
+| SOLID-SEC-011   | HIGH     | Fixed  | E2E scripts bugged: zkey name, missing import, missing issuer flow |
 | SOLID-SEC-012   | HIGH     | Open   | Trusted setup is single-party with timestamp entropy               |
 | SOLID-SEC-013   | MEDIUM   | Open   | `slash_issuer` and `submit_fraud_proof` are single-key             |
 | SOLID-SEC-014   | MEDIUM   | Open   | `stake_vault` is a single shared PDA across all issuers            |
@@ -341,16 +341,51 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-011 -- E2E scripts bugged
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-23)
 - **Introduced:** 2026-04-22
-- **Evidence:** `circuits/scripts/setup.js:57` vs
-  `scripts/prove.ts:123` (zkey filename mismatch);
-  `scripts/prove.ts:105` (`keccak256HashPair` unimported);
-  `scripts/issue.ts` (no register/stake/vote/approve sequence).
-- **Impact.** Stranger cannot run E2E from clean checkout.
-- **Remediation.** Unify zkey name, replace keccak with Poseidon
-  consistently, add issuer-approval bootstrap.
-- **Regression gate.** CI `e2e_localnet` end-to-end to on-chain verify.
+- **Evidence (pre-fix):** `circuits/scripts/setup.js` built
+  `compound_query.r1cs` and wrote `circuit_final.zkey`, while
+  `scripts/prove.ts:123` expected `batch_credential_query_final.zkey`
+  (filename mismatch); `scripts/prove.ts:105` referenced
+  `keccak256HashPair`, a symbol that was never imported;
+  `scripts/issue.ts` lacked any issuer register/stake/vote/approve
+  sequence, so a clean checkout could never call `issue_credential`
+  (issuer stays Pending).
+- **Impact.** Stranger could not run E2E from a clean checkout.
+- **Remediation (landed).**
+  - `circuits/package.json`: `npm run compile` now targets
+    `batch_credential_query.circom`; the legacy compound circuit
+    kept reachable as `compile:compound` for ad-hoc work.
+  - `circuits/scripts/setup.js`: rewritten to build against
+    `batch_credential_query.r1cs` and emit
+    `batch_credential_query_final.zkey` (matches prove.ts); moved
+    from wall-clock `Date.now()` entropy to
+    `crypto.randomBytes(32)` (tightens the single-party setup's
+    entropy for testnet use; multi-party tracked under
+    SOLID-SEC-012); prints a sha256 of the final zkey for
+    audit-trail logging.
+  - `scripts/prove.ts`: `keccak256HashPair` swapped to
+    `poseidonHashPair` (the identity-state tree uses Poseidon; the
+    SPL-AC keccak root is opaque to SolID proofs -- comment added).
+  - `scripts/bootstrap_issuer.ts` (new): full 9-step DAO flow --
+    governance mint + initialize_registry + register_issuer +
+    stake_tokens + flash-loan cool-off + vote_on_issuer +
+    finalize_voting, with a final status assertion.  Re-run safe.
+  - `scripts/issue.ts`: reads the approved issuer's BJJ + authority
+    keypairs from the shared state file; passes `schemaName` +
+    `schemaVersion` through the SDK so `issueCredential` derives the
+    new `schema_account` / `schema_tree_binding` PDAs (required post
+    SOLID-SEC-003).
+  - `scripts/lib/e2e_state.ts` (new): all scripts now persist state
+    under `$XDG_RUNTIME_DIR/solid-e2e/state.json` (or
+    `$TMPDIR/solid-e2e-$uid/state.json` fallback) with mode 0700
+    directories and 0600 files; never under the repo working tree.
+    Folds in the SOLID-SEC-020 follow-up.
+- **Regression gate.** A CI `e2e_localnet` job that runs the full
+  pipeline against solana-test-validator is scheduled for Phase 2;
+  the host-side test gate for now is that every Rust + TS touched
+  file type-checks clean and the smoke script
+  `scripts/wasm_bridge_smoke.mjs` (SEC-009) passes.
 
 ### SOLID-SEC-012 -- Trusted setup single-party
 

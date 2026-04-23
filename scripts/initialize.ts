@@ -23,6 +23,7 @@ import { initWasm, poseidonHashBytes, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { stateFilePath, writeState } from './lib/e2e_state';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -278,8 +279,12 @@ async function main() {
   }
   console.log(`\n   ok (${vkBytes.length} bytes)`);
 
-  // Persist state for downstream scripts.
+  // Persist state for downstream scripts.  Written under
+  // `$XDG_RUNTIME_DIR` / `$TMPDIR` with mode 0600 (SOLID-SEC-020);
+  // never under the repo working tree.
   const state = {
+    schemaName: SCHEMA_NAME,
+    schemaVersion: SCHEMA_VERSION,
     schemaHash: Buffer.from(schemaHash).toString('hex'),
     schemaPda: schemaPda.toBase58(),
     registryPda: registryPda.toBase58(),
@@ -289,8 +294,9 @@ async function main() {
     vkStoragePda: vkStoragePda.toBase58(),
     merkleTreeAddress: treePubkey.toBase58(),
   };
-  fs.writeFileSync('scripts/e2e_state.json', JSON.stringify(state, null, 2));
-  console.log('\nWrote scripts/e2e_state.json');
+  const written = writeState(state);
+  console.log(`\nWrote ${written}`);
+  console.log(`(SOLID_E2E_STATE_FILE can override; default is ${stateFilePath()})`);
   console.log('Done.');
 }
 

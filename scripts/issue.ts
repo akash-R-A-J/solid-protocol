@@ -1,16 +1,22 @@
 /**
- * SolID Protocol — issuance script (E2E step 2).
+ * SolID Protocol -- issuance script (E2E step 3).
  *
- * Depends on scripts/initialize.ts having run first (reads state from
- * scripts/e2e_state.json).
+ * Pipeline (ALL steps must have run first):
+ *   scripts/initialize.ts         -> registry + schema + bindings + VK
+ *   scripts/bootstrap_issuer.ts   -> issuer registered, staked, voted,
+ *                                    approved (flips Pending -> Approved)
+ *   scripts/issue.ts              -> this script
+ *   scripts/prove.ts              -> proof + on-chain verify
  *
  * Responsibilities:
- *   1. Load on-chain state prepared by initialize.ts.
- *   2. Derive a holder identity (per-run) and a holder per-schema subkey.
- *   3. Register the issuer in issuer-registry (stake + vote + approve).
- *   4. Call issuer-registry::issue_credential which CPIs into SPL AC.
- *   5. Push the refreshed tree root into schema_registry::update_tree_root.
- *   6. Persist the credential + holder identity into scripts/e2e_state.json.
+ *   1. Load state (schema + issuer keypairs) from the shared E2E
+ *      state file.
+ *   2. Derive a holder identity (per-run) and its per-schema subkey.
+ *   3. Call issuer-registry::issue_credential which CPIs into SPL AC.
+ *      The handler (post SOLID-SEC-003) requires schema_account +
+ *      schema_tree_binding accounts; those are derived inside
+ *      `@solid-protocol/issuer` from `schemaName` + `schemaVersion`.
+ *   4. Persist the credential + holder identity.
  *
  * Program IDs are sourced from @solid-protocol/core::PROGRAM_IDS.
  */
@@ -26,6 +32,7 @@ import { issueCredential } from '@solid-protocol/issuer';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { readState, writeState } from './lib/e2e_state';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -43,31 +50,41 @@ async function main() {
   const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
   const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
 
-  console.log('SolID Protocol — credential issuance');
-  console.log('====================================');
+  console.log('SolID Protocol -- credential issuance');
+  console.log('=====================================');
 
-  if (!fs.existsSync('scripts/e2e_state.json')) {
-    throw new Error('Run initialize.ts first');
+  const state = readState('issue');
+  if (!state.schemaHash || !state.schemaName) {
+    throw new Error('state is missing schema metadata; run initialize.ts first');
   }
-  const state = JSON.parse(fs.readFileSync('scripts/e2e_state.json', 'utf-8'));
+  if (!state.issuerBjj || !state.issuerAuthoritySecret) {
+    throw new Error(
+      'state is missing an approved issuer; run bootstrap_issuer.ts first',
+    );
+  }
 
   const schemaHash = Uint8Array.from(Buffer.from(state.schemaHash, 'hex'));
   const merkleTree = new PublicKey(state.merkleTreeAddress);
   if (merkleTree.equals(PublicKey.default)) {
     throw new Error(
-      'scripts/e2e_state.json.merkleTreeAddress is unset. Create an SPL AC ' +
-      'tree whose authority PDA is [b"tree-authority", schemaHash] and set ' +
+      'state.merkleTreeAddress is unset. Create an SPL AC tree whose ' +
+      'authority PDA is [b"tree-authority", schemaHash] and set ' +
       'SOLID_TREE_PUBKEY before running initialize.ts.',
     );
   }
 
-  // 1. Generate identities (issuer BJJ + holder master BJJ).
-  //    The issuer's Solana authority below is a fresh keypair; in production
-  //    it would be the issuer's operational key already staked in the DAO.
-  console.log('[1/3] Generating keypairs...');
-  const issuerBjj = generateKeypair();
+  // 1. Load issuer identities from bootstrap_issuer state; generate a
+  //    fresh holder per-run.
+  console.log('[1/3] Loading keypairs...');
+  const issuerBjj = {
+    private_key: Uint8Array.from(state.issuerBjj.private_key),
+    public_key_x: Uint8Array.from(state.issuerBjj.public_key_x),
+    public_key_y: Uint8Array.from(state.issuerBjj.public_key_y),
+  };
+  const issuerAuthority = Keypair.fromSecretKey(
+    Uint8Array.from(state.issuerAuthoritySecret),
+  );
   const holderMaster = generateKeypair();
-  const issuerAuthority = Keypair.generate();
 
   // Derive the holder's per-schema keypair the circuit expects. We bind this
   // to the credential so the holder can prove knowledge later without needing
@@ -102,6 +119,11 @@ async function main() {
       connection,
       issuerAuthority,
       merkleTree,
+      // SOLID-SEC-003: `schema_account` PDA is derived from
+      // (name, version); both must match what initialize.ts passed
+      // to `register_schema`.
+      schemaName: state.schemaName,
+      schemaVersion: state.schemaVersion,
       extraSigners: [wallet], // wallet pays fees if issuerAuthority is unfunded
     },
   );
@@ -110,12 +132,6 @@ async function main() {
 
   // 4. Persist to state.
   console.log('[3/3] Saving state...');
-  state.issuerBjj = {
-    private_key: Array.from(issuerBjj.private_key),
-    public_key_x: Array.from(issuerBjj.public_key_x),
-    public_key_y: Array.from(issuerBjj.public_key_y),
-  };
-  state.issuerAuthoritySecret = Array.from(issuerAuthority.secretKey);
   state.holderMaster = {
     private_key: Array.from(holderMaster.private_key),
     public_key_x: Array.from(holderMaster.public_key_x),
@@ -143,7 +159,7 @@ async function main() {
     },
   };
   state.attestationData = attestationData.map(n => n.toString());
-  fs.writeFileSync('scripts/e2e_state.json', JSON.stringify(state, null, 2));
+  writeState(state);
   console.log('Done.');
 }
 

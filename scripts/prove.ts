@@ -29,6 +29,7 @@ import { LocalReplicaAdapter, poseidonHashPair } from '@solid-protocol/light';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { readState } from './lib/e2e_state';
 
 const PROGRAM_PUBKEYS = {
   zkVerifier: new PublicKey(PROGRAM_IDS.zkVerifier),
@@ -47,10 +48,10 @@ async function main() {
   const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
   const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
 
-  if (!fs.existsSync('scripts/e2e_state.json')) {
-    throw new Error('Run scripts/issue.ts first');
+  const state = readState('prove');
+  if (!state.credential) {
+    throw new Error('state.credential missing; run scripts/issue.ts first');
   }
-  const state = JSON.parse(fs.readFileSync('scripts/e2e_state.json', 'utf-8'));
 
   console.log('SolID Protocol — proof and verification');
   console.log('=======================================');
@@ -100,9 +101,17 @@ async function main() {
   credReplica.appendLeaf(credential.commitment);
 
   // Build the global replica: compute the per-schema identity leaf and seed it.
+  //
+  // SOLID-SEC-011: the previous revision used `keccak256HashPair`, a
+  // symbol that was never imported (the in-circuit hash and the SolID
+  // identity-state tree both use Poseidon).  `@solid-protocol/light`
+  // exports `poseidonHashPair` which mirrors the circuit's Poseidon(2)
+  // composition; the SPL-AC tree header happens to use keccak256
+  // internally but that root is opaque to SolID proofs and is not
+  // consumed here.
   const holderMasterPriv = Uint8Array.from(state.holderMaster.private_key);
   const kp = deriveCredentialKey(holderMasterPriv, credential.schemaHash);
-  const globalReplica = new LocalReplicaAdapter(GLOBAL_TREE_DEPTH, keccak256HashPair);
+  const globalReplica = new LocalReplicaAdapter(GLOBAL_TREE_DEPTH, poseidonHashPair);
   // identity leaf = Poseidon(credPubX, credPubY, revocationNonce). At this
   // bootstrapping stage revocationNonce is 0.
   const { computeIdentityState } = await import('@solid-protocol/core');
