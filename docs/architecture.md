@@ -27,17 +27,26 @@ Accounts:
 
 Invariants:
 
-- Maximum public input count is 31, matching batch_credential_query.circom.
-- public_inputs[28] must equal the program ID, scope-binding the proof to
-  this verifier.
-- global_tree and schema_tree_N accounts must be owned by schema-registry.
-  This owner check is load-bearing: without it a system-owned account
-  carrying a forged globroot or schmtree discriminator would pass the raw
+- Public input count is 32 (ADR-0014 revision; was 31), matching
+  batch_credential_query.circom.
+- public_inputs[VERIFIER_ADDRESS_INPUT_INDEX = 29] must equal the program
+  ID, scope-binding the proof to this verifier.  (Index shifted from 28
+  by ADR-0014's insertion of issuerTreeRoot at slot [10].)
+- public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX = 10] must equal the
+  current_root parsed from `IssuerTreeBinding` (ADR-0014 / SEC-004 /
+  SEC-008).
+- global_tree, schema_tree_N, AND issuer_tree_binding accounts must be
+  owned by their respective registry program (schema-registry for the
+  first two; issuer-registry for the third).  The owner check is
+  load-bearing everywhere: without it a system-owned account carrying a
+  forged globroot / schmtree / issrtree discriminator would pass the raw
   byte-level parser and bypass the trust anchor.
 - VkStorage has a cumulative cap of 10_240 bytes and a strict chunk
   sequence (next_vk_chunk in VerifierConfig).
-- The nullifier public output must equal the nullifier seed byte string.
-  Anchor's init constraint on the nullifier record PDA makes replay atomic.
+- The nullifier public output is Poseidon(6) post ADR-0014, with
+  issuerTreeRoot as the 6th input; it must equal the nullifier seed byte
+  string.  Anchor's init constraint on the nullifier record PDA makes
+  replay atomic.
 
 ### issuer-registry
 

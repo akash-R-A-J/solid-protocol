@@ -99,17 +99,23 @@ async function handleProof(proofData) {
 
 ## Anti-Replay Protection
 
-Each proof generates a **hardened 5-argument nullifier**:
+Each proof generates a **hardened 6-argument nullifier** (ADR-0006
+Phase 2 revision, driven by ADR-0014):
 
 ```
 nullifier = Poseidon(
   holderMasterPrivKey,
-  revocationNonce,
+  revocationNonce,         // holder's
   verifierAddress,
   queryContextHash,
   verifierNonce,
+  issuerTreeRoot,          // ADR-0014: binds proof to issuer-tree epoch
 )
 ```
+
+The 6th input closes SOLID-SEC-008: revoking any issuer bumps their
+leaf's `revocation_nonce`, which changes the issuer-tree root, which
+draws post-revocation proofs from a different nullifier universe.
 
 - **Same holder + same verifier + same query + same nonce** ⇒ same
   nullifier ⇒ rejected (replay).

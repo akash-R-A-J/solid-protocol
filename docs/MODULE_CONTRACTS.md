@@ -147,36 +147,43 @@ ISSUANCE SIDE                             VERIFICATION SIDE
 [wasm/src/lib.rs] + [circuits/batch_credential_query.circom]
     Private inputs:  masterIdentityKey, per-credential data, salts, issuer sigs,
                      Merkle siblings (credential tree), Merkle siblings (global tree),
-                     revocationNonce
-    Public inputs:   [0] nullifierHash (output)
+                     revocationNonce,
+                     ADR-0014: issuerAuthorities[4], issuerStatusEpochs[4],
+                     issuerRevocationNonces[4], issuerSiblings[4][16],
+                     issuerPathIndices[4][16]
+    Public inputs:   [0] nullifierHash (output; Poseidon(6) post ADR-0014)
                      [1] globalRoot
                      [2..5] merkleRoots[4]
                      [6..9] schemaHashes[4]
-                     [10..13] queryCredentialIndices[4]
-                     [14..17] queryFieldIndices[4]
-                     [18..21] queryOperators[4]
-                     [22..25] queryValues[4]
-                     [26] numPredicates
-                     [27] compoundLogic (0=AND, 1=OR)
-                     [28] verifierAddress (this program's pubkey as field element)
-                     [29] verifierNonce
-                     [30] currentTimestamp
-    Output:          Groth16 proof (proof_a:64, proof_b:128, proof_c:64) + 31 public signals
+                     [10] issuerTreeRoot                         (ADR-0014)
+                     [11..14] queryCredentialIndices[4]
+                     [15..18] queryFieldIndices[4]
+                     [19..22] queryOperators[4]
+                     [23..26] queryValues[4]
+                     [27] numPredicates
+                     [28] compoundLogic (0=AND, 1=OR)
+                     [29] verifierAddress (this program's pubkey as field element)
+                     [30] verifierNonce
+                     [31] currentTimestamp
+    Output:          Groth16 proof (proof_a:64, proof_b:128, proof_c:64) + 32 public signals
 
     |
     v
 [zk-verifier::verify_batch_proof]
-    Inputs:  proof_a, proof_b, proof_c, public_inputs[31][32], nullifier[32]
+    Inputs:  proof_a, proof_b, proof_c, public_inputs[32][32], nullifier[32]
     Checks:  nullifier == public_inputs[0]
-             public_inputs[28] == ID.to_bytes()  (scope binding)
+             public_inputs[VERIFIER_ADDRESS_INPUT_INDEX=29] == ID.to_bytes() (scope binding)
              global_tree.owner == SCHEMA_REGISTRY_ID
              global_tree data matches public_inputs[1]
              schema_tree_N.owner == SCHEMA_REGISTRY_ID  (per active slot)
              schema_tree_N data matches public_inputs[2+i]
              schema ordering strictly ascending
+             ADR-0014: issuer_tree_binding.owner == ISSUER_REGISTRY_ID
+             ADR-0014: issuer_tree_binding data matches public_inputs[10]
              Groth16 pairing (alt_bn128 syscalls)
              nullifier PDA does not exist (init = replay guard)
-             Clock check: public_inputs[30] within skew of now  (SEC-005 fix pending)
+             Clock check: public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX=31]
+                           within skew of now  (SEC-005 LANDED)
     Output:  emit!(ProofVerified), NullifierAccount PDA created
 
 [Verifier / relayer] reads proof result and makes application-level decision
@@ -200,9 +207,9 @@ NUM_CREDS      = 4    Max credentials per batch proof
 MAX_PREDICATES = 4    Max predicate clauses per query
 ```
 
-**Public inputs (NR_PUBLIC_INPUTS = 31, 0-indexed):**
+**Public inputs (NR_PUBLIC_INPUTS = 32, 0-indexed; ADR-0014 revision):**
 ```
-[0]      nullifierHash     output signal (circuit output promoted to public)
+[0]      nullifierHash     output signal; Poseidon(6) with issuerTreeRoot
 [1]      globalRoot        current global identity tree root
 [2]      merkleRoots[0]    Merkle root of credential tree for cred slot 0
 [3]      merkleRoots[1]    ... slot 1
@@ -212,27 +219,28 @@ MAX_PREDICATES = 4    Max predicate clauses per query
 [7]      schemaHashes[1]
 [8]      schemaHashes[2]
 [9]      schemaHashes[3]
-[10]     queryCredentialIndices[0]   which credential slot predicate 0 targets
-[11]     queryCredentialIndices[1]
-[12]     queryCredentialIndices[2]
-[13]     queryCredentialIndices[3]
-[14]     queryFieldIndices[0]   which field within the selected credential
-[15]     queryFieldIndices[1]
-[16]     queryFieldIndices[2]
-[17]     queryFieldIndices[3]
-[18]     queryOperators[0]  0=NOOP 1=EQ 2=NE 3=GT 4=GTE 5=LT 6=LTE
-[19]     queryOperators[1]
-[20]     queryOperators[2]
-[21]     queryOperators[3]
-[22]     queryValues[0]    right-hand-side value for predicate 0
-[23]     queryValues[1]
-[24]     queryValues[2]
-[25]     queryValues[3]
-[26]     numPredicates     how many of the 4 predicate slots are active (0..4)
-[27]     compoundLogic     0=AND, 1=OR
-[28]     verifierAddress   this verifier program's pubkey encoded as BN254 field element
-[29]     verifierNonce     caller-chosen anti-relay nonce
-[30]     currentTimestamp  Unix timestamp in seconds, must match on-chain Clock
+[10]     issuerTreeRoot    ADR-0014: singleton issuer-tree root; SEC-004 / SEC-008
+[11]     queryCredentialIndices[0]   which credential slot predicate 0 targets
+[12]     queryCredentialIndices[1]
+[13]     queryCredentialIndices[2]
+[14]     queryCredentialIndices[3]
+[15]     queryFieldIndices[0]   which field within the selected credential
+[16]     queryFieldIndices[1]
+[17]     queryFieldIndices[2]
+[18]     queryFieldIndices[3]
+[19]     queryOperators[0]  0=NOOP 1=EQ 2=NE 3=GT 4=GTE 5=LT 6=LTE
+[20]     queryOperators[1]
+[21]     queryOperators[2]
+[22]     queryOperators[3]
+[23]     queryValues[0]    right-hand-side value for predicate 0
+[24]     queryValues[1]
+[25]     queryValues[2]
+[26]     queryValues[3]
+[27]     numPredicates     how many of the 4 predicate slots are active (0..4)
+[28]     compoundLogic     0=AND, 1=OR
+[29]     verifierAddress   this verifier program's pubkey encoded as BN254 field element
+[30]     verifierNonce     caller-chosen anti-relay nonce
+[31]     currentTimestamp  Unix timestamp in seconds, must match on-chain Clock
 ```
 
 **Private inputs:**
@@ -502,21 +510,25 @@ bump: u8   (existence == proof was verified; init on first verify = replay guard
   - On final chunk: parses VK, sets vk_initialized=true
   - MISSING: freeze gate, vk_generation, grace-window (SEC-006)
 
-`verify_batch_proof(proof_a, proof_b, proof_c, public_inputs[31][32], nullifier[32])`
+`verify_batch_proof(proof_a, proof_b, proof_c, public_inputs[32][32], nullifier[32])`
   - Gate: !paused, vk_initialized
-  - Accounts: verifier_config (mut), global_tree, schema_tree_info[4], nullifier_account (init), ...
+  - Accounts: verifier_config (mut), global_tree, schema_tree_info[4],
+              issuer_tree_binding (ADR-0014), nullifier_account (init), ...
   - Enforces (in order):
     1. nullifier == public_inputs[0]
-    2. public_inputs[28] == ID.to_bytes() (scope binding, SEC-13)
-    3. global_tree.owner == SCHEMA_REGISTRY_ID
-    4. verify_state_root_matches(global_tree.data, public_inputs[1])
-    5. For each active schema slot i=0..3:
+    2. public_inputs[VERIFIER_ADDRESS_INPUT_INDEX=29] == ID.to_bytes() (scope binding, SEC-13)
+    3. Clock.unix_timestamp within skew of public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX=31]
+       (SEC-005 LANDED in `402fb4e`)
+    4. global_tree.owner == SCHEMA_REGISTRY_ID
+    5. verify_state_root_matches(global_tree.data, public_inputs[1])
+    6. ADR-0014: issuer_tree_binding.owner == ISSUER_REGISTRY_ID AND
+                 verify_issuer_tree_binding_for_proof(data, public_inputs[10])
+    7. For each active schema slot i=0..3:
        a. schema ordering: schema[i] > schema[i-1]
        b. schema_tree_N.owner == SCHEMA_REGISTRY_ID
        c. verify_schema_root_binding(tree.data, schema_hash, public_inputs[2+i])
-    6. Groth16 pairing (alt_bn128 precompile)
-    7. Clock.unix_timestamp within skew of public_inputs[30]  [PENDING: SEC-005]
-    8. NullifierAccount init (atomically fails if already exists)
+    8. Groth16 pairing (alt_bn128 precompile)
+    9. NullifierAccount init (atomically fails if already exists)
   - Output: emit!(ProofVerified), NullifierAccount created
 
 `pause_verifier()` / `unpause_verifier()`
@@ -864,7 +876,7 @@ via the relative runtime import `../wasm/solid_wasm.js`. There is no
 | `signMessage(priv, msg: Uint8Array)` | sign_message | EdDSA-Poseidon sign. Returns {r8x, r8y, s}. |
 | `verifySignature(pkx, pky, msg, r8x, r8y, s)` | verify_signature | Returns boolean. |
 | `computeCommitment(dataFields, schemaHash, holderPkX, holderPkY, salt)` | compute_commitment | Returns 32-byte LE commitment. |
-| `computeHardenedNullifier(masterKey, revocNonce, verifierAddr, queryCtxHash, verifierNonce)` | compute_hardened_nullifier | 5-arg Poseidon. Returns 32-byte LE. |
+| `computeHardenedNullifier(masterKey, revocNonce, verifierAddr, queryCtxHash, verifierNonce, issuerTreeRoot)` | compute_hardened_nullifier | 6-arg Poseidon (ADR-0006 Phase 2 revision; 6th input is ADR-0014 issuerTreeRoot). Returns 32-byte LE. |
 | `generateIdentity(passphrase)` | generate_identity | Encrypted BJJ identity JSON string. |
 | `unlockIdentity(json, passphrase)` | unlock_identity | Returns 32-byte master private key. |
 | `deriveKey(masterKey, context)` | derive_key | Poseidon(master, context). Returns 32-byte scalar. |
@@ -1151,13 +1163,17 @@ state between test files. Every test must pass in isolation.
 ### 8.3 Cross-language vector tests (tests/vectors/)
 
 **Current coverage (2/10):** attestation_commitment, nullifier_hash
+(the nullifier vector was regenerated with the ADR-0014 6-input
+shape in Phase 2 commit `df33ffe`; other primitives still missing
+-- tracked as SOLID-SEC-010, scheduled for Phase 3).
 **Required coverage (10/10):**
   1. poseidon_raw (3-input)
   2. bjj_sign + bjj_verify (EdDSA round-trip)
   3. derive_credential_key
   4. compute_identity_state
   5. query_context_hash (matching circuit Step 4: two 8-input Poseidons + 4-input final)
-  6. compute_hardened_nullifier (5-input)
+  6. compute_hardened_nullifier (6-input; ADR-0006 Phase 2 revision)
+  7. compute_issuer_leaf (ADR-0014 Poseidon(5))
   7. compute_commitment (2-level)
   8. verify_signature (negative: wrong message)
 
@@ -1176,18 +1192,21 @@ These must be true at EVERY delivery milestone. If any is violated, the system i
 even if individual components pass their own tests.
 
 **Invariant I-1: Public input count consistency**
-  circuit NR_PUBLIC_INPUTS == 31
+  circuit NR_PUBLIC_INPUTS == 32  (ADR-0014 revision; was 31)
   == Rust constant `zk-verifier::NR_PUBLIC_INPUTS`
   == length of `publicSignals` array returned by snarkjs
   == length of `public_inputs` array in `buildVerifyBatchProofIx`
+  == `@solid-protocol/verifier::NR_PUBLIC_INPUTS`
   Violation: silent proof rejection or buffer corruption.
 
 **Invariant I-2: Endianness contract**
   All field elements cross-language are 32-byte LITTLE-ENDIAN.
   Solana pubkeys (base58) are 32-byte BIG-ENDIAN and must NOT be passed raw as field elements.
-  The `verifierAddress` circuit input [28] = ID.to_bytes() on-chain = the zk-verifier program
-  pubkey. The SDK must encode this as the same 32-byte sequence that ID.to_bytes() returns.
-  Violation: SEC-006 (verifierAddress mismatch) causes every proof to fail.
+  The `verifierAddress` circuit input at slot [VERIFIER_ADDRESS_INPUT_INDEX = 29]
+  (shifted from 28 by ADR-0014) = ID.to_bytes() on-chain = the zk-verifier
+  program pubkey.  The SDK must encode this as the same 32-byte sequence
+  that ID.to_bytes() returns.
+  Violation: SOLID-SEC-031 (verifierAddress mismatch) causes every proof to fail.
 
 **Invariant I-3: Account layout immutability**
   `SchemaTreeBinding` bytes layout ([0..145]) and `GlobalStateBinding` bytes layout ([0..104])

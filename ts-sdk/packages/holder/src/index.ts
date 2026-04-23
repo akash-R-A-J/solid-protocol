@@ -594,10 +594,11 @@ function bufToDecimal(buf: Uint8Array): string {
  *
  * Use this specifically for Solana program/account pubkeys when feeding
  * them into the circuit as field elements. The on-chain verifier
- * compares `public_inputs[28] == ID.to_bytes()` byte-for-byte. The SDK's
- * proof-submission path packs the bigint via `bigintToBytes32` which is
- * already BE; feeding the integer a matching BE interpretation here
- * makes the round-trip yield the same bytes on both ends. See
+ * compares `public_inputs[VERIFIER_ADDRESS_INPUT_INDEX = 29] ==
+ * ID.to_bytes()` byte-for-byte (index shifted from 28 by ADR-0014).
+ * The SDK's proof-submission path packs the bigint via `bigintToBytes32`
+ * which is already BE; feeding the integer a matching BE interpretation
+ * here makes the round-trip yield the same bytes on both ends. See
  * SOLID-SEC-031 for the full trace.
  */
 function bufToDecimalBE(buf: Uint8Array): string {

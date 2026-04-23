@@ -422,15 +422,24 @@ were re-verified and remain correct:
   does not CPI into registry; registry does not CPI into verifier).
 - Poseidon parameters in solid-core match circomlib via
   light-poseidon's new_circom mode.
-- 5-argument hardened nullifier formula and field ordering consistent
-  between circuit and solid-core (cross-language vectors confirm).
+- 6-input hardened nullifier formula (ADR-0006 Phase 2 revision;
+  Poseidon(masterKey, revocationNonce, verifierAddress,
+  queryContextHash, verifierNonce, issuerTreeRoot)) with field
+  ordering consistent between circuit and solid-core (cross-language
+  vectors confirm; the 6th input carries the ADR-0014 epoch bind).
 - PDA-per-nullifier replay protection with atomic init.
-- public_inputs[28] scope-binding to the verifier program ID
-  (SEC-13).
+- public_inputs[VERIFIER_ADDRESS_INPUT_INDEX = 29] scope-binding to the
+  verifier program ID (SEC-13; slot shifted from 28 by ADR-0014).
+- public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX = 10] cross-checked
+  against `IssuerTreeBinding.current_root` (ADR-0014; SEC-004/008).
 - Schema-hash strict-ascending ordering (SEC-20).
 - Flash-loan protection on stake age (100 slots minimum before vote).
+- Atomic revoke: `revoke_issuer_atomic` bumps issuer state AND
+  CPIs `replace_leaf` in the same tx, keeping on-chain status and
+  issuer-tree root in lockstep (ADR-0014; Phase 2).
 - CI jobs: fmt, clippy, rust tests, prover tests, anchor build, wasm,
-  circuits, sdk, cross_language_vectors, program_id_consistency.
+  wasm_bridge_smoke, circuits, circuit_witness_tests, sdk,
+  cross_language_vectors, e2e_localnet, program_id_consistency.
 
 ## Section 4: Open findings
 

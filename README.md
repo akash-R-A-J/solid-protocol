@@ -32,7 +32,8 @@ TypeScript SDK
   @solid-protocol/sdk       High-level facade over the sub-packages
 On-chain programs (Anchor)
   zk-verifier       Groth16 verification, PDA-per-nullifier replay protection
-  issuer-registry   DAO stake and vote, SPL AC issue_credential, slashing
+  issuer-registry   DAO stake and vote, SPL AC issue_credential, slashing,
+                    IssuerTreeBinding + atomic revoke_issuer_atomic (ADR-0014)
   schema-registry   Schemas, SchemaTreeBinding, GlobalStateBinding
 Foundation
   SPL Account Compression    concurrent Merkle trees
@@ -183,7 +184,12 @@ The verifier calls zk-verifier::verify_batch_proof, which:
    rejecting any account not owned by schema-registry.
 4. Confirms the global-state root against the GlobalStateBinding PDA with the
    same ownership check.
-5. Initialises a fresh nullifier PDA via init, giving atomic O(1) replay
+5. ADR-0014: confirms the issuer-tree root against the IssuerTreeBinding PDA,
+   owner-checked against issuer-registry.  The circuit additionally proves
+   per-credential Merkle membership of a BJJ-bound issuer leaf, so revoking
+   any issuer invalidates every pre-revocation proof (SOLID-SEC-004 /
+   SOLID-SEC-008).
+6. Initialises a fresh nullifier PDA via init, giving atomic O(1) replay
    protection.
 
 ## Trust model
@@ -196,12 +202,15 @@ The verifier calls zk-verifier::verify_batch_proof, which:
 - Voting discipline. vote_on_issuer increments active_votes_count and refuses
   votes after voting_ends_at. release_vote is required before the voter can
   unstake.
-- Nullifiers. Each proof mints a unique
-  Poseidon(masterKey, revNonce, verifierAddr, queryCtxHash, verifierNonce)
-  nullifier PDA, scoped to the verifier and unlinkable across sessions.
+- Nullifiers (ADR-0006 Phase 2 revision). Each proof mints a unique
+  Poseidon(masterKey, revNonce, verifierAddr, queryCtxHash, verifierNonce,
+  issuerTreeRoot) nullifier PDA, scoped to the verifier AND to a specific
+  issuer-tree epoch (so a revoked issuer's old proofs cannot replay after
+  root rotation).
 - Backend-agnostic verifier. The verifier parses the trust roots by byte
-  offset and rejects any account whose owner is not schema-registry; storage
-  backend can be swapped without a circuit change.
+  offset and rejects any account whose owner is not the expected registry
+  program (schema-registry for global / schema trees; issuer-registry for
+  the issuer tree); storage backend can be swapped without a circuit change.
 
 ## License
 

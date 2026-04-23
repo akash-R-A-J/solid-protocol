@@ -1,5 +1,11 @@
 # SolID Protocol — Comprehensive Ground-Level Security Audit
 
+> **HISTORICAL — DO NOT USE AS CURRENT STATE.** Frozen 2026-04-20
+> snapshot.  Many findings here have been closed by Phase 1 + Phase 2
+> work.  The living tracker is `sec/SECURITY_REGISTRY.md`; formal
+> audit snapshots live under `sec/audits/`.  Kept at the repo root
+> for historical reference + git-blame continuity.
+
 > **Audit Date:** 2026-04-20  
 > **Auditor:** Antigravity Deep Audit Engine  
 > **Scope:** Every source file in the repository — on-chain programs, ZK circuits, TypeScript SDK, Rust crates, CI/CD, deployment manifests, and scripts.  

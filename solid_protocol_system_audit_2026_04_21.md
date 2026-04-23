@@ -1,4 +1,12 @@
 # SolID Protocol — Independent System Audit
+
+> **HISTORICAL — DO NOT USE AS CURRENT STATE.** Frozen 2026-04-21
+> snapshot (pre-Phase-1).  Claims here about NR_PUBLIC_INPUTS = 31,
+> 5-arg nullifier, open SEC-004/008, etc., were accurate at the
+> audit date but are superseded by Phase 1 + Phase 2 closures.  The
+> living tracker is `sec/SECURITY_REGISTRY.md`; formal snapshots
+> live under `sec/audits/`.
+
 > **Audit Date:** 2026-04-21  
 > **Auditor:** Antigravity (independent, fresh eyes, no prior session context)  
 > **Scope:** Every source file — 3 Anchor programs, 7 Circom circuits, 2 Rust crates, 6 TypeScript packages, scripts, docs, CI, deployment manifests.  

@@ -242,10 +242,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
     to prevent a governance-without-ADR increase to an effectively-
     unbounded window.
   - `verify_batch_proof` extracts the u64 timestamp from the low 8
-    bytes of `public_inputs[30]` (LE field-element encoding, matching
-    the rest of the public-input contract), enforces the high 24
-    bytes are zero, and rejects with `StaleTimestamp` unless
-    `lower <= claimed_ts <= upper`.
+    bytes of `public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX]` (slot 30
+    at the time of this fix; slot 31 post-ADR-0014) in LE field-element
+    encoding, enforces the high 24 bytes are zero, and rejects with
+    `StaleTimestamp` unless `lower <= claimed_ts <= upper`.
 - **Regression gate (in CI now).** `cargo test -p zk-verifier --lib`
   continues to pass (11/11) including VK-parser and G1-negation
   tests, confirming no regression.

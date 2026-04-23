@@ -4,7 +4,8 @@
 - **Date:** v0.3; formalized 2026-04-22
 - **Deciders:** founding team
 - **Affects:** `circuits/batch_credential_query.circom`,
-  `programs/zk-verifier/src/lib.rs` (NR_PUBLIC_INPUTS = 31)
+  `programs/zk-verifier/src/lib.rs` (NR_PUBLIC_INPUTS = 32 post
+  ADR-0014; was 31)
 
 ## Context
 
@@ -33,7 +34,8 @@ Fix:
 - `MAX_PREDICATES = 4`
 - `TREE_DEPTH = 20` (per-schema credential trees)
 - `GLOBAL_DEPTH = 20` (global identity-state tree)
-- `NR_PUBLIC_INPUTS = 31` (see ADR-0012 for the exact layout)
+- `NR_PUBLIC_INPUTS = 32` (ADR-0012's revised layout; bumped from 31
+  by ADR-0014's insertion of `issuerTreeRoot` at slot [10])
 
 Zero-schema padding is supported: callers may set any slot's
 `schemaHash` to 0 and the circuit skips it (see ADR-0005 note about

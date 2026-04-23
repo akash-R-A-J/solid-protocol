@@ -31,26 +31,32 @@ caller passed a different TREE_DEPTH. GLOBAL_DEPTH and TREE_DEPTH may diverge
 in the future (the global identity tree and the per-schema credential trees
 are architecturally independent).
 
-## Public inputs, 31 total
+## Public inputs, 32 total (ADR-0014)
 
 ```
-index 0        nullifierHash (circuit output)
+index 0        nullifierHash (circuit output; 6-input Poseidon)
 index 1        globalRoot
 index 2..5     merkleRoots[NUM_CREDS]
 index 6..9     schemaHashes[NUM_CREDS]
-index 10..13   queryCredentialIndices[MAX_PREDICATES]
-index 14..17   queryFieldIndices[MAX_PREDICATES]
-index 18..21   queryOperators[MAX_PREDICATES]
-index 22..25   queryValues[MAX_PREDICATES]
-index 26       numPredicates
-index 27       compoundLogic (0 AND, 1 OR)
-index 28       verifierAddress (must equal zk-verifier program ID)
-index 29       verifierNonce
-index 30       currentTimestamp
+index 10       issuerTreeRoot (ADR-0014; SEC-004 / SEC-008)
+index 11..14   queryCredentialIndices[MAX_PREDICATES]
+index 15..18   queryFieldIndices[MAX_PREDICATES]
+index 19..22   queryOperators[MAX_PREDICATES]
+index 23..26   queryValues[MAX_PREDICATES]
+index 27       numPredicates
+index 28       compoundLogic (0 AND, 1 OR)
+index 29       verifierAddress (must equal zk-verifier program ID)
+index 30       verifierNonce
+index 31       currentTimestamp
 ```
 
-The on-chain program declares NR_PUBLIC_INPUTS = 31 in
+The on-chain program declares NR_PUBLIC_INPUTS = 32 in
 programs/zk-verifier/src/lib.rs and enforces the index meanings above.
+The named constants `ISSUER_TREE_ROOT_INPUT_INDEX = 10`,
+`VERIFIER_ADDRESS_INPUT_INDEX = 29`, and
+`CURRENT_TIMESTAMP_INPUT_INDEX = 31` are the handler's single source
+of truth for the shifted slots; ADR-0012 captures the revision
+rationale.
 
 ## Invariants enforced in-circuit
 
@@ -168,12 +174,17 @@ is mandatory.
 
 The on-chain verifier:
 
-- Requires public_inputs[28] to equal the zk-verifier program ID.
+- Requires public_inputs[29] to equal the zk-verifier program ID
+  (shifted from 28 by ADR-0014).
 - Loads the global Merkle root from a schema-registry-owned GlobalStateBinding.
 - Loads each active credential's tree root from a schema-registry-owned
   SchemaTreeBinding.
-- Rejects both types of account if the owner is not schema-registry, closing
-  the forged-trust-root attack surface that the pre-remediation version
-  allowed.
+- ADR-0014: loads the singleton issuer-tree root from an
+  issuer-registry-owned `IssuerTreeBinding`; owner-checks it against
+  `ISSUER_REGISTRY_ID`; asserts the parsed `current_root` equals
+  `public_inputs[10]`.
+- Rejects any of the binding accounts if the owner is not the expected
+  program, closing the forged-trust-root attack surface that the
+  pre-remediation version allowed.
 - Registers a PDA seeded by ["null", nullifierHash_bytes] via Anchor init,
   which atomically rejects replayed proofs.
