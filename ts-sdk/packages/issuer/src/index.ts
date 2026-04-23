@@ -24,6 +24,8 @@ import {
   ISSUER_REGISTRY_PROGRAM_ID,
   SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
   SPL_NOOP_PROGRAM_ID,
+  deriveSchemaAccount,
+  deriveSchemaTreeBinding,
   deriveTreeAuthority,
 } from '@solid-protocol/light';
 import {
@@ -84,6 +86,12 @@ export interface IssueOptions {
   /** The SPL AC tree that has been bound to `schemaHash`.  Must already
    *  exist and have its authority set to `deriveTreeAuthority(schemaHash)`.  */
   merkleTree: PublicKey;
+  /** Schema name, as passed to `schema_registry::register_schema`.
+   *  Required since SOLID-SEC-003 to derive the `SchemaAccount` PDA. */
+  schemaName: string;
+  /** Schema version byte (u8), as passed to
+   *  `schema_registry::register_schema`. */
+  schemaVersion: number;
   /** Optional extra signers (e.g. fee payer ≠ issuer authority). */
   extraSigners?: Keypair[];
   /** Override to avoid sending (returns the assembled tx for inspection). */
@@ -104,16 +112,26 @@ export function deriveIssuerAccount(authority: PublicKey): { pda: PublicKey; bum
 /**
  * Build a raw `issuer_registry::issue_credential` TransactionInstruction.
  *
- * Account order (MUST match the on-chain `IssueCredential` context):
+ * Account order (MUST match the on-chain `IssueCredential` context in
+ * `programs/issuer-registry/src/lib.rs`, post-SOLID-SEC-003):
  *   0. issuer_account          (writable, PDA)
  *   1. issuer_authority        (signer)
- *   2. tree_authority          (PDA; SPL AC sees it as signer via CPI)
- *   3. merkle_tree             (writable)
- *   4. log_wrapper             (spl-noop)
- *   5. compression_program     (SPL AC)
+ *   2. schema_account          (read-only, PDA under schema-registry)
+ *   3. schema_tree_binding     (read-only, PDA under schema-registry)
+ *   4. tree_authority          (PDA; SPL AC sees it as signer via CPI)
+ *   5. merkle_tree             (writable)
+ *   6. log_wrapper             (spl-noop)
+ *   7. compression_program     (SPL AC)
+ *
+ * `schemaName` + `schemaVersion` are required to derive the
+ * `SchemaAccount` PDA.  These should match exactly what was passed to
+ * `schema_registry::register_schema`; the on-chain handler will
+ * re-derive the same seeds and reject a mismatch with `ConstraintSeeds`.
  */
 export function buildIssueCredentialIx(
   issuerAuthority: PublicKey,
+  schemaName: string,
+  schemaVersion: number,
   schemaHash: Uint8Array,
   commitment: Uint8Array,
   merkleTree: PublicKey,
@@ -126,6 +144,8 @@ export function buildIssueCredentialIx(
   }
 
   const { pda: issuerAccount } = deriveIssuerAccount(issuerAuthority);
+  const { pda: schemaAccount } = deriveSchemaAccount(schemaName, schemaVersion);
+  const { pda: schemaTreeBinding } = deriveSchemaTreeBinding(schemaHash);
   const { pda: treeAuthority } = deriveTreeAuthority(schemaHash);
 
   const data = Buffer.concat([
@@ -139,6 +159,8 @@ export function buildIssueCredentialIx(
     keys: [
       { pubkey: issuerAccount, isSigner: false, isWritable: true },
       { pubkey: issuerAuthority, isSigner: true, isWritable: false },
+      { pubkey: schemaAccount, isSigner: false, isWritable: false },
+      { pubkey: schemaTreeBinding, isSigner: false, isWritable: false },
       { pubkey: treeAuthority, isSigner: false, isWritable: false },
       { pubkey: merkleTree, isSigner: false, isWritable: true },
       { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
@@ -185,6 +207,8 @@ export async function issueCredential(
 
   const ix = buildIssueCredentialIx(
     options.issuerAuthority.publicKey,
+    options.schemaName,
+    options.schemaVersion,
     request.schemaHash,
     commitment,
     options.merkleTree,

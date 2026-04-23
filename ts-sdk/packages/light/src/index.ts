@@ -99,6 +99,26 @@ export function deriveTreeAuthority(schemaHash: Uint8Array): { pda: PublicKey; b
   return { pda, bump };
 }
 
+/** `(b"schema", name, [version])` under `schema-registry`. Matches the
+ *  seeds used by `RegisterSchema` in programs/schema-registry. */
+export function deriveSchemaAccount(
+  name: string,
+  version: number,
+): { pda: PublicKey; bump: number } {
+  if (!Number.isInteger(version) || version < 0 || version > 0xff) {
+    throw new Error(`schema version must be a u8 in [0, 255]; got ${version}`);
+  }
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from('schema'),
+      Buffer.from(name, 'utf8'),
+      Uint8Array.from([version]),
+    ],
+    SCHEMA_REGISTRY_PROGRAM_ID,
+  );
+  return { pda, bump };
+}
+
 /** `(b"schema-tree-binding", schemaHash)` under `schema-registry`. */
 export function deriveSchemaTreeBinding(schemaHash: Uint8Array): { pda: PublicKey; bump: number } {
   if (schemaHash.length !== 32) {

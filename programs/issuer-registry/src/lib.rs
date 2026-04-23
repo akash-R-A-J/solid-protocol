@@ -5,6 +5,13 @@ use anchor_lang::solana_program::{
     pubkey::Pubkey as SolPubkey,
 };
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use solid_light::cpi_helpers::{
+    verify_schema_tree_binding_for_issue, LightError, SCHEMA_REGISTRY_ID,
+};
+// SOLID-SEC-003: bring in the typed `SchemaAccount` from schema-registry
+// so Anchor auto-verifies the PDA's discriminator, owner program, and
+// Borsh layout -- no hand-parsing, no drift.
+use schema_registry::SchemaAccount;
 
 declare_id!("CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR");
 
@@ -641,6 +648,38 @@ pub mod issuer_registry {
             ErrorCode::InvalidCommitment
         );
 
+        // SOLID-SEC-003: bind this issuance to a *registered* schema + tree.
+        // Without these checks, an approved issuer could pass any
+        // `schema_hash` and any `merkle_tree` and append credentials to
+        // a rogue schema/tree universe.  The seed constraints on the
+        // context accounts prove they are PDAs derived under
+        // schema-registry; the in-handler checks then tie the bytes
+        // together.
+        let schema_acct = &ctx.accounts.schema_account;
+        require!(!schema_acct.deprecated, ErrorCode::SchemaDeprecated);
+        require!(
+            schema_acct.schema_hash == schema_hash,
+            ErrorCode::SchemaHashMismatch
+        );
+        require_keys_eq!(
+            *ctx.accounts.schema_tree_binding.owner,
+            SCHEMA_REGISTRY_ID,
+            ErrorCode::InvalidSchemaTreeBindingOwner
+        );
+        {
+            let binding_data = ctx.accounts.schema_tree_binding.try_borrow_data()?;
+            verify_schema_tree_binding_for_issue(
+                &binding_data,
+                &schema_hash,
+                &ctx.accounts.merkle_tree.key(),
+            )
+            .map_err(|e| match e {
+                LightError::TreeBindingMismatch => ErrorCode::TreeBindingMismatch,
+                LightError::SchemaTreeBindingFrozen => ErrorCode::SchemaTreeBindingFrozen,
+                _ => ErrorCode::InvalidSchemaTreeBinding,
+            })?;
+        }
+
         // Derive and verify the tree-authority PDA.
         let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
             &[TREE_AUTHORITY_SEED, schema_hash.as_ref()],
@@ -918,14 +957,50 @@ pub struct IssueCredential<'info> {
 
     pub issuer_authority: Signer<'info>,
 
+    /// SOLID-SEC-003.  Typed `SchemaAccount` PDA from schema-registry.
+    /// Seed-constrained + `seeds::program` so Anchor:
+    ///   - verifies the account is owned by schema-registry;
+    ///   - verifies its discriminator matches `SchemaAccount`;
+    ///   - verifies the PDA was derived with schema-registry's ID
+    ///     and the `(b"schema", name, version)` seeds.
+    /// The handler additionally requires
+    /// `schema_account.schema_hash == schema_hash` and
+    /// `!schema_account.deprecated`.
+    #[account(
+        seeds = [
+            b"schema",
+            schema_account.name.as_bytes(),
+            core::slice::from_ref(&schema_account.version),
+        ],
+        bump,
+        seeds::program = SCHEMA_REGISTRY_ID,
+    )]
+    pub schema_account: Account<'info, SchemaAccount>,
+
+    /// SOLID-SEC-003.  Raw 145-byte `SchemaTreeBinding` PDA (custom
+    /// layout; see `programs/schema-registry/src/lib.rs` header).  The
+    /// seeds prove this PDA was derived from `schema_hash` under
+    /// schema-registry.  The handler uses the `solid-light` parser to
+    /// cross-check `tree_pubkey == merkle_tree.key()` and that the
+    /// binding is not frozen; it also asserts the runtime owner is
+    /// `SCHEMA_REGISTRY_ID` (layout alone cannot prove provenance).
+    /// CHECK: parsed + owner-verified in-handler.
+    #[account(
+        seeds = [b"schema-tree-binding", schema_hash.as_ref()],
+        bump,
+        seeds::program = SCHEMA_REGISTRY_ID,
+    )]
+    pub schema_tree_binding: UncheckedAccount<'info>,
+
     /// CHECK: Derived + verified in-handler against
     /// `(b"tree-authority", schema_hash)`.  The PDA is a signer via
     /// `invoke_signed`; it never needs to be writable.
     #[account(seeds = [TREE_AUTHORITY_SEED, schema_hash.as_ref()], bump)]
     pub tree_authority: UncheckedAccount<'info>,
 
-    /// CHECK: SPL Account Compression tree account (writable).  Ownership and
-    /// shape are validated by the SPL AC program during CPI.
+    /// CHECK: SPL Account Compression tree account (writable).  Its
+    /// pubkey is tied to `schema_tree_binding.tree_pubkey` in-handler;
+    /// the SPL AC program validates ownership and shape during CPI.
     #[account(mut)]
     pub merkle_tree: UncheckedAccount<'info>,
 
@@ -1179,6 +1254,18 @@ pub enum ErrorCode {
     InvalidNoopProgram,
     #[msg("Slash would drop stake_vault below the rent-exempt minimum (SOLID-SEC-030)")]
     StakeVaultWouldGoBelow,
+    #[msg("Supplied schema_hash does not match schema_account.schema_hash (SOLID-SEC-003)")]
+    SchemaHashMismatch,
+    #[msg("Schema is marked deprecated; issuing against it is disallowed (SOLID-SEC-003)")]
+    SchemaDeprecated,
+    #[msg("SchemaTreeBinding account is not owned by schema-registry (SOLID-SEC-003)")]
+    InvalidSchemaTreeBindingOwner,
+    #[msg("SchemaTreeBinding discriminator or layout is invalid (SOLID-SEC-003)")]
+    InvalidSchemaTreeBinding,
+    #[msg("SchemaTreeBinding.tree_pubkey does not match merkle_tree (SOLID-SEC-003)")]
+    TreeBindingMismatch,
+    #[msg("SchemaTreeBinding is frozen; cannot issue into this tree (SOLID-SEC-003)")]
+    SchemaTreeBindingFrozen,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────

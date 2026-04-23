@@ -18,3 +18,10 @@ idl-build = ["anchor-lang/idl-build"]
 [dependencies]
 anchor-lang = { workspace = true, features = ["init-if-needed"] }
 anchor-spl = { workspace = true }
+# Shared on-chain helpers: SCHEMA_REGISTRY_ID, SchemaTreeBinding parser.
+# solid-light is BPF-compatible (same dep graph as zk-verifier).
+solid-light = { path = "../../crates/solid-light" }
+# `SchemaAccount` typed re-use (SOLID-SEC-003).  `no-entrypoint` pulls
+# in only the lib — never the BPF entry — so anchor builds a single
+# program binary per crate.
+schema-registry = { path = "../schema-registry", features = ["no-entrypoint"] }

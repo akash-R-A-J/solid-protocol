@@ -27,12 +27,12 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
-| CRITICAL  | 2    | 0           | 1     | 0        | 0         | 3     |
+| CRITICAL  | 1    | 0           | 2     | 0        | 0         | 3     |
 | HIGH      | 7    | 0           | 5     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 3     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 0     | 0        | 0         | 5     |
 | INFO      | 4    | 0           | 1     | 0        | 0         | 5     |
-| **Total** | 28   | 0           | 10    | 0        | 0         | 38    |
+| **Total** | 27   | 0           | 11    | 0        | 0         | 38    |
 
 ---
 
@@ -42,7 +42,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------------|----------|--------|--------------------------------------------------------------------|
 | SOLID-SEC-001   | CRITICAL | Open   | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
 | SOLID-SEC-002   | CRITICAL | Fixed  | `register_schema` Poseidon integrity check commented out           |
-| SOLID-SEC-003   | CRITICAL | Open   | `issue_credential` missing schema + tree pubkey binding            |
+| SOLID-SEC-003   | CRITICAL | Fixed  | `issue_credential` missing schema + tree pubkey binding            |
 | SOLID-SEC-004   | HIGH     | Open   | No in-circuit issuer pubkey binding; revoked issuers still verify  |
 | SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
@@ -133,23 +133,50 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-003 -- `issue_credential` missing schema + tree pubkey binding
 
 - **Severity:** CRITICAL
-- **Status:** Open
+- **Status:** Fixed (2026-04-23)
 - **Introduced:** 2026-04-22
-- **Evidence:**
+- **Evidence (pre-fix):**
   `programs/issuer-registry/src/lib.rs:619-716,909-937`
-- **Description.** Does not require `schema_hash` to match a registered
-  `SchemaAccount`, does not bind `merkle_tree.key()` to
-  `SchemaTreeBinding.tree_pubkey`, does not prevent an approved issuer
-  from appending to any SPL-AC tree whose authority is
-  `PDA(b"tree-authority", any-32-bytes)`.
-- **Impact.** Approved issuer spawns a rogue schema/tree universe the
-  verifier accepts as canonical. Combined with SOLID-SEC-002, trivially
-  exploitable.
-- **Remediation.** Add `schema_account` + `schema_tree_binding`
-  required accounts. Seed-constrain + `require!` equality.
-- **Regression gate.** Integration tests
-  `06_issue_credential_rejects_unregistered_schema`,
-  `07_issue_credential_rejects_wrong_tree`.
+- **Description.** `IssueCredential` did not require `schema_hash` to
+  match a registered `SchemaAccount`, did not bind `merkle_tree.key()`
+  to `SchemaTreeBinding.tree_pubkey`, and did not prevent an approved
+  issuer from appending to any SPL-AC tree whose authority derives
+  from `PDA(b"tree-authority", any-32-bytes)`.
+- **Impact.** Approved issuer spawned a rogue schema/tree universe
+  the verifier accepted as canonical; combined with SOLID-SEC-002 (now
+  Fixed), trivially exploitable.
+- **Remediation (landed).**
+  - `IssueCredential` context now requires two new accounts
+    (`schema_account`, `schema_tree_binding`), both PDA-derived with
+    `seeds::program = SCHEMA_REGISTRY_ID` so Anchor enforces
+    schema-registry provenance at the account-validation layer.
+  - `schema_account` is typed as
+    `Account<'info, schema_registry::SchemaAccount>` -- Anchor owner-
+    and discriminator-checks it for free.  The handler also requires
+    `schema_account.schema_hash == schema_hash` and
+    `!schema_account.deprecated`.
+  - `schema_tree_binding` is a raw 145-byte PDA; the handler owner-
+    checks it (`owner == SCHEMA_REGISTRY_ID`) and calls the new
+    `solid_light::cpi_helpers::verify_schema_tree_binding_for_issue`,
+    which asserts (a) discriminator `b"schmtree"`, (b) embedded
+    `schema_hash` matches, (c) embedded `tree_pubkey` matches
+    `merkle_tree.key()`, (d) status byte is `0` (active).
+  - New error variants: `SchemaHashMismatch`, `SchemaDeprecated`,
+    `InvalidSchemaTreeBindingOwner`, `InvalidSchemaTreeBinding`,
+    `TreeBindingMismatch`, `SchemaTreeBindingFrozen`.
+  - TS SDK: `buildIssueCredentialIx` now takes `schemaName`/
+    `schemaVersion` and derives the two new PDAs via
+    `deriveSchemaAccount` / `deriveSchemaTreeBinding`;
+    `IssueOptions` gains the same two fields.  Callers on the old
+    signature fail to compile, not silently at runtime.
+- **Regression gate.** Host-side unit tests in
+  `crates/solid-light/src/cpi_helpers.rs`
+  (`schema_tree_binding_issue_gate_*`) cover the happy path plus
+  each mismatch axis (schema, tree, status, discriminator, short
+  data).  Integration tests
+  `06_issue_credential_rejects_unregistered_schema` and
+  `07_issue_credential_rejects_wrong_tree` are scheduled for Phase 2
+  (bankrun suite).
 
 ### SOLID-SEC-004 -- No in-circuit issuer pubkey binding
 

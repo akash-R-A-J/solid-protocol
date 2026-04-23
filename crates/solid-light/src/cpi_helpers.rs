@@ -254,6 +254,103 @@ pub fn verify_state_root_matches(tree_account_data: &[u8], expected_root: &[u8; 
     &tree_account_data[8..40] == expected_root.as_slice()
 }
 
+// ─── Schema-tree binding field accessors (SOLID-SEC-003) ───────────────────
+//
+// `issuer-registry::issue_credential` must anchor every append to a
+// *registered* schema + tree pair. Before SOLID-SEC-003, the handler
+// derived the tree-authority PDA from a caller-supplied `schema_hash`
+// with no cross-check against schema_registry, which meant an approved
+// issuer could spawn a rogue schema/tree universe by passing a hash
+// they'd never registered. The fix reads the `SchemaTreeBinding` PDA
+// and asserts (a) the discriminator is valid, (b) the embedded
+// schema_hash matches the instruction argument, (c) the embedded
+// tree_pubkey matches the `merkle_tree` account the handler is about
+// to `append` into, and (d) the binding is not frozen.
+//
+// Keeping these accessors in `solid-light` keeps the byte layout
+// owned by a single crate (the layout contract). Both `issuer-registry`
+// and `zk-verifier` consume them, so no program parses raw bytes
+// inline.
+
+/// Extract `schema_hash` (bytes `[8..40)`) from a `SchemaTreeBinding`
+/// account's data. Returns `None` if the buffer is too short or the
+/// discriminator is not `b"schmtree"`.
+pub fn schema_tree_binding_schema_hash(data: &[u8]) -> Option<[u8; 32]> {
+    if data.len() < 40 || data[..8] != SCHEMA_TREE_DISCRIMINATOR {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&data[8..40]);
+    Some(out)
+}
+
+/// Extract `tree_pubkey` (bytes `[40..72)`) from a `SchemaTreeBinding`
+/// account's data. Returns `None` if the buffer is too short or the
+/// discriminator is not `b"schmtree"`.
+pub fn schema_tree_binding_tree_pubkey(data: &[u8]) -> Option<Pubkey> {
+    if data.len() < 72 || data[..8] != SCHEMA_TREE_DISCRIMINATOR {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&data[40..72]);
+    Some(Pubkey::new_from_array(out))
+}
+
+/// Extract the status byte (offset `112`) from a `SchemaTreeBinding`
+/// account's data. Returns `None` if the buffer is too short or the
+/// discriminator is not `b"schmtree"`.
+pub fn schema_tree_binding_status(data: &[u8]) -> Option<u8> {
+    if data.len() < 113 || data[..8] != SCHEMA_TREE_DISCRIMINATOR {
+        return None;
+    }
+    Some(data[112])
+}
+
+/// Full `SchemaTreeBinding` gate used by `issue_credential` (SOLID-SEC-003).
+///
+/// Validates that the given account data:
+///   1. Is at least 113 bytes (the parser window defined above).
+///   2. Starts with the `SCHEMA_TREE_DISCRIMINATOR`.
+///   3. Carries `schema_hash == expected_schema`.
+///   4. Carries `tree_pubkey == expected_tree`.
+///   5. Is active (status byte `0`).
+///
+/// Caller is still responsible for asserting `account.owner == SCHEMA_REGISTRY_ID`
+/// before calling this function — the bytes alone cannot prove that the
+/// account was written by `schema-registry`.  Keeping that check in the
+/// caller lets this helper stay `Pubkey` / data only and trivially unit-
+/// testable from the host side.
+pub fn verify_schema_tree_binding_for_issue(
+    data: &[u8],
+    expected_schema: &[u8; 32],
+    expected_tree: &Pubkey,
+) -> std::result::Result<(), LightError> {
+    let schema = schema_tree_binding_schema_hash(data)
+        .ok_or(LightError::InvalidSchemaBinding)?;
+    if &schema != expected_schema {
+        return Err(LightError::InvalidSchemaBinding);
+    }
+    let tree = schema_tree_binding_tree_pubkey(data)
+        .ok_or(LightError::InvalidSchemaBinding)?;
+    if &tree != expected_tree {
+        return Err(LightError::TreeBindingMismatch);
+    }
+    let status = schema_tree_binding_status(data)
+        .ok_or(LightError::InvalidSchemaBinding)?;
+    if status != STATUS_ACTIVE_BYTE {
+        return Err(LightError::SchemaTreeBindingFrozen);
+    }
+    Ok(())
+}
+
+/// Value of the `status` byte (offset 112 in `SchemaTreeBinding`)
+/// that the layout treats as "active, accepting appends". Mirrors
+/// `schema_registry::STATUS_ACTIVE`. Any change in schema-registry
+/// must come with a matching update here -- the layout in this
+/// file is the parser contract, and drift would silently
+/// re-authorize frozen trees for issuance.
+pub const STATUS_ACTIVE_BYTE: u8 = 0;
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 #[error_code]
@@ -266,6 +363,10 @@ pub enum LightError {
     CredentialRevoked,
     #[msg("Account data does not match the expected schema binding")]
     InvalidSchemaBinding,
+    #[msg("SchemaTreeBinding tree_pubkey does not match the supplied merkle_tree account")]
+    TreeBindingMismatch,
+    #[msg("SchemaTreeBinding is frozen; cannot issue into this tree")]
+    SchemaTreeBindingFrozen,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -353,5 +454,88 @@ mod tests {
         let wrong = [43u8; 32];
         let data = make_global_root_account(root);
         assert!(!verify_state_root_matches(&data, &wrong));
+    }
+
+    // ─── SOLID-SEC-003 regression gates ───────────────────────────────────
+    //
+    // These exercise the schema-tree binding gate used by
+    // `issuer-registry::issue_credential`. Before SEC-003, a caller could
+    // pass *any* `schema_hash` and *any* `merkle_tree` to the handler;
+    // these tests are the host-side evidence that the helper now refuses
+    // every mismatch axis (schema, tree, status, discriminator, short
+    // data) with the specific error code downstream consumers need.
+
+    fn make_tree_pk(b: u8) -> Pubkey {
+        let mut bytes = [0u8; 32];
+        bytes.fill(b);
+        Pubkey::new_from_array(bytes)
+    }
+
+    fn tree_bytes(pk: &Pubkey) -> [u8; 32] {
+        pk.to_bytes()
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_happy_path() {
+        let schema = [7u8; 32];
+        let tree = make_tree_pk(3);
+        let root = [9u8; 32];
+        let data = make_schema_account(schema, tree_bytes(&tree), root, 0);
+        assert!(verify_schema_tree_binding_for_issue(&data, &schema, &tree).is_ok());
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_rejects_wrong_schema() {
+        let schema = [7u8; 32];
+        let wrong = [8u8; 32];
+        let tree = make_tree_pk(3);
+        let data = make_schema_account(schema, tree_bytes(&tree), [0u8; 32], 0);
+        assert!(matches!(
+            verify_schema_tree_binding_for_issue(&data, &wrong, &tree),
+            Err(LightError::InvalidSchemaBinding)
+        ));
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_rejects_wrong_tree() {
+        let schema = [7u8; 32];
+        let tree = make_tree_pk(3);
+        let wrong_tree = make_tree_pk(4);
+        let data = make_schema_account(schema, tree_bytes(&tree), [0u8; 32], 0);
+        assert!(matches!(
+            verify_schema_tree_binding_for_issue(&data, &schema, &wrong_tree),
+            Err(LightError::TreeBindingMismatch)
+        ));
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_rejects_frozen() {
+        let schema = [7u8; 32];
+        let tree = make_tree_pk(3);
+        let data = make_schema_account(schema, tree_bytes(&tree), [0u8; 32], 1);
+        assert!(matches!(
+            verify_schema_tree_binding_for_issue(&data, &schema, &tree),
+            Err(LightError::SchemaTreeBindingFrozen)
+        ));
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_rejects_bad_discriminator() {
+        let data = vec![0u8; 113];
+        let tree = make_tree_pk(3);
+        assert!(matches!(
+            verify_schema_tree_binding_for_issue(&data, &[0u8; 32], &tree),
+            Err(LightError::InvalidSchemaBinding)
+        ));
+    }
+
+    #[test]
+    fn schema_tree_binding_issue_gate_rejects_short_data() {
+        let data = vec![0u8; 40];
+        let tree = make_tree_pk(3);
+        assert!(matches!(
+            verify_schema_tree_binding_for_issue(&data, &[0u8; 32], &tree),
+            Err(LightError::InvalidSchemaBinding)
+        ));
     }
 }
