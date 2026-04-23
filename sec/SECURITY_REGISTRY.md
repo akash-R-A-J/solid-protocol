@@ -707,8 +707,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
   endianness, so
   `bigintToBytes32(BigInt(bufToDecimal(ID.to_bytes())))`
   produces the byte-reversed pubkey. `zk-verifier::verify_batch_proof`
-  compares `public_inputs[28] == ID.to_bytes()` byte-for-byte, which
-  would fail every verification. This directly explains why
+  compares `public_inputs[28] == ID.to_bytes()` byte-for-byte (slot
+  28 at the time of this fix; slot 29 post-ADR-0014), which would
+  fail every verification. This directly explains why
   `deployments/devnet.json` has no recorded successful deploy.
 - **Remediation landed.** Added `bufToDecimalBE` helper that walks
   `i = 0 -> buf.length` so a 32-byte pubkey interpreted BE round-trips
