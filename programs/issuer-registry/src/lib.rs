@@ -47,6 +47,36 @@ pub mod spl_noop_id {
 pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] =
     [0x95, 0x78, 0x12, 0xde, 0xec, 0xe1, 0x58, 0xcb];
 
+/// Anchor discriminator for `spl_account_compression::replace_leaf`:
+/// `sha256("global:replace_leaf")[..8]`.  Used by
+/// `revoke_issuer_atomic` (ADR-0014).
+pub const SPL_AC_REPLACE_LEAF_DISCRIMINATOR: [u8; 8] =
+    [0xe3, 0x88, 0x6a, 0x74, 0x10, 0xe4, 0xe8, 0x2c];
+
+/// Compute the ADR-0014 issuer-tree leaf for a given `IssuerAccount`:
+/// `Poseidon(5)(authority, bjj_x, bjj_y, status_epoch, revocation_nonce)`.
+///
+/// The byte-order convention (raw 32-byte arrays fed directly into
+/// `solid_core::poseidon::hash_bytes`) matches the holder SDK's wire
+/// format for the circuit's private inputs.  A mismatch here silently
+/// breaks the in-circuit Merkle-membership check for every proof;
+/// cross-language vectors cover the regression.
+fn compute_issuer_leaf_bytes(issuer: &IssuerAccount) -> Result<[u8; 32]> {
+    let status_epoch_fr = solid_core::poseidon::u64_to_fr(issuer.status_epoch);
+    let status_epoch_bytes = solid_core::poseidon::fr_to_bytes_le(&status_epoch_fr);
+    let rev_nonce_fr = solid_core::poseidon::u64_to_fr(issuer.revocation_nonce);
+    let rev_nonce_bytes = solid_core::poseidon::fr_to_bytes_le(&rev_nonce_fr);
+
+    solid_core::poseidon::hash_bytes(&[
+        issuer.authority.to_bytes(),
+        issuer.bjj_pub_key_x,
+        issuer.bjj_pub_key_y,
+        status_epoch_bytes,
+        rev_nonce_bytes,
+    ])
+    .map_err(|_| error!(ErrorCode::PoseidonFailed))
+}
+
 /// Seed for the PDA that signs `append` CPIs on behalf of the issuer.
 /// The PDA is unique per (schema_hash): one authority per tree.  This means
 /// a single schema's tree cannot be appended to by arbitrary callers.
@@ -107,6 +137,7 @@ pub mod issuer_registry {
         registry.approval_threshold_bps = approval_threshold;
         registry.total_issuers = 0;
         registry.active_issuers = 0;
+        registry.next_issuer_leaf_index = 0;
         msg!("DAO Issuer Registry initialized: mint={}, min_stake={}, voting_period={}s, threshold={}bps",
             governance_token_mint, min_stake, voting_period, approval_threshold);
         Ok(())
@@ -173,6 +204,8 @@ pub mod issuer_registry {
         // re-approval of a previously-revoked issuer.
         issuer.revocation_nonce = 0;
         issuer.status_epoch = 0;
+        issuer.issuer_tree_leaf_index = 0;
+        issuer.is_tree_enrolled = false;
 
         let config = &mut ctx.accounts.registry_config;
         config.total_issuers += 1;
@@ -380,12 +413,25 @@ pub mod issuer_registry {
         );
         require!(amount <= issuer.staked_amount, ErrorCode::InsufficientStake);
 
+        // ADR-0014: if this withdrawal would zero the stake and thus
+        // flip status to Revoked, enrolled issuers must route through
+        // `revoke_issuer_atomic` instead.  Unenrolled issuers pre-tree
+        // can continue using this legacy path.
+        if amount == issuer.staked_amount && issuer.is_tree_enrolled {
+            return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
+        }
+
         **ctx.accounts.stake_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
         **ctx.accounts.issuer_authority.to_account_info().try_borrow_mut_lamports()? += amount;
 
         issuer.staked_amount = issuer.staked_amount.saturating_sub(amount);
         if issuer.staked_amount == 0 {
             issuer.status = IssuerStatus::Revoked;
+            issuer.status_epoch = Clock::get()?.slot;
+            issuer.revocation_nonce = issuer
+                .revocation_nonce
+                .checked_add(1)
+                .ok_or(ErrorCode::Overflow)?;
         }
 
         msg!("Withdrew {} lamports stake", amount);
@@ -416,6 +462,10 @@ pub mod issuer_registry {
 
         if approval_pct >= registry.approval_threshold_bps as u128 {
             issuer.status = IssuerStatus::Approved;
+            // ADR-0014: record the finalisation slot so `append_issuer_leaf`
+            // (which the operator calls next) picks up the correct
+            // `status_epoch` for the leaf preimage.
+            issuer.status_epoch = Clock::get()?.slot;
             let config = &mut ctx.accounts.registry_config;
             config.active_issuers += 1;
 
@@ -466,6 +516,22 @@ pub mod issuer_registry {
             ErrorCode::SlashExceedsStake
         );
 
+        // ADR-0014: once the issuer has been enrolled in the issuer
+        // tree, any status flip to Revoked MUST flow through
+        // `revoke_issuer_atomic` so the on-chain status and the tree
+        // leaf stay in lockstep.  Non-atomic revocation would leave the
+        // pre-revocation leaf in the tree and let revoked proofs keep
+        // verifying -- exactly the SOLID-SEC-004 attack the compressed-
+        // tree pattern is designed to close.  The slash still happens
+        // (lamports + counters), but we refuse to cross the Approved/
+        // Cooldown -> Revoked boundary here.
+        let registry = &ctx.accounts.registry_config;
+        let would_revoke =
+            issuer.staked_amount.saturating_sub(slash_amount) < registry.min_stake_lamports;
+        if would_revoke && issuer.is_tree_enrolled {
+            return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
+        }
+
         issuer.staked_amount = issuer
             .staked_amount
             .checked_sub(slash_amount)
@@ -482,10 +548,18 @@ pub mod issuer_registry {
             slash_amount,
         )?;
 
-        // If stake drops below minimum, revoke
+        // If stake drops below minimum, revoke.  The guard above has
+        // already refused the non-atomic path for enrolled issuers, so
+        // this branch only flips status for pre-enrolment (bootstrap)
+        // issuers.
         let registry = &ctx.accounts.registry_config;
         if issuer.staked_amount < registry.min_stake_lamports {
             issuer.status = IssuerStatus::Revoked;
+            issuer.status_epoch = Clock::get()?.slot;
+            issuer.revocation_nonce = issuer
+                .revocation_nonce
+                .checked_add(1)
+                .ok_or(ErrorCode::Overflow)?;
             let config = &mut ctx.accounts.registry_config;
             if config.active_issuers > 0 {
                 config.active_issuers -= 1;
@@ -532,6 +606,18 @@ pub mod issuer_registry {
             ErrorCode::SlashExceedsStake
         );
 
+        // ADR-0014: same enrollment guard as `slash_issuer`.  If the
+        // slash would zero the stake AND the issuer is tree-enrolled,
+        // refuse here so the revocation must go through
+        // `revoke_issuer_atomic`.
+        let would_revoke = issuer
+            .staked_amount
+            .saturating_sub(slash_amount)
+            == 0;
+        if would_revoke && issuer.is_tree_enrolled {
+            return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
+        }
+
         issuer.staked_amount = issuer
             .staked_amount
             .checked_sub(slash_amount)
@@ -553,6 +639,11 @@ pub mod issuer_registry {
 
         if issuer.staked_amount == 0 {
             issuer.status = IssuerStatus::Revoked;
+            issuer.status_epoch = Clock::get()?.slot;
+            issuer.revocation_nonce = issuer
+                .revocation_nonce
+                .checked_add(1)
+                .ok_or(ErrorCode::Overflow)?;
         }
 
         msg!(
@@ -593,6 +684,9 @@ pub mod issuer_registry {
         );
 
         target.status = IssuerStatus::Approved;
+        // ADR-0014: same status-epoch hand-off as finalize_voting; the
+        // operator's next `append_issuer_leaf` picks this up.
+        target.status_epoch = Clock::get()?.slot;
 
         let config = &mut ctx.accounts.registry_config;
         config.active_issuers = config
@@ -625,9 +719,25 @@ pub mod issuer_registry {
     }
 
     /// Revoke an issuer (DAO authority only).
+    ///
+    /// ADR-0014: once an issuer has been enrolled in the issuer tree,
+    /// revocation MUST go through `revoke_issuer_atomic` so the status
+    /// flip and the tree replace_leaf happen in the same tx.  This
+    /// legacy path stays wired for pre-enrolment bootstrap scenarios
+    /// (where the tree does not yet contain the issuer) and for test
+    /// clusters that run without the tree enabled.
     pub fn revoke_issuer(ctx: Context<RevokeIssuer>) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
+        require!(
+            !issuer.is_tree_enrolled,
+            ErrorCode::IssuerTreeUpdateRequired
+        );
         issuer.status = IssuerStatus::Revoked;
+        issuer.status_epoch = Clock::get()?.slot;
+        issuer.revocation_nonce = issuer
+            .revocation_nonce
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
         let config = &mut ctx.accounts.registry_config;
         if config.active_issuers > 0 {
             config.active_issuers -= 1;
@@ -799,6 +909,308 @@ pub mod issuer_registry {
         Ok(())
     }
 
+    // ─── Issuer-tree leaf lifecycle (ADR-0014; SEC-004 / SEC-008) ─────────
+    //
+    // Two instructions wrap the SPL AC CPIs that actually mutate the
+    // issuer tree:
+    //
+    //   append_issuer_leaf      -- first-time enrolment of an approved
+    //                              issuer.  CPIs SPL AC `append`, assigns
+    //                              the issuer's permanent
+    //                              `issuer_tree_leaf_index`, flips
+    //                              `is_tree_enrolled = true`.
+    //   revoke_issuer_atomic    -- atomic revoke + tree replace.  Bumps
+    //                              revocation_nonce + status_epoch AND
+    //                              CPIs SPL AC `replace_leaf` in a single
+    //                              instruction.  Required path for any
+    //                              enrolled issuer's Revoked transition;
+    //                              the legacy `revoke_issuer` (DAO) /
+    //                              `slash_issuer` / `submit_fraud_proof`
+    //                              paths REFUSE when `is_tree_enrolled`
+    //                              is true (see the top of each handler).
+    //
+    // The atomicity is load-bearing: without it, there is a window where
+    // on-chain status is Revoked but the issuer-tree root still reflects
+    // the pre-revocation leaf.  A proof generated in that window would
+    // pass the circuit's Merkle-membership check against the stale root
+    // AND be accepted by `verify_batch_proof` (which reads the stale
+    // root from `IssuerTreeBinding.current_root`).  Atomicity closes the
+    // window to zero txs.
+
+    /// First-time enrolment of an issuer into the singleton issuer tree.
+    ///
+    /// Preconditions:
+    ///   * Issuer status must be `Approved`.
+    ///   * Issuer must not already be enrolled (`is_tree_enrolled == false`).
+    ///   * Caller signs as `registry_config.authority` (the DAO / tree
+    ///     operator); this is the same authority that runs
+    ///     `initialize_issuer_tree_binding` and `update_issuer_tree_root`.
+    ///
+    /// Behaviour:
+    ///   1. Computes the issuer leaf on-chain via Poseidon(5) of
+    ///      (authority, bjj_x, bjj_y, status_epoch, revocation_nonce).
+    ///   2. CPIs `spl_account_compression::append` signed by the
+    ///      `[b"issuer-tree-authority"]` PDA; SPL AC appends the leaf
+    ///      and emits its `ChangeLog` through `spl-noop`.
+    ///   3. Bumps `registry_config.next_issuer_leaf_index` by 1 and
+    ///      records the assigned index in `issuer.issuer_tree_leaf_index`.
+    ///   4. Flips `issuer.is_tree_enrolled = true`.
+    ///
+    /// The caller is expected to invoke `update_issuer_tree_root` in the
+    /// same transaction (either directly or via the tree-authority
+    /// operator); `IssuerTreeBinding.current_root` is the on-chain gate
+    /// the verifier reads, and only the binding update makes this
+    /// enrolment effective for proofs.
+    pub fn append_issuer_leaf(ctx: Context<AppendIssuerLeaf>) -> Result<()> {
+        // Authority gate mirrors the binding lifecycle instructions.
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            ctx.accounts.registry_config.authority,
+            ErrorCode::Unauthorized
+        );
+
+        let issuer = &mut ctx.accounts.issuer_account;
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
+        require!(
+            !issuer.is_tree_enrolled,
+            ErrorCode::IssuerAlreadyEnrolled
+        );
+
+        // Compute the leaf that `batch_credential_query.circom` STEP 0.75
+        // would compute for this issuer.  The input ordering MUST match
+        // the circuit's `Poseidon(5)` exactly; a swap breaks the
+        // Merkle-membership check on every proof without a clear error
+        // on-chain.
+        let leaf = compute_issuer_leaf_bytes(issuer)?;
+
+        // ─── CPI into SPL AC `append` ─────────────────────────────────
+        let spl_ac: SolPubkey = spl_account_compression_id::ID;
+        let spl_noop: SolPubkey = spl_noop_id::ID;
+        require_keys_eq!(
+            ctx.accounts.compression_program.key(),
+            spl_ac,
+            ErrorCode::InvalidCompressionProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.log_wrapper.key(),
+            spl_noop,
+            ErrorCode::InvalidNoopProgram
+        );
+
+        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
+            &[ISSUER_TREE_AUTHORITY_SEED],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.issuer_tree_authority.key(),
+            tree_authority_key,
+            ErrorCode::InvalidIssuerTreeAuthority
+        );
+
+        let mut ix_data = Vec::with_capacity(40);
+        ix_data.extend_from_slice(&SPL_AC_APPEND_DISCRIMINATOR);
+        ix_data.extend_from_slice(&leaf);
+
+        let cpi_ix = Instruction {
+            program_id: spl_ac,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.merkle_tree.key(), false),
+                AccountMeta::new_readonly(tree_authority_key, true),
+                AccountMeta::new_readonly(spl_noop, false),
+            ],
+            data: ix_data,
+        };
+        let signer_seeds: &[&[u8]] = &[
+            ISSUER_TREE_AUTHORITY_SEED,
+            &[tree_authority_bump],
+        ];
+        invoke_signed(
+            &cpi_ix,
+            &[
+                ctx.accounts.merkle_tree.to_account_info(),
+                ctx.accounts.issuer_tree_authority.to_account_info(),
+                ctx.accounts.log_wrapper.to_account_info(),
+                ctx.accounts.compression_program.to_account_info(),
+            ],
+            &[signer_seeds],
+        )?;
+
+        // ─── Bump counter + record assignment ─────────────────────────
+        let config = &mut ctx.accounts.registry_config;
+        let assigned_index = config.next_issuer_leaf_index;
+        config.next_issuer_leaf_index = config
+            .next_issuer_leaf_index
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        issuer.issuer_tree_leaf_index = assigned_index;
+        issuer.is_tree_enrolled = true;
+
+        emit!(IssuerLeafAppended {
+            issuer: issuer.authority,
+            leaf,
+            leaf_index: assigned_index,
+            status_epoch: issuer.status_epoch,
+            revocation_nonce: issuer.revocation_nonce,
+            merkle_tree: ctx.accounts.merkle_tree.key(),
+        });
+        Ok(())
+    }
+
+    /// Atomic revoke: bump holder state + CPI `replace_leaf` in one ix.
+    ///
+    /// Preconditions:
+    ///   * Caller signs as `registry_config.authority`.
+    ///   * Issuer is `is_tree_enrolled` and is currently in `Approved`
+    ///     or `Cooldown` status -- revoking a `Pending`, `Rejected`, or
+    ///     already-`Revoked` issuer is a no-op this ix refuses.
+    ///
+    /// Behaviour (in strict order; load-bearing):
+    ///   1. Compute OLD leaf from pre-bump on-chain state.
+    ///   2. Bump `issuer.revocation_nonce += 1` and
+    ///      `issuer.status_epoch = Clock::slot`.
+    ///   3. Set `issuer.status = IssuerStatus::Revoked`.
+    ///   4. Compute NEW leaf from post-bump state.
+    ///   5. CPI `spl_account_compression::replace_leaf` with
+    ///      `(old_root, old_leaf, new_leaf, leaf_index)` and the Merkle
+    ///      proof provided by the caller in `remaining_accounts`.
+    ///   6. Decrement `registry_config.active_issuers`.
+    ///
+    /// The caller supplies the proof nodes (top-of-path first, root-of-
+    /// tree last; minus any canopy the tree has) in `remaining_accounts`.
+    /// SPL AC itself validates the proof against the supplied `old_root`
+    /// and the live tree state; a stale proof -> CPI failure -> the
+    /// whole tx rolls back (atomicity).  The caller must also invoke
+    /// `update_issuer_tree_root` in the same tx to keep
+    /// `IssuerTreeBinding.current_root` in lockstep; the verifier reads
+    /// that binding for the gate, and only its update makes the
+    /// revocation visible to proof-verification.
+    pub fn revoke_issuer_atomic<'info>(
+        ctx: Context<'_, '_, '_, 'info, RevokeIssuerAtomic<'info>>,
+        old_root: [u8; 32],
+    ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            ctx.accounts.registry_config.authority,
+            ErrorCode::Unauthorized
+        );
+
+        let issuer = &mut ctx.accounts.issuer_account;
+        require!(issuer.is_tree_enrolled, ErrorCode::IssuerNotEnrolled);
+        require!(
+            issuer.status == IssuerStatus::Approved
+                || issuer.status == IssuerStatus::Cooldown,
+            ErrorCode::InvalidRevokeSourceStatus
+        );
+
+        // (1) OLD leaf.
+        let old_leaf = compute_issuer_leaf_bytes(issuer)?;
+
+        // (2) Bump counters BEFORE computing the new leaf.
+        issuer.revocation_nonce = issuer
+            .revocation_nonce
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        issuer.status_epoch = Clock::get()?.slot;
+
+        // (3) Flip status.
+        issuer.status = IssuerStatus::Revoked;
+
+        // (4) NEW leaf (reflects bumped state).
+        let new_leaf = compute_issuer_leaf_bytes(issuer)?;
+
+        // Captured now because step 6 borrows config mutably again.
+        let leaf_index = issuer.issuer_tree_leaf_index;
+        let leaf_index_u32: u32 = leaf_index
+            .try_into()
+            .map_err(|_| error!(ErrorCode::IssuerTreeLeafIndexTooLarge))?;
+
+        // (5) CPI replace_leaf.
+        let spl_ac: SolPubkey = spl_account_compression_id::ID;
+        let spl_noop: SolPubkey = spl_noop_id::ID;
+        require_keys_eq!(
+            ctx.accounts.compression_program.key(),
+            spl_ac,
+            ErrorCode::InvalidCompressionProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.log_wrapper.key(),
+            spl_noop,
+            ErrorCode::InvalidNoopProgram
+        );
+
+        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
+            &[ISSUER_TREE_AUTHORITY_SEED],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.issuer_tree_authority.key(),
+            tree_authority_key,
+            ErrorCode::InvalidIssuerTreeAuthority
+        );
+
+        // ix_data layout for SPL AC replace_leaf:
+        //   discriminator(8) | old_root(32) | prev_leaf(32) | new_leaf(32) | index(u32 LE)
+        let mut ix_data = Vec::with_capacity(8 + 32 + 32 + 32 + 4);
+        ix_data.extend_from_slice(&SPL_AC_REPLACE_LEAF_DISCRIMINATOR);
+        ix_data.extend_from_slice(&old_root);
+        ix_data.extend_from_slice(&old_leaf);
+        ix_data.extend_from_slice(&new_leaf);
+        ix_data.extend_from_slice(&leaf_index_u32.to_le_bytes());
+
+        let mut accounts = vec![
+            AccountMeta::new(ctx.accounts.merkle_tree.key(), false),
+            AccountMeta::new_readonly(tree_authority_key, true),
+            AccountMeta::new_readonly(spl_noop, false),
+        ];
+        // Proof nodes supplied by the caller as readonly remaining
+        // accounts -- SPL AC validates them against the tree itself.
+        for proof_node in ctx.remaining_accounts.iter() {
+            accounts.push(AccountMeta::new_readonly(proof_node.key(), false));
+        }
+
+        let cpi_ix = Instruction {
+            program_id: spl_ac,
+            accounts,
+            data: ix_data,
+        };
+
+        let signer_seeds: &[&[u8]] = &[
+            ISSUER_TREE_AUTHORITY_SEED,
+            &[tree_authority_bump],
+        ];
+        let mut invoke_accounts = vec![
+            ctx.accounts.merkle_tree.to_account_info(),
+            ctx.accounts.issuer_tree_authority.to_account_info(),
+            ctx.accounts.log_wrapper.to_account_info(),
+            ctx.accounts.compression_program.to_account_info(),
+        ];
+        for proof_node in ctx.remaining_accounts.iter() {
+            invoke_accounts.push(proof_node.clone());
+        }
+        invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
+
+        // (6) Registry bookkeeping.
+        let config = &mut ctx.accounts.registry_config;
+        if config.active_issuers > 0 {
+            config.active_issuers = config.active_issuers - 1;
+        }
+
+        emit!(IssuerLeafReplaced {
+            issuer: issuer.authority,
+            old_leaf,
+            new_leaf,
+            leaf_index,
+            new_status_epoch: issuer.status_epoch,
+            new_revocation_nonce: issuer.revocation_nonce,
+            reason: RevokeReason::Revoked,
+            merkle_tree: ctx.accounts.merkle_tree.key(),
+        });
+        Ok(())
+    }
+
     // ─── Credential issuance (R-2) ────────────────────────────────────────
 
     /// Publish a new credential commitment into the SPL Account-Compression
@@ -962,8 +1374,9 @@ pub struct InitializeRegistry<'info> {
         init, payer = authority,
         // 8 disc + 32 authority + 32 governance_token_mint + 8 min_stake
         // + 8 voting_period + 8 approval_threshold + 8 total_issuers
-        // + 8 active_issuers = 112 bytes.
-        space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 8,
+        // + 8 active_issuers + 8 next_issuer_leaf_index (ADR-0014)
+        // = 120 bytes.
+        space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 8,
         seeds = [b"registry-config"],
         bump
     )]
@@ -1168,6 +1581,85 @@ pub struct UpdateIssuerTreeRoot<'info> {
     pub authority: Signer<'info>,
 }
 
+/// ADR-0014.  Accounts for `append_issuer_leaf`.
+///
+/// `issuer_account` is mutated (assigns `issuer_tree_leaf_index`,
+/// flips `is_tree_enrolled`); `registry_config` is mutated (bumps
+/// `next_issuer_leaf_index`).  The SPL AC accounts are validated
+/// inline in the handler.
+#[derive(Accounts)]
+pub struct AppendIssuerLeaf<'info> {
+    #[account(mut, seeds = [b"registry-config"], bump)]
+    pub registry_config: Account<'info, RegistryConfig>,
+
+    /// The issuer being enrolled.  `issuer_authority` is NOT a signer
+    /// here -- enrolment is driven by the registry authority (and the
+    /// issuer already signed their own registration).
+    #[account(
+        mut,
+        seeds = [b"issuer", issuer_account.authority.as_ref()],
+        bump
+    )]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    /// CHECK: Issuer-tree PDA that signs the SPL AC `append` CPI.
+    /// Seed is the singleton `[b"issuer-tree-authority"]`; rederived
+    /// + compared in-handler via `find_program_address`.
+    #[account(seeds = [ISSUER_TREE_AUTHORITY_SEED], bump)]
+    pub issuer_tree_authority: UncheckedAccount<'info>,
+
+    /// CHECK: SPL AC concurrent merkle tree account (writable); SPL AC
+    /// validates ownership + shape on CPI.
+    #[account(mut)]
+    pub merkle_tree: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_noop_id::ID`; validated in-handler.
+    pub log_wrapper: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
+    pub compression_program: UncheckedAccount<'info>,
+
+    /// The registry authority -- same authority that governs
+    /// `IssuerTreeBinding`.  Signs the ix.
+    pub authority: Signer<'info>,
+}
+
+/// ADR-0014.  Accounts for `revoke_issuer_atomic`.
+///
+/// Proof nodes are supplied as `remaining_accounts` (readonly).  The
+/// caller must include every sibling on the path from the leaf to the
+/// root, minus any canopy the backing SPL AC tree already holds
+/// on-chain.
+#[derive(Accounts)]
+pub struct RevokeIssuerAtomic<'info> {
+    #[account(mut, seeds = [b"registry-config"], bump)]
+    pub registry_config: Account<'info, RegistryConfig>,
+
+    #[account(
+        mut,
+        seeds = [b"issuer", issuer_account.authority.as_ref()],
+        bump
+    )]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    /// CHECK: Issuer-tree PDA that signs the SPL AC `replace_leaf` CPI.
+    #[account(seeds = [ISSUER_TREE_AUTHORITY_SEED], bump)]
+    pub issuer_tree_authority: UncheckedAccount<'info>,
+
+    /// CHECK: SPL AC concurrent merkle tree account; SPL AC validates
+    /// ownership + shape on CPI.
+    #[account(mut)]
+    pub merkle_tree: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_noop_id::ID`; validated in-handler.
+    pub log_wrapper: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
+    pub compression_program: UncheckedAccount<'info>,
+
+    pub authority: Signer<'info>,
+}
+
 /// Accounts for `issue_credential`.
 ///
 /// * `issuer_account`    — PDA recording the approved issuer; must match
@@ -1346,6 +1838,11 @@ pub struct RegistryConfig {
     pub approval_threshold_bps: u64,
     pub total_issuers: u64,
     pub active_issuers: u64,
+    /// ADR-0014: strictly monotone counter; the value read here is the
+    /// index assigned to the NEXT `append_issuer_leaf` call, after which
+    /// the counter bumps by 1.  Never decrements (revocation replaces
+    /// the leaf in place, it does not free the index).
+    pub next_issuer_leaf_index: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
@@ -1405,6 +1902,18 @@ pub struct IssuerAccount {
     /// status transitions (Approved -> Cooldown -> Revoked -> re-Approved)
     /// each change the leaf regardless of whether `revocation_nonce` bumps.
     pub status_epoch: u64,
+    /// ADR-0014: 0-based index of this issuer's leaf in the issuer tree.
+    /// Assigned by `append_issuer_leaf` when the issuer is first enrolled;
+    /// stable thereafter (every `replace_issuer_leaf_*` ix writes back to
+    /// the same index).
+    pub issuer_tree_leaf_index: u64,
+    /// ADR-0014: true once `append_issuer_leaf` has succeeded for this
+    /// issuer.  Gates the atomic status-transition paths -- once enrolled,
+    /// every Revoked transition MUST flow through `revoke_issuer_atomic`
+    /// so the on-chain status and the tree leaf stay in lockstep (closes
+    /// the tree-update lag window that would otherwise let a revoked
+    /// issuer's pre-revocation proofs keep verifying).
+    pub is_tree_enrolled: bool,
 }
 
 impl IssuerAccount {
@@ -1413,10 +1922,12 @@ impl IssuerAccount {
     /// + (4 + 128) metadata_uri (len-prefixed String, capped by MetadataTooLong)
     /// + 32 bjj_x + 32 bjj_y
     /// + 1 tier + 1 status
-    /// + 8 * 11 numeric fields (staked_amount, registered_at, creation_slot,
+    /// + 8 * 12 numeric fields (staked_amount, registered_at, creation_slot,
     ///    cooldown_ends_at, votes_for, votes_against, voting_ends_at,
-    ///    credentials_issued, slash_count, revocation_nonce, status_epoch)
-    pub const SPACE: usize = 32 + (4 + 64) + (4 + 128) + 32 + 32 + 1 + 1 + 8 * 11;
+    ///    credentials_issued, slash_count, revocation_nonce, status_epoch,
+    ///    issuer_tree_leaf_index)
+    /// + 1 is_tree_enrolled (bool)
+    pub const SPACE: usize = 32 + (4 + 64) + (4 + 128) + 32 + 32 + 1 + 1 + 8 * 12 + 1;
 }
 
 #[account]
@@ -1523,6 +2034,20 @@ pub enum ErrorCode {
     IssuerTreeRootNotMonotonic,
     #[msg("IssuerTreeBinding status byte is invalid; must be 0 (active) or 1 (frozen)")]
     InvalidIssuerTreeBindingStatus,
+    #[msg("IssuerTreeAuthority PDA does not match the canonical derivation of [b\"issuer-tree-authority\"]")]
+    InvalidIssuerTreeAuthority,
+    #[msg("Issuer is already enrolled in the issuer tree (ADR-0014)")]
+    IssuerAlreadyEnrolled,
+    #[msg("Issuer is not yet enrolled in the issuer tree (ADR-0014); call append_issuer_leaf first")]
+    IssuerNotEnrolled,
+    #[msg("revoke_issuer_atomic requires the issuer to be in Approved or Cooldown status")]
+    InvalidRevokeSourceStatus,
+    #[msg("Issuer has been enrolled in the issuer tree; revocation must flow through revoke_issuer_atomic (ADR-0014)")]
+    IssuerTreeUpdateRequired,
+    #[msg("issuer_tree_leaf_index does not fit in u32 (ADR-0014 hard cap at 2^32 issuers)")]
+    IssuerTreeLeafIndexTooLarge,
+    #[msg("Poseidon hash failed during issuer-leaf computation")]
+    PoseidonFailed,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -1600,4 +2125,46 @@ pub struct CredentialIssued {
     pub merkle_tree: Pubkey,
     pub slot: u64,
     pub timestamp: i64,
+}
+
+/// Emitted on every successful `append_issuer_leaf` (ADR-0014).
+/// Off-chain indexers subscribe to this to:
+///   * Maintain their replicated issuer-tree state (leaf index ->
+///     bytes map).
+///   * Push the refreshed SPL AC root into `IssuerTreeBinding` via
+///     `update_issuer_tree_root`.
+#[event]
+pub struct IssuerLeafAppended {
+    pub issuer: Pubkey,
+    pub leaf: [u8; 32],
+    pub leaf_index: u64,
+    pub status_epoch: u64,
+    pub revocation_nonce: u64,
+    pub merkle_tree: Pubkey,
+}
+
+/// Emitted on every successful `revoke_issuer_atomic` (ADR-0014).
+/// Downstream consumers: same indexer as above, plus any UI that
+/// wants to surface a revocation notice to holders.
+#[event]
+pub struct IssuerLeafReplaced {
+    pub issuer: Pubkey,
+    pub old_leaf: [u8; 32],
+    pub new_leaf: [u8; 32],
+    pub leaf_index: u64,
+    pub new_status_epoch: u64,
+    pub new_revocation_nonce: u64,
+    pub reason: RevokeReason,
+    pub merkle_tree: Pubkey,
+}
+
+/// Classifies the status transition that drove a
+/// `replace_leaf` event.  Kept distinct from `SlashingReason` since
+/// not every revoke comes from a slash (e.g. voluntary cooldown ->
+/// revoke path).
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Debug)]
+pub enum RevokeReason {
+    Revoked,
+    Slashed,
+    FraudConfirmed,
 }

@@ -25,3 +25,7 @@ solid-light = { path = "../../crates/solid-light" }
 # in only the lib — never the BPF entry — so anchor builds a single
 # program binary per crate.
 schema-registry = { path = "../schema-registry", features = ["no-entrypoint"] }
+# On-chain Poseidon for `compute_issuer_leaf` (ADR-0014).  solid-core
+# is the same crate schema-registry depends on; same BPF-compat
+# guarantees.
+solid-core = { path = "../../crates/solid-core" }

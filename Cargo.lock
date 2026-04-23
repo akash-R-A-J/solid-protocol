@@ -1573,6 +1573,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "schema-registry",
+ "solid-core",
  "solid-light",
 ]
 
