@@ -1,8 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::invoke_signed,
+    program::{invoke, invoke_signed},
     pubkey::Pubkey as SolPubkey,
+    system_instruction,
 };
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use solid_light::cpi_helpers::{
@@ -50,6 +51,34 @@ pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] =
 /// The PDA is unique per (schema_hash): one authority per tree.  This means
 /// a single schema's tree cannot be appended to by arbitrary callers.
 pub const TREE_AUTHORITY_SEED: &[u8] = b"tree-authority";
+
+// ─── Issuer-tree binding (ADR-0014; SEC-004 setup) ─────────────────────────
+//
+// See `crates/solid-light/src/cpi_helpers.rs` for the canonical byte
+// layout and the parser contract.  The binding is a singleton (one
+// issuer tree per deployment); the PDA seed is the literal
+// `[b"issuer-tree-binding"]`.
+//
+//   [0..  8)  discriminator = b"issrtree"
+//   [8.. 40)  tree_pubkey      (SPL AC concurrent tree)
+//   [40.. 72)  current_root
+//   [72.. 80)  last_updated_slot (u64 LE)
+//   [80.. 81)  status (0 = active, 1 = frozen)
+//   [81..113)  authority (Pubkey)
+
+pub const ISSUER_TREE_BINDING_SEED: &[u8] = b"issuer-tree-binding";
+pub const ISSUER_TREE_BINDING_SIZE: usize = 113;
+pub const ISSUER_TREE_DISCRIMINATOR: [u8; 8] = *b"issrtree";
+pub const ISSUER_TREE_STATUS_ACTIVE: u8 = 0;
+pub const ISSUER_TREE_STATUS_FROZEN: u8 = 1;
+
+/// Seed for the PDA that will sign `append` / `replace_leaf` CPIs into
+/// the issuer-tree's SPL AC account.  Unlike `TREE_AUTHORITY_SEED`
+/// (which is per-schema), this seed is a singleton -- there is exactly
+/// one issuer tree.  Used from issuer-registry by the status-transition
+/// hooks (Phase 2 impl 3); declared here so the address is stable from
+/// day one of the scaffold.
+pub const ISSUER_TREE_AUTHORITY_SEED: &[u8] = b"issuer-tree-authority";
 
 /// DAO-Governed Issuer Registry — full decentralized trust management.
 ///
@@ -600,6 +629,169 @@ pub mod issuer_registry {
         Ok(())
     }
 
+    // ─── Issuer-tree binding (ADR-0014; SEC-004 setup) ────────────────────
+    //
+    // The issuer tree backs the SEC-004 in-circuit issuer-pubkey binding.
+    // These three instructions mirror schema-registry's tree-binding
+    // lifecycle one-to-one: initialise + update_root + set_status.  The
+    // issuer tree is a singleton -- one per deployment -- so the PDA seed
+    // carries no parameter and there is no schema_hash to track.
+    //
+    // This scaffold lands additively.  Until Phase 2 impl 2 wires the
+    // status-transition hooks (register_issuer etc.), the binding is
+    // initialised once at deploy time and holds an all-zero root.  The
+    // circuit-rev commit will consume `current_root` as a public input;
+    // until then these instructions are dormant but deployable.
+
+    /// Allocate and initialise the singleton `IssuerTreeBinding` PDA.
+    ///
+    /// Guards (mirrors `schema_registry::initialize_tree_binding`):
+    ///   * PDA seed is exactly `[b"issuer-tree-binding"]`.
+    ///   * Literal 8-byte discriminator `b"issrtree"` is written.
+    ///   * The caller's key is recorded as the binding's authority and is
+    ///     the only signer that can call `update_issuer_tree_root` or
+    ///     `set_issuer_tree_binding_status` afterwards.
+    ///
+    /// The caller MUST be `registry_config.authority` (the DAO / upgrade
+    /// authority) to prevent an arbitrary signer from installing a
+    /// competing tree_pubkey.
+    pub fn initialize_issuer_tree_binding(
+        ctx: Context<InitializeIssuerTreeBinding>,
+        tree_pubkey: Pubkey,
+    ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.authority.key(),
+            ctx.accounts.registry_config.authority,
+            ErrorCode::Unauthorized
+        );
+
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        let rent = Rent::get()?;
+        let lamports = rent.minimum_balance(ISSUER_TREE_BINDING_SIZE);
+
+        let signer_seeds: &[&[u8]] = &[
+            ISSUER_TREE_BINDING_SEED,
+            &[ctx.bumps.issuer_tree_binding],
+        ];
+        let signer_seeds_all: &[&[&[u8]]] = &[signer_seeds];
+
+        invoke_signed(
+            &system_instruction::create_account(
+                &ctx.accounts.authority.key(),
+                &binding_info.key(),
+                lamports,
+                ISSUER_TREE_BINDING_SIZE as u64,
+                &crate::ID,
+            ),
+            &[
+                ctx.accounts.authority.to_account_info(),
+                binding_info.clone(),
+                ctx.accounts.system_program.to_account_info(),
+            ],
+            signer_seeds_all,
+        )?;
+
+        let mut data = binding_info.try_borrow_mut_data()?;
+        data[0..8].copy_from_slice(&ISSUER_TREE_DISCRIMINATOR);
+        data[8..40].copy_from_slice(&tree_pubkey.to_bytes());
+        data[40..72].copy_from_slice(&[0u8; 32]); // root starts at 0 (empty tree)
+        data[72..80].copy_from_slice(&Clock::get()?.slot.to_le_bytes());
+        data[80] = ISSUER_TREE_STATUS_ACTIVE;
+        data[81..113].copy_from_slice(&ctx.accounts.authority.key().to_bytes());
+
+        msg!(
+            "IssuerTreeBinding initialised: tree={} authority={}",
+            tree_pubkey,
+            ctx.accounts.authority.key()
+        );
+        // Avoid "unused" warning: `invoke` is imported for forward-compat
+        // with the Phase 2 impl 2 status-transition hooks that will use
+        // it for `append` CPIs that do not need signer seeds.
+        let _ = invoke;
+        Ok(())
+    }
+
+    /// Mirror the current SPL AC Merkle root into the issuer-tree binding.
+    ///
+    /// Same authority-gated push model as schema-registry's
+    /// `update_tree_root`: the recorded authority (or an indexer acting on
+    /// its behalf) pushes the new root after CPIing into the SPL AC tree.
+    /// Monotonicity is enforced on `last_updated_slot`; without it a
+    /// compromised authority (or a replayed tx) could regress the root to
+    /// a pre-revocation value, re-admitting a revoked issuer's old proofs.
+    pub fn update_issuer_tree_root(
+        ctx: Context<UpdateIssuerTreeRoot>,
+        new_root: [u8; 32],
+    ) -> Result<()> {
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        let mut data = binding_info.try_borrow_mut_data()?;
+        require!(
+            data.len() >= ISSUER_TREE_BINDING_SIZE,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        require!(
+            data[0..8] == ISSUER_TREE_DISCRIMINATOR,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        require!(
+            data[80] == ISSUER_TREE_STATUS_ACTIVE,
+            ErrorCode::IssuerTreeBindingFrozen
+        );
+
+        let stored_authority: [u8; 32] = data[81..113].try_into().unwrap();
+        require!(
+            stored_authority == ctx.accounts.authority.key().to_bytes(),
+            ErrorCode::Unauthorized
+        );
+
+        let last_slot_bytes: [u8; 8] = data[72..80].try_into().unwrap();
+        let last_slot = u64::from_le_bytes(last_slot_bytes);
+        let now_slot = Clock::get()?.slot;
+        require!(now_slot > last_slot, ErrorCode::IssuerTreeRootNotMonotonic);
+
+        data[40..72].copy_from_slice(&new_root);
+        data[72..80].copy_from_slice(&now_slot.to_le_bytes());
+        Ok(())
+    }
+
+    /// Freeze / unfreeze the issuer-tree binding.  A frozen binding makes
+    /// every subsequent `verify_batch_proof` fail the issuer-root gate,
+    /// which is the nuclear option for halting proof verification in case
+    /// of incident response.  Only the recorded authority can call this.
+    pub fn set_issuer_tree_binding_status(
+        ctx: Context<UpdateIssuerTreeRoot>,
+        status: u8,
+    ) -> Result<()> {
+        require!(
+            status == ISSUER_TREE_STATUS_ACTIVE || status == ISSUER_TREE_STATUS_FROZEN,
+            ErrorCode::InvalidIssuerTreeBindingStatus
+        );
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        let mut data = binding_info.try_borrow_mut_data()?;
+        require!(
+            data.len() >= ISSUER_TREE_BINDING_SIZE
+                && data[0..8] == ISSUER_TREE_DISCRIMINATOR,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        let stored_authority: [u8; 32] = data[81..113].try_into().unwrap();
+        require!(
+            stored_authority == ctx.accounts.authority.key().to_bytes(),
+            ErrorCode::Unauthorized
+        );
+        data[80] = status;
+        Ok(())
+    }
+
     // ─── Credential issuance (R-2) ────────────────────────────────────────
 
     /// Publish a new credential commitment into the SPL Account-Compression
@@ -931,6 +1123,41 @@ pub struct RevokeIssuer<'info> {
     #[account(mut)]
     pub issuer_account: Account<'info, IssuerAccount>,
     #[account(constraint = authority.key() == registry_config.authority @ ErrorCode::Unauthorized)]
+    pub authority: Signer<'info>,
+}
+
+/// ADR-0014.  Accounts for `initialize_issuer_tree_binding`.
+///
+/// `authority` must equal `registry_config.authority` (handler check);
+/// the seed constraint proves the binding PDA is derived under this
+/// program; the system-program CPI inside the handler writes the
+/// initial 113-byte payload.
+#[derive(Accounts)]
+pub struct InitializeIssuerTreeBinding<'info> {
+    #[account(seeds = [b"registry-config"], bump)]
+    pub registry_config: Account<'info, RegistryConfig>,
+
+    /// CHECK: seeds-constrained; written + owned by this program via a
+    /// system CreateAccount CPI inside the handler.
+    #[account(mut, seeds = [ISSUER_TREE_BINDING_SEED], bump)]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// ADR-0014.  Accounts for `update_issuer_tree_root` + reused by
+/// `set_issuer_tree_binding_status`.  The PDA seed proves program
+/// provenance; the stored-authority byte range inside the binding
+/// (offset [81..113)) is what the handler actually enforces as the
+/// gate.
+#[derive(Accounts)]
+pub struct UpdateIssuerTreeRoot<'info> {
+    /// CHECK: parsed raw; owner + discriminator + stored-authority
+    /// checked in-handler.
+    #[account(mut, seeds = [ISSUER_TREE_BINDING_SEED], bump)]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
     pub authority: Signer<'info>,
 }
 
@@ -1266,6 +1493,16 @@ pub enum ErrorCode {
     TreeBindingMismatch,
     #[msg("SchemaTreeBinding is frozen; cannot issue into this tree (SOLID-SEC-003)")]
     SchemaTreeBindingFrozen,
+    #[msg("IssuerTreeBinding account is not owned by issuer-registry (ADR-0014)")]
+    InvalidIssuerTreeBindingOwner,
+    #[msg("IssuerTreeBinding discriminator or layout is invalid (ADR-0014)")]
+    InvalidIssuerTreeBinding,
+    #[msg("IssuerTreeBinding is frozen; cannot update root or verify proofs (ADR-0014)")]
+    IssuerTreeBindingFrozen,
+    #[msg("IssuerTreeBinding root update is non-monotonic (ADR-0014)")]
+    IssuerTreeRootNotMonotonic,
+    #[msg("IssuerTreeBinding status byte is invalid; must be 0 (active) or 1 (frozen)")]
+    InvalidIssuerTreeBindingStatus,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────

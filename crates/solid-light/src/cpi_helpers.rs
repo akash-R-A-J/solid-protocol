@@ -58,6 +58,29 @@ const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
     155, 9, 46, 66, 147, 25, 1, 94,
 ];
 
+/// Hard-coded program ID for the `issuer-registry` program.
+///
+/// Introduced by ADR-0014.  The zk-verifier owner-checks
+/// `issuer_tree_binding` against this constant before trusting any
+/// byte of it -- same two-layer guard pattern as
+/// `SCHEMA_REGISTRY_ID` (SOLID-SEC-032).
+pub const ISSUER_REGISTRY_PROGRAM_ID: &str = "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR";
+
+/// Typed counterpart of [`ISSUER_REGISTRY_PROGRAM_ID`].
+pub const ISSUER_REGISTRY_ID: Pubkey =
+    anchor_lang::prelude::Pubkey::new_from_array(ISSUER_REGISTRY_ID_BYTES);
+
+/// Raw bytes of `ISSUER_REGISTRY_ID`, base58-decoded at the source
+/// location `"CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"`.  The
+/// drift test below is the local gate; `scripts/check_program_ids.py`
+/// is the repo-wide gate.
+const ISSUER_REGISTRY_ID_BYTES: [u8; 32] = [
+    169, 168,  18, 211, 249, 105,  70, 114,
+    159,  27,  28, 172,  73, 149,  87, 152,
+     51, 253,  20, 143, 121, 225, 183, 185,
+    137,  84,  62, 138, 230,  57, 221, 184,
+];
+
 // ─── Program-ID consistency tests (SOLID-SEC-032) ──────────────────────────
 //
 // The owner-check that anchors the whole trust model of zk-verifier
@@ -102,6 +125,31 @@ mod id_bytes_tests {
             SCHEMA_REGISTRY_ID, decoded,
             "SCHEMA_REGISTRY_ID (typed Pubkey) diverged from \
              SCHEMA_REGISTRY_PROGRAM_ID (base58 literal)."
+        );
+    }
+
+    /// ADR-0014: identical drift guard for `ISSUER_REGISTRY_ID_BYTES`.
+    /// The zk-verifier's owner-check on `issuer_tree_binding`
+    /// (Phase 2 circuit rev) depends on this being correct.
+    #[test]
+    fn issuer_registry_id_bytes_matches_program_id_literal() {
+        let decoded = Pubkey::from_str(ISSUER_REGISTRY_PROGRAM_ID)
+            .expect("ISSUER_REGISTRY_PROGRAM_ID must be a valid base58 pubkey");
+        assert_eq!(
+            decoded.to_bytes(),
+            ISSUER_REGISTRY_ID_BYTES,
+            "ISSUER_REGISTRY_ID_BYTES drifted from ISSUER_REGISTRY_PROGRAM_ID. \
+             Re-derive bytes via `Pubkey::from_str(...).to_bytes()`."
+        );
+    }
+
+    #[test]
+    fn issuer_registry_id_typed_matches_program_id_literal() {
+        let decoded = Pubkey::from_str(ISSUER_REGISTRY_PROGRAM_ID)
+            .expect("ISSUER_REGISTRY_PROGRAM_ID must be a valid base58 pubkey");
+        assert_eq!(
+            ISSUER_REGISTRY_ID, decoded,
+            "ISSUER_REGISTRY_ID (typed Pubkey) diverged from ISSUER_REGISTRY_PROGRAM_ID."
         );
     }
 }
@@ -351,6 +399,96 @@ pub fn verify_schema_tree_binding_for_issue(
 /// re-authorize frozen trees for issuance.
 pub const STATUS_ACTIVE_BYTE: u8 = 0;
 
+// ─── IssuerTreeBinding layout (ADR-0014; SOLID-SEC-004 prep) ───────────────
+//
+// Written by `issuer-registry` on `initialize_issuer_tree_binding` and
+// updated by `update_issuer_tree_root`. The zk-verifier will owner-check
+// the account against `ISSUER_REGISTRY_ID` (same two-layer guard as
+// `SchemaTreeBinding`) and parse `current_root` from it to compare
+// against the batch circuit's new public input.
+//
+//   ┌──────────── IssuerTreeBinding (113 bytes) ────────────┐
+//   │  [0..  8)  discriminator = b"issrtree"                │
+//   │  [8.. 40)  tree_pubkey      (SPL AC concurrent tree)  │
+//   │ [40.. 72)  current_root                               │
+//   │ [72.. 80)  last_updated_slot (u64 LE)                 │
+//   │ [80.. 81)  status (0 = active, 1 = frozen)            │
+//   │ [81..113)  authority (Pubkey)                         │
+//   └────────────────────────────────────────────────────────┘
+//
+// Only one issuer tree exists per deployment -- no per-schema split --
+// so there is no `schema_hash` field in the layout.  The PDA seed is
+// likewise the literal `[b"issuer-tree-binding"]` with no parameter.
+//
+// Sized identically to the read-window of `SchemaTreeBinding` (113
+// bytes) so the parser fast-path is shared.  If future fields are
+// added, extend the total but keep [0..113) frozen as the parser
+// contract.
+
+pub const ISSUER_TREE_DISCRIMINATOR: [u8; 8] = *b"issrtree";
+
+/// Extract `tree_pubkey` (bytes `[8..40)`) from an `IssuerTreeBinding`
+/// account's data.  Returns `None` if the buffer is too short or the
+/// discriminator is not `b"issrtree"`.
+pub fn issuer_tree_binding_tree_pubkey(data: &[u8]) -> Option<Pubkey> {
+    if data.len() < 40 || data[..8] != ISSUER_TREE_DISCRIMINATOR {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&data[8..40]);
+    Some(Pubkey::new_from_array(out))
+}
+
+/// Extract `current_root` (bytes `[40..72)`) from an `IssuerTreeBinding`
+/// account's data.  Returns `None` if the buffer is too short or the
+/// discriminator is not `b"issrtree"`.
+pub fn issuer_tree_binding_current_root(data: &[u8]) -> Option<[u8; 32]> {
+    if data.len() < 72 || data[..8] != ISSUER_TREE_DISCRIMINATOR {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&data[40..72]);
+    Some(out)
+}
+
+/// Extract the status byte (offset `80`) from an `IssuerTreeBinding`
+/// account's data.  Returns `None` if the buffer is too short or the
+/// discriminator is not `b"issrtree"`.
+pub fn issuer_tree_binding_status(data: &[u8]) -> Option<u8> {
+    if data.len() < 81 || data[..8] != ISSUER_TREE_DISCRIMINATOR {
+        return None;
+    }
+    Some(data[80])
+}
+
+/// Full `IssuerTreeBinding` gate used by `verify_batch_proof`
+/// (ADR-0014).  Validates that the given account data:
+///   1. Is at least 81 bytes (the parser window).
+///   2. Starts with `ISSUER_TREE_DISCRIMINATOR`.
+///   3. Carries `current_root == expected_root`.
+///   4. Is active (status byte `0`).
+///
+/// Caller is still responsible for asserting
+/// `account.owner == ISSUER_REGISTRY_ID` before calling this helper --
+/// the bytes alone cannot prove provenance.  Kept consistent with
+/// `verify_schema_tree_binding_for_issue`.
+pub fn verify_issuer_tree_binding_for_proof(
+    data: &[u8],
+    expected_root: &[u8; 32],
+) -> std::result::Result<(), LightError> {
+    let root = issuer_tree_binding_current_root(data)
+        .ok_or(LightError::InvalidIssuerTreeBinding)?;
+    if &root != expected_root {
+        return Err(LightError::IssuerTreeRootMismatch);
+    }
+    let status = issuer_tree_binding_status(data)
+        .ok_or(LightError::InvalidIssuerTreeBinding)?;
+    if status != STATUS_ACTIVE_BYTE {
+        return Err(LightError::IssuerTreeBindingFrozen);
+    }
+    Ok(())
+}
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 #[error_code]
@@ -367,6 +505,12 @@ pub enum LightError {
     TreeBindingMismatch,
     #[msg("SchemaTreeBinding is frozen; cannot issue into this tree")]
     SchemaTreeBindingFrozen,
+    #[msg("IssuerTreeBinding discriminator or layout is invalid (ADR-0014)")]
+    InvalidIssuerTreeBinding,
+    #[msg("IssuerTreeBinding.current_root does not match the proof's issuerTreeRoot public input")]
+    IssuerTreeRootMismatch,
+    #[msg("IssuerTreeBinding is frozen; cannot verify proofs under this root")]
+    IssuerTreeBindingFrozen,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -536,6 +680,95 @@ mod tests {
         assert!(matches!(
             verify_schema_tree_binding_for_issue(&data, &[0u8; 32], &tree),
             Err(LightError::InvalidSchemaBinding)
+        ));
+    }
+
+    // ─── ADR-0014 IssuerTreeBinding parser tests ──────────────────────────
+    //
+    // The zk-verifier's owner-check + discriminator + root-match gate on
+    // `IssuerTreeBinding` is what SEC-004 relies on for its on-chain
+    // guarantee. These tests prove the parser rejects every mismatch axis
+    // the on-chain handler must not accept.
+
+    fn make_issuer_tree_binding(
+        tree_pk: [u8; 32],
+        root: [u8; 32],
+        status: u8,
+    ) -> Vec<u8> {
+        let mut v = Vec::with_capacity(113);
+        v.extend_from_slice(&ISSUER_TREE_DISCRIMINATOR);
+        v.extend_from_slice(&tree_pk);
+        v.extend_from_slice(&root);
+        v.extend_from_slice(&0u64.to_le_bytes());
+        v.push(status);
+        // pad to full 113-byte layout (authority field) so the parser's
+        // minimum-length assertions stay realistic.
+        v.extend_from_slice(&[0u8; 32]);
+        v
+    }
+
+    #[test]
+    fn issuer_tree_binding_field_accessors_happy_path() {
+        let tree = make_tree_pk(7);
+        let root = [9u8; 32];
+        let data = make_issuer_tree_binding(tree.to_bytes(), root, 0);
+        assert_eq!(issuer_tree_binding_tree_pubkey(&data), Some(tree));
+        assert_eq!(issuer_tree_binding_current_root(&data), Some(root));
+        assert_eq!(issuer_tree_binding_status(&data), Some(0));
+    }
+
+    #[test]
+    fn issuer_tree_binding_rejects_bad_discriminator() {
+        let mut data = make_issuer_tree_binding([0u8; 32], [0u8; 32], 0);
+        data[..8].copy_from_slice(b"schmtree");
+        assert_eq!(issuer_tree_binding_tree_pubkey(&data), None);
+        assert_eq!(issuer_tree_binding_current_root(&data), None);
+        assert_eq!(issuer_tree_binding_status(&data), None);
+    }
+
+    #[test]
+    fn issuer_tree_binding_rejects_short_data() {
+        let data = vec![0u8; 30];
+        assert_eq!(issuer_tree_binding_tree_pubkey(&data), None);
+        assert_eq!(issuer_tree_binding_current_root(&data), None);
+        assert_eq!(issuer_tree_binding_status(&data), None);
+    }
+
+    #[test]
+    fn issuer_tree_proof_gate_happy_path() {
+        let root = [9u8; 32];
+        let data = make_issuer_tree_binding([0u8; 32], root, 0);
+        assert!(verify_issuer_tree_binding_for_proof(&data, &root).is_ok());
+    }
+
+    #[test]
+    fn issuer_tree_proof_gate_rejects_wrong_root() {
+        let root = [9u8; 32];
+        let wrong = [10u8; 32];
+        let data = make_issuer_tree_binding([0u8; 32], root, 0);
+        assert!(matches!(
+            verify_issuer_tree_binding_for_proof(&data, &wrong),
+            Err(LightError::IssuerTreeRootMismatch)
+        ));
+    }
+
+    #[test]
+    fn issuer_tree_proof_gate_rejects_frozen() {
+        let root = [9u8; 32];
+        let data = make_issuer_tree_binding([0u8; 32], root, 1);
+        assert!(matches!(
+            verify_issuer_tree_binding_for_proof(&data, &root),
+            Err(LightError::IssuerTreeBindingFrozen)
+        ));
+    }
+
+    #[test]
+    fn issuer_tree_proof_gate_rejects_bad_discriminator() {
+        let mut data = make_issuer_tree_binding([0u8; 32], [0u8; 32], 0);
+        data[..8].copy_from_slice(b"schmtree");
+        assert!(matches!(
+            verify_issuer_tree_binding_for_proof(&data, &[0u8; 32]),
+            Err(LightError::InvalidIssuerTreeBinding)
         ));
     }
 }

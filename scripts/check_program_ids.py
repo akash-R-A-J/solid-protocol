@@ -7,8 +7,9 @@ Runs in CI and locally.  Fails fast when the program IDs declared in
 `declare_id!` macros in the on-chain programs) diverge from:
 
   (1) the `declare_id!(...)` literal in each program's `src/lib.rs`;
-  (2) the `SCHEMA_REGISTRY_PROGRAM_ID` literal in
-      `crates/solid-light/src/cpi_helpers.rs` (SOLID-SEC-032);
+  (2) the `SCHEMA_REGISTRY_PROGRAM_ID` and `ISSUER_REGISTRY_PROGRAM_ID`
+      literals in `crates/solid-light/src/cpi_helpers.rs`
+      (SOLID-SEC-032 / ADR-0014);
   (3) the program IDs recorded in `deployments/<cluster>.json`;
   (4) the presence of a `deployments/<cluster>.json` for every non-localnet
       cluster declared in Anchor.toml (SOLID-SEC-040, Phase 2 prelude).
@@ -88,21 +89,26 @@ def read_declare_ids() -> Dict[str, str]:
     return out
 
 
-def read_cpi_helpers_schema_registry_literal() -> str | None:
-    """Return the base58 SCHEMA_REGISTRY_PROGRAM_ID literal from cpi_helpers.rs.
+def read_cpi_helpers_literal(const_name: str) -> str | None:
+    """Return the base58 literal assigned to `const_name` in cpi_helpers.rs.
 
-    None if the file is missing; empty string if the constant is not present
-    in a recognized form (caller treats either as a failure).
+    `None` if the file is missing; empty string if the constant is not
+    present in a recognized form (caller treats either as a failure).
     """
     if not CPI_HELPERS_PATH.exists():
         return None
     text = CPI_HELPERS_PATH.read_text()
-    # Match: pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = "DPk6…";
     m = re.search(
-        r'pub\s+const\s+SCHEMA_REGISTRY_PROGRAM_ID\s*:\s*&str\s*=\s*"([^"]+)"\s*;',
+        rf'pub\s+const\s+{re.escape(const_name)}\s*:\s*&str\s*=\s*"([^"]+)"\s*;',
         text,
     )
     return m.group(1) if m else ""
+
+
+def read_cpi_helpers_schema_registry_literal() -> str | None:
+    """Back-compat wrapper -- kept so callers don't have to spell the
+    constant name each time."""
+    return read_cpi_helpers_literal("SCHEMA_REGISTRY_PROGRAM_ID")
 
 
 def read_deployments() -> Dict[str, Dict[str, str]]:
@@ -152,35 +158,42 @@ def main() -> int:
                     f"= {declared[program]!r} but Anchor.toml says {sorted(seen)!r}"
                 )
 
-    # (1b) SOLID-SEC-032: the hardcoded SCHEMA_REGISTRY_PROGRAM_ID literal in
-    # solid-light/src/cpi_helpers.rs must agree with the schema_registry ID
-    # in Anchor.toml. If this drifts, the on-chain owner-check against
-    # SCHEMA_REGISTRY_ID (ADR-0010) silently breaks.
-    cpi_literal = read_cpi_helpers_schema_registry_literal()
-    if cpi_literal is None:
-        failures.append(
-            f"missing {CPI_HELPERS_PATH.relative_to(ROOT)} -- "
-            "cannot validate SCHEMA_REGISTRY_PROGRAM_ID literal"
-        )
-    elif cpi_literal == "":
-        failures.append(
-            f"{CPI_HELPERS_PATH.relative_to(ROOT)} does not define "
-            "`pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = \"...\";` -- "
-            "required by SOLID-SEC-032"
-        )
-    else:
-        schema_anchor_ids: set[str] = set()
-        for cluster, prog_map in anchor.items():
-            if "schema_registry" in prog_map:
-                schema_anchor_ids.add(prog_map["schema_registry"])
-        if schema_anchor_ids and cpi_literal not in schema_anchor_ids:
+    # (1b) SOLID-SEC-032 + ADR-0014: the hardcoded program-ID string
+    # literals in solid-light/src/cpi_helpers.rs must each agree with
+    # their corresponding entry in Anchor.toml.  If either drifts, the
+    # on-chain owner-check (ADR-0010 for schema-registry; ADR-0014 for
+    # issuer-registry) silently breaks.
+    for const_name, anchor_key in (
+        ("SCHEMA_REGISTRY_PROGRAM_ID", "schema_registry"),
+        ("ISSUER_REGISTRY_PROGRAM_ID", "issuer_registry"),
+    ):
+        cpi_literal = read_cpi_helpers_literal(const_name)
+        if cpi_literal is None:
+            failures.append(
+                f"missing {CPI_HELPERS_PATH.relative_to(ROOT)} -- "
+                f"cannot validate {const_name} literal"
+            )
+            continue
+        if cpi_literal == "":
+            failures.append(
+                f"{CPI_HELPERS_PATH.relative_to(ROOT)} does not define "
+                f"`pub const {const_name}: &str = \"...\";` -- "
+                "required by SOLID-SEC-032 / ADR-0014"
+            )
+            continue
+        anchor_ids: set[str] = set()
+        for _cluster, prog_map in anchor.items():
+            if anchor_key in prog_map:
+                anchor_ids.add(prog_map[anchor_key])
+        if anchor_ids and cpi_literal not in anchor_ids:
             failures.append(
                 f"{CPI_HELPERS_PATH.relative_to(ROOT)} "
-                f"SCHEMA_REGISTRY_PROGRAM_ID = {cpi_literal!r} "
-                f"but Anchor.toml says {sorted(schema_anchor_ids)!r} -- "
-                "re-derive the base58 string and the SCHEMA_REGISTRY_ID_BYTES "
-                "array together (Rust tests in cpi_helpers.rs::id_bytes_tests "
-                "gate the byte array)"
+                f"{const_name} = {cpi_literal!r} "
+                f"but Anchor.toml says {sorted(anchor_ids)!r} -- "
+                f"re-derive the base58 string and the matching "
+                f"{anchor_key.upper()}_ID_BYTES array together "
+                "(Rust tests in cpi_helpers.rs::id_bytes_tests gate the "
+                "byte array)"
             )
 
     # (2) Every deployment manifest must agree with Anchor.toml for its cluster.
