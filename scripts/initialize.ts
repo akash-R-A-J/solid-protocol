@@ -202,7 +202,7 @@ async function main() {
   }
 
   // 4. GlobalStateBinding.
-  console.log('\n[4/6] initialize_global_binding');
+  console.log('\n[4/7] initialize_global_binding');
   const [globalBindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('global-binding')],
     PROGRAM_PUBKEYS.schemaRegistry,
@@ -219,8 +219,47 @@ async function main() {
     console.log('   ok (already active)');
   }
 
+  // 4b. ADR-0014: IssuerTreeBinding.
+  //
+  // Creates the singleton `IssuerTreeBinding` PDA under
+  // `issuer-registry`.  The binding stores `tree_pubkey` IMMUTABLY
+  // once initialised, so we only call `initialize_issuer_tree_binding`
+  // here if the caller has supplied a real tree pubkey via
+  // `SOLID_ISSUER_TREE_PUBKEY`.  Otherwise we skip and defer to
+  // `scripts/backfill_issuer_tree.ts`, which creates the SPL AC tree
+  // and calls this ix with the real pubkey.
+  console.log('\n[5/7] initialize_issuer_tree_binding (ADR-0014)');
+  const [issuerTreeBindingPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('issuer-tree-binding')],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+  let issuerTreePubkey = PublicKey.default;
+  if (process.env.SOLID_ISSUER_TREE_PUBKEY) {
+    issuerTreePubkey = new PublicKey(process.env.SOLID_ISSUER_TREE_PUBKEY);
+    try {
+      await issuerProgram.methods.initializeIssuerTreeBinding(
+        issuerTreePubkey,
+      ).accounts({
+        registryConfig: registryPda,
+        issuerTreeBinding: issuerTreeBindingPda,
+        authority: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+      console.log(`   ok (binding at ${issuerTreeBindingPda.toBase58()})`);
+    } catch (e: any) {
+      if (!isAlreadyInitialised(e)) throw e;
+      console.log('   ok (already active)');
+    }
+  } else {
+    console.log(
+      '   SKIPPED (SOLID_ISSUER_TREE_PUBKEY unset).  Run\n' +
+      '   `tsx scripts/backfill_issuer_tree.ts` next to create the\n' +
+      '   SPL AC tree and bind it before proofs can verify.',
+    );
+  }
+
   // 5. Verifier config.
-  console.log('\n[5/6] zk_verifier.initialize');
+  console.log('\n[6/7] zk_verifier.initialize');
   const [verifierConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('verifier-config')],
     PROGRAM_PUBKEYS.zkVerifier,
@@ -238,7 +277,7 @@ async function main() {
   }
 
   // 6. Upload verification key.
-  console.log('\n[6/6] store_verification_key');
+  console.log('\n[7/7] store_verification_key');
   const [vkStoragePda] = PublicKey.findProgramAddressSync(
     [Buffer.from('vk-storage'), verifierConfigPda.toBuffer()],
     PROGRAM_PUBKEYS.zkVerifier,
@@ -290,6 +329,8 @@ async function main() {
     registryPda: registryPda.toBase58(),
     schemaTreeBindingPda: bindingPda.toBase58(),
     globalBindingPda: globalBindingPda.toBase58(),
+    issuerTreeBindingPda: issuerTreeBindingPda.toBase58(),
+    issuerMerkleTreeAddress: issuerTreePubkey.toBase58(),
     verifierConfigPda: verifierConfigPda.toBase58(),
     vkStoragePda: vkStoragePda.toBase58(),
     merkleTreeAddress: treePubkey.toBase58(),

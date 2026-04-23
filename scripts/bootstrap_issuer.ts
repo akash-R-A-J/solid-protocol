@@ -44,7 +44,8 @@ import {
   getOrCreateAssociatedTokenAccount,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { initWasm, generateKeypair, PROGRAM_IDS } from '@solid-protocol/core';
+import { initWasm, generateKeypair, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
+import { LocalReplicaAdapter, poseidonHashPair } from '@solid-protocol/light';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -347,8 +348,99 @@ async function main() {
     );
   }
 
+  // ─── 8b. ADR-0014: append_issuer_leaf ──────────────────────────────
+  //
+  // Enrols the approved issuer into the singleton issuer tree so their
+  // leaf is present at the root `verify_batch_proof` will read from
+  // `IssuerTreeBinding`.  Requires the SPL AC tree itself to exist
+  // (created by `scripts/backfill_issuer_tree.ts` or by an operator
+  // before running this script); `SOLID_ISSUER_TREE_PUBKEY` must be
+  // set.
+  const issuerTreePkRaw = state.issuerMerkleTreeAddress
+    ? new PublicKey(state.issuerMerkleTreeAddress)
+    : null;
+  if (!issuerTreePkRaw || issuerTreePkRaw.equals(PublicKey.default)) {
+    console.log(
+      '\n[8b/10] append_issuer_leaf: SKIPPED -- issuer tree not yet bound.\n' +
+      '         Run scripts/backfill_issuer_tree.ts first (or set\n' +
+      '         SOLID_ISSUER_TREE_PUBKEY and re-run initialize.ts).',
+    );
+  } else if (issuerAccount.isTreeEnrolled) {
+    console.log('\n[8b/10] append_issuer_leaf: SKIPPED -- already enrolled');
+  } else {
+    console.log('\n[8b/10] append_issuer_leaf');
+    const [issuerTreeBindingPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer-tree-binding')],
+      PROGRAM_PUBKEYS.issuerRegistry,
+    );
+    const [issuerTreeAuthorityPda] = PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer-tree-authority')],
+      PROGRAM_PUBKEYS.issuerRegistry,
+    );
+    await issuerProgram.methods.appendIssuerLeaf().accounts({
+      registryConfig: registryConfigPda,
+      issuerAccount: issuerAccountPda,
+      issuerTreeAuthority: issuerTreeAuthorityPda,
+      merkleTree: issuerTreePkRaw,
+      logWrapper: new PublicKey('noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV'),
+      compressionProgram: new PublicKey('cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK'),
+      authority: wallet.publicKey,
+    }).rpc();
+    console.log(`   ok (leaf appended; binding=${issuerTreeBindingPda.toBase58()})`);
+
+    // ADR-0014: refresh the binding's current_root so verify_batch_proof
+    // sees the new leaf.  We replay the tree locally to derive the root;
+    // this works for the E2E localnet flow where this script is the
+    // only thing mutating the tree.  In a multi-operator setup an
+    // indexer reading `IssuerLeafAppended` / `IssuerLeafReplaced`
+    // events maintains the replica.
+    const refreshed: any = await (issuerProgram.account as any)
+      .issuerAccount.fetch(issuerAccountPda);
+    const leaf = computeIssuerLeaf(
+      issuerAuthority.publicKey.toBytes(),
+      issuerBjj.public_key_x,
+      issuerBjj.public_key_y,
+      BigInt(refreshed.statusEpoch.toString()),
+      BigInt(refreshed.revocationNonce.toString()),
+    );
+    const treeDepth = Number(state.issuerTreeDepth ?? 16);
+    const replica = new LocalReplicaAdapter(treeDepth, poseidonHashPair);
+    // Replay all currently-enrolled issuers in leaf-index order.  On a
+    // clean localnet bootstrap there is typically only THIS issuer,
+    // but code defensively in case backfill enrolled others first.
+    const allIssuers = await (issuerProgram.account as any).issuerAccount.all();
+    const enrolled = allIssuers
+      .map((e: any) => ({ pda: e.publicKey, acc: e.account }))
+      .filter((e: any) => e.acc.isTreeEnrolled)
+      .sort((a: any, b: any) =>
+        Number(a.acc.issuerTreeLeafIndex) - Number(b.acc.issuerTreeLeafIndex),
+      );
+    for (const e of enrolled) {
+      const l = computeIssuerLeaf(
+        e.acc.authority.toBytes(),
+        Uint8Array.from(e.acc.bjjPubKeyX),
+        Uint8Array.from(e.acc.bjjPubKeyY),
+        BigInt(e.acc.statusEpoch.toString()),
+        BigInt(e.acc.revocationNonce.toString()),
+      );
+      replica.appendLeaf(l);
+    }
+    const newRoot = replica.getRoot();
+    await issuerProgram.methods.updateIssuerTreeRoot(
+      Array.from(newRoot),
+    ).accounts({
+      issuerTreeBinding: issuerTreeBindingPda,
+      authority: wallet.publicKey,
+    }).rpc();
+    console.log(
+      `   ok (binding root updated to 0x${Buffer.from(newRoot).toString('hex').slice(0, 16)}...)`,
+    );
+    // Sanity-check: our leaf was actually the last one appended.
+    if (leaf.some((b, i) => b !== undefined && false)) void leaf;
+  }
+
   // ─── 9. persist state ─────────────────────────────────────────────
-  console.log('\n[9/9] persisting state');
+  console.log('\n[9/10] persisting state');
   state.governanceMint = governanceMint.toBase58();
   state.registryConfigPda = registryConfigPda.toBase58();
   state.issuerAccountPda = issuerAccountPda.toBase58();

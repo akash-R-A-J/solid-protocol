@@ -189,6 +189,53 @@ export function computeIdentityCommitment(
   return computeIdentityState(pubKeyX, pubKeyY, revocationNonce);
 }
 
+/**
+ * Compute the ADR-0014 issuer-tree leaf:
+ *   `leaf = Poseidon(issuerAuthority, bjjPubKeyX, bjjPubKeyY,
+ *                    statusEpoch, revocationNonce)`
+ *
+ * MUST match the on-chain `compute_issuer_leaf_bytes` in
+ * `programs/issuer-registry/src/lib.rs`.  Used by the holder SDK to
+ * precompute the leaf for `fetchMerkleProof`, and by any indexer that
+ * replays `IssuerLeafAppended` / `IssuerLeafReplaced` events into an
+ * issuer-tree replica.
+ *
+ * `issuerAuthority` is a 32-byte Solana pubkey (the authority field
+ * of the issuer's on-chain `IssuerAccount`).  The byte-order contract
+ * mirrors the on-chain helper: raw 32-byte arrays are fed directly
+ * into Poseidon, so callers MUST pass `authority.toBytes()` (not a
+ * BE-encoded BigInt).
+ */
+export function computeIssuerLeaf(
+  issuerAuthority: Uint8Array,
+  bjjPubKeyX: Uint8Array,
+  bjjPubKeyY: Uint8Array,
+  statusEpoch: bigint,
+  revocationNonce: bigint,
+): Uint8Array {
+  ensureInit();
+  // Convert u64s to 32-byte LE (matches `solid_core::poseidon::u64_to_fr`
+  // then `fr_to_bytes_le`).  Low 8 bytes carry the value; remaining 24
+  // bytes are zero (fields below 2^64 don't wrap the modulus).
+  const statusEpochBytes = new Uint8Array(32);
+  const nonceBytes = new Uint8Array(32);
+  let se = statusEpoch;
+  let rn = revocationNonce;
+  for (let i = 0; i < 8; i++) {
+    statusEpochBytes[i] = Number(se & 0xffn);
+    nonceBytes[i] = Number(rn & 0xffn);
+    se >>= 8n;
+    rn >>= 8n;
+  }
+  return poseidonHashBytes([
+    issuerAuthority,
+    bjjPubKeyX,
+    bjjPubKeyY,
+    statusEpochBytes,
+    nonceBytes,
+  ]);
+}
+
 // ─── Identity ──────────────────────────────────────────────────────────────
 
 export function generateIdentity(passphrase: string): string {

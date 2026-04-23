@@ -21,6 +21,7 @@ import {
   QueryBuilder,
   PROGRAM_IDS,
   computeCommitment,
+  computeIssuerLeaf,
   deriveCredentialKey,
 } from '@solid-protocol/core';
 import { generateBatchProof, type StoredCredential } from '@solid-protocol/holder';
@@ -39,6 +40,9 @@ const PROGRAM_PUBKEYS = {
 const RPC_URL = process.env.SOLID_RPC_URL ?? 'http://127.0.0.1:8899';
 const GLOBAL_TREE_DEPTH = 20;
 const CREDENTIAL_TREE_DEPTH = 20;
+/// ADR-0014: fixed issuer-tree depth; matches the circuit's main-component
+/// ISSUER_TREE_DEPTH parameter.
+const ISSUER_TREE_DEPTH = 16;
 
 async function main() {
   await initWasm();
@@ -73,6 +77,11 @@ async function main() {
     commitment: Uint8Array.from(state.credential.commitment),
     expirationTimestamp: state.credential.expirationTimestamp ?? 0,
     merkleTree: new PublicKey(state.merkleTreeAddress),
+    // ADR-0014 preimage snapshot (written by issue.ts).
+    issuerAuthority: new PublicKey(state.credential.issuerAuthority),
+    issuerStatusEpoch: BigInt(state.credential.issuerStatusEpoch),
+    issuerRevocationNonce: BigInt(state.credential.issuerRevocationNonce),
+    issuerTreeLeafIndex: BigInt(state.credential.issuerTreeLeafIndex),
   };
 
   // 1. Build query (age >= 21).
@@ -118,11 +127,30 @@ async function main() {
   const identityLeaf = computeIdentityState(kp.public_key_x, kp.public_key_y, 0n);
   globalReplica.appendLeaf(identityLeaf);
 
+  // ADR-0014: issuer-tree replica.  Seeded with the issuer's leaf
+  // (Poseidon(5) over IssuerAccount preimage).  The resulting root
+  // MUST match `IssuerTreeBinding.current_root` on-chain, otherwise
+  // `verify_batch_proof` rejects with `IssuerTreeRootMismatch`.  On a
+  // clean localnet E2E run the backfill script updates the binding
+  // root right after `append_issuer_leaf`, and this replica matches.
+  const issuerReplica = new LocalReplicaAdapter(ISSUER_TREE_DEPTH, poseidonHashPair);
+  const issuerLeaf = computeIssuerLeaf(
+    credential.issuerAuthority.toBytes(),
+    credential.issuerPubKeyX,
+    credential.issuerPubKeyY,
+    credential.issuerStatusEpoch,
+    credential.issuerRevocationNonce,
+  );
+  issuerReplica.appendLeaf(issuerLeaf);
+  const issuerTreeRoot = issuerReplica.getRoot();
+  const issuerMerkleTreePk = new PublicKey(state.issuerMerkleTreeAddress);
+
   const merkleProofAdapter = {
     async fetch(tree: PublicKey, leaf: Uint8Array) {
-      const isGlobal = tree.toBase58() === state.globalBindingPda;
-      const src = isGlobal ? globalReplica : credReplica;
-      return src.fetch(tree, leaf);
+      const key = tree.toBase58();
+      if (key === state.globalBindingPda) return globalReplica.fetch(tree, leaf);
+      if (key === state.issuerMerkleTreeAddress) return issuerReplica.fetch(tree, leaf);
+      return credReplica.fetch(tree, leaf);
     },
   };
 
@@ -150,6 +178,8 @@ async function main() {
     {
       merkleProofAdapter,
       globalStateTree: new PublicKey(state.globalBindingPda),
+      issuerMerkleTree: issuerMerkleTreePk,
+      issuerTreeRoot,
     },
   );
   console.log(`   proof generated in ${((Date.now() - startTs) / 1000).toFixed(2)}s`);
@@ -163,6 +193,7 @@ async function main() {
     schemaTree1: schemaTreeBinding,
     schemaTree2: schemaTreeBinding,
     schemaTree3: schemaTreeBinding,
+    issuerTreeBinding: new PublicKey(state.issuerTreeBindingPda),
   };
   const request = {
     query,

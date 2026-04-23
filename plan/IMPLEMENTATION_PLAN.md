@@ -4,10 +4,11 @@ Living plan. Single source of truth for scope, phasing, and
 acceptance. Every item references `SOLID-SEC-NNN` in
 `sec/SECURITY_REGISTRY.md` and/or `ADR-NNNN` in `adr/`.
 
-- Protocol version in scope: v0.5 (Phase 1 closed) -> v1.0 mainnet
-- Last revision: 2026-04-23 (Phase 1 close-out; all 14 items Fixed;
-  snapshot at `sec/audits/2026-04-23_v0.5_phase1_closeout.md`)
-- Next revision trigger: Phase 2 close-out
+- Protocol version in scope: v0.6 (Phase 2 closed) -> v1.0 mainnet
+- Last revision: 2026-04-24 (Phase 2 close-out; SEC-004, SEC-008,
+  SEC-036 flipped Fixed; snapshot at
+  `sec/audits/2026-04-24_v0.6_phase2_closeout.md`)
+- Next revision trigger: Phase 3 close-out
 
 ---
 

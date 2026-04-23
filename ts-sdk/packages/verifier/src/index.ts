@@ -30,8 +30,9 @@ export { QueryBuilder } from '@solid-protocol/core';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-/** Must match `NR_PUBLIC_INPUTS` in `programs/zk-verifier/src/lib.rs`. */
-export const NR_PUBLIC_INPUTS = 31;
+/** Must match `NR_PUBLIC_INPUTS` in `programs/zk-verifier/src/lib.rs`.
+ *  Bumped 31 -> 32 by ADR-0014 (issuerTreeRoot added at slot [10]). */
+export const NR_PUBLIC_INPUTS = 32;
 
 const NULLIFIER_SEED = Buffer.from('null');
 const VERIFIER_CONFIG_SEED = Buffer.from('verifier-config');
@@ -73,6 +74,11 @@ export interface SchemaTreeAccounts {
   schemaTree3: PublicKey;
   /** Global state-root PDA. */
   globalTree: PublicKey;
+  /** ADR-0014: singleton `IssuerTreeBinding` PDA under issuer-registry.
+   *  Derived from `[b"issuer-tree-binding"]` (see
+   *  `@solid-protocol/light::deriveIssuerTreeBinding`).  Required for
+   *  every verify_batch_proof call post ADR-0014. */
+  issuerTreeBinding: PublicKey;
 }
 
 // ─── PDA helpers ───────────────────────────────────────────────────────────
@@ -156,6 +162,10 @@ export function buildVerifyBatchProofIx(params: {
   const [nullifierPda] = deriveNullifierPda(nullifier, programId);
 
   // Account order must match `VerifyBatchProof` in the on-chain program.
+  // ADR-0014: `issuer_tree_binding` inserted AFTER the four schema
+  // trees, BEFORE `payer`.  A mismatch here silently sends accounts
+  // to the wrong slots and makes every proof fail with an unhelpful
+  // error; the shape is pinned in the on-chain Accounts derive.
   const keys = [
     { pubkey: configPda, isSigner: false, isWritable: true },
     { pubkey: vkPda, isSigner: false, isWritable: false },
@@ -165,6 +175,7 @@ export function buildVerifyBatchProofIx(params: {
     { pubkey: params.trees.schemaTree1, isSigner: false, isWritable: false },
     { pubkey: params.trees.schemaTree2, isSigner: false, isWritable: false },
     { pubkey: params.trees.schemaTree3, isSigner: false, isWritable: false },
+    { pubkey: params.trees.issuerTreeBinding, isSigner: false, isWritable: false },
     { pubkey: params.payer, isSigner: true, isWritable: true },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
   ];

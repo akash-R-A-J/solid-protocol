@@ -5,10 +5,11 @@
   "description": "E2E scripts and deployment management for SolID Protocol",
   "scripts": {
     "init-onchain": "tsx scripts/initialize.ts",
+    "backfill-issuer-tree": "tsx scripts/backfill_issuer_tree.ts",
     "bootstrap-issuer": "tsx scripts/bootstrap_issuer.ts",
     "issue": "tsx scripts/issue.ts",
     "prove": "tsx scripts/prove.ts",
-    "e2e": "npm run init-onchain && npm run bootstrap-issuer && npm run issue && npm run prove",
+    "e2e": "npm run init-onchain && npm run backfill-issuer-tree && npm run bootstrap-issuer && npm run issue && npm run prove",
     "link-all": "npm link ./ts-sdk/packages/core ./ts-sdk/packages/issuer ./ts-sdk/packages/holder ./ts-sdk/packages/verifier ./ts-sdk/packages/light"
   },
   "dependencies": {

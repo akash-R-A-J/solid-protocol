@@ -130,6 +130,33 @@ async function main() {
   console.log(`   commitment: ${Buffer.from(credential.commitment).toString('hex')}`);
   console.log(`   tx:         ${credential.signature}`);
 
+  // 3b. ADR-0014: snapshot the issuer's on-chain `IssuerAccount`
+  // fields so prove.ts can reconstruct the issuer-tree leaf later.
+  // Fetching at issuance time rather than prove time is fine because
+  // status_epoch / revocation_nonce are set at approval/revocation
+  // time and don't change during the normal issue -> prove window;
+  // if they DO change (a subsequent revocation), the circuit-side
+  // Merkle-membership check rejects against the new root and the
+  // holder regenerates by re-fetching.  The backfill script + the
+  // hook in bootstrap_issuer set these fields before the first issue.
+  const anchor = await import('@coral-xyz/anchor');
+  const provider = new anchor.AnchorProvider(
+    connection,
+    new anchor.Wallet(wallet),
+    { commitment: 'confirmed' },
+  );
+  anchor.setProvider(provider);
+  const idlPath = path.join('target', 'idl', 'issuer_registry.json');
+  const issuerIdl = JSON.parse(fs.readFileSync(idlPath, 'utf-8'));
+  if (!issuerIdl.address) issuerIdl.address = PROGRAM_PUBKEYS.issuerRegistry.toBase58();
+  const issuerProgram = new anchor.Program(issuerIdl, provider);
+  const [issuerAccountPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('issuer'), issuerAuthority.publicKey.toBuffer()],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+  const issuerAccount: any = await (issuerProgram.account as any)
+    .issuerAccount.fetch(issuerAccountPda);
+
   // 4. Persist to state.
   console.log('[3/3] Saving state...');
   state.holderMaster = {
@@ -157,6 +184,12 @@ async function main() {
       r8_y: Array.from(credential.issuerSignature.r8_y),
       s: Array.from(credential.issuerSignature.s),
     },
+    // ADR-0014 preimage snapshot for the issuer-tree leaf.
+    issuerAuthority: issuerAuthority.publicKey.toBase58(),
+    issuerStatusEpoch: issuerAccount.statusEpoch.toString(),
+    issuerRevocationNonce: issuerAccount.revocationNonce.toString(),
+    issuerTreeLeafIndex: issuerAccount.issuerTreeLeafIndex.toString(),
+    isTreeEnrolled: Boolean(issuerAccount.isTreeEnrolled),
   };
   state.attestationData = attestationData.map(n => n.toString());
   writeState(state);

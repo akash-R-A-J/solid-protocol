@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
-| HIGH      | 4    | 2           | 6     | 0        | 0         | 12    |
+| HIGH      | 4    | 0           | 8     | 0        | 0         | 12    |
 | MEDIUM    | 9    | 0           | 4     | 0        | 0         | 13    |
 | LOW       | 5    | 0           | 3     | 0        | 0         | 8     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 22   | 2           | 18    | 0        | 0         | 42    |
+| **Total** | 22   | 0           | 20    | 0        | 0         | 42    |
 
 ---
 
@@ -43,11 +43,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-001   | CRITICAL | Fixed  | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
 | SOLID-SEC-002   | CRITICAL | Fixed  | `register_schema` Poseidon integrity check commented out           |
 | SOLID-SEC-003   | CRITICAL | Fixed  | `issue_credential` missing schema + tree pubkey binding            |
-| SOLID-SEC-004   | HIGH     | In Progress | No in-circuit issuer pubkey binding; revoked issuers still verify  |
+| SOLID-SEC-004   | HIGH     | Fixed  | No in-circuit issuer pubkey binding; revoked issuers still verify  |
 | SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
 | SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
-| SOLID-SEC-008   | HIGH     | In Progress | Nullifier does not include epoch / global root                     |
+| SOLID-SEC-008   | HIGH     | Fixed  | Nullifier does not include epoch / global root                     |
 | SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
 | SOLID-SEC-011   | HIGH     | Fixed  | E2E scripts bugged: zkey name, missing import, missing issuer flow |
@@ -952,6 +952,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-22 | `sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`   | SOLID-SEC-028..030                        | 0          |
 | 2026-04-23 | `sec/audits/2026-04-23_v0.5_phase1_closeout.md`                      | --                                        | SOLID-SEC-001, -002, -003, -005, -009, -011, -020, -027, -028, -029, -030, -031, -032, -033 (14 Phase 1 items) |
 | 2026-04-23 | Phase 2 prelude (code review surfaced new items; in-session fix)     | SOLID-SEC-039, -040, -041, -042           | SOLID-SEC-039, -040, -042 (3 of 4 fixed same commit) |
+| 2026-04-24 | `sec/audits/2026-04-24_v0.6_phase2_closeout.md`                      | --                                        | SOLID-SEC-004, -008, -036 (Phase 2 scope closed) |
 
 ### Note on the 2026-04-22 numbering
 

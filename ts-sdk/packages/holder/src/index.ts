@@ -20,6 +20,7 @@ import {
   initWasm,
   computeNullifier,
   computeIdentityState,
+  computeIssuerLeaf,
   deriveCredentialKey,
   poseidonHashBytes,
   type BJJKeypair,
@@ -58,6 +59,17 @@ export interface StoredCredential {
   expirationTimestamp: number;
   /** SPL Account-Compression tree this credential was issued into. */
   merkleTree: PublicKey;
+  /// ADR-0014: issuer-tree leaf preimage fields.  Fetched by the holder
+  /// from the issuer's on-chain `IssuerAccount`.  The SDK uses these to
+  /// (a) reconstruct the issuer leaf via `computeIssuerLeaf` and
+  /// (b) supply the circuit's new per-credential private inputs
+  /// (`issuerAuthorities`, `issuerStatusEpochs`, `issuerRevocationNonces`).
+  issuerAuthority: PublicKey;
+  issuerStatusEpoch: bigint;
+  issuerRevocationNonce: bigint;
+  /// ADR-0014: leaf index in the issuer tree.  Used by the holder to
+  /// request the correct Merkle path from the adapter.
+  issuerTreeLeafIndex: bigint;
 }
 
 /** Options that every proof-generation entrypoint requires. */
@@ -103,6 +115,15 @@ export async function generateProof(
   options: MerkleProofSource & {
     /** Global-state tree PDA (mirrors schema_registry::global_binding). */
     globalStateTree: PublicKey;
+    /** ADR-0014: SPL AC account backing the singleton issuer tree.  The
+     *  adapter fetches the Merkle path from this tree. */
+    issuerMerkleTree: PublicKey;
+    /** ADR-0014: the issuer-tree root at proof time; must equal the
+     *  on-chain `IssuerTreeBinding.current_root` at submission time,
+     *  otherwise `verify_batch_proof` rejects via
+     *  `IssuerTreeRootMismatch`.  Nullifier Poseidon(6) consumes this
+     *  as its 6th input (SOLID-SEC-008 epoch bind). */
+    issuerTreeRoot: Uint8Array;
   },
 ): Promise<ProofResult> {
   await initWasm();
@@ -114,15 +135,15 @@ export async function generateProof(
   // zeros to share the hash structure with the batch circuit.
   const queryContextHash = computeQueryContextHash(query);
 
-  // Hardened nullifier uses the master key, not the per-schema credential
-  // key. Passing credential.holderPrivateKey (per-schema) here was a bug:
-  // the circuit's nullifier formula is Poseidon(masterKey, ...).
+  // Hardened nullifier: Poseidon(6) post ADR-0014.  `issuerTreeRoot`
+  // is the 6th input; binds the proof to a specific issuer-tree epoch.
   const nullifier = computeNullifier(
     masterPrivateKey,
     query.revocationNonce ?? 0n,
     VERIFIER_ID_BYTES,
     queryContextHash,
     query.verifierNonce,
+    options.issuerTreeRoot,
   );
 
   // Credential inclusion proof in the schema-scoped tree.
@@ -146,6 +167,34 @@ export async function generateProof(
     identityLeaf,
   );
 
+  // ADR-0014: issuer-tree membership proof.  Leaf = Poseidon(5) over
+  // the on-chain IssuerAccount preimage; the adapter fetches the path
+  // for that leaf in the issuer tree.  A stale root here -> circuit
+  // witness fails locally; a fresh root that disagrees with the
+  // on-chain binding -> verify_batch_proof rejects with
+  // IssuerTreeRootMismatch.
+  const issuerLeaf = computeIssuerLeaf(
+    credential.issuerAuthority.toBytes(),
+    credential.issuerPubKeyX,
+    credential.issuerPubKeyY,
+    credential.issuerStatusEpoch,
+    credential.issuerRevocationNonce,
+  );
+  const issuerProof = await lightFetchMerkleProof(
+    options.merkleProofAdapter,
+    options.issuerMerkleTree,
+    issuerLeaf,
+  );
+  if (Buffer.from(issuerProof.root).compare(options.issuerTreeRoot) !== 0) {
+    throw new Error(
+      'Issuer-tree root mismatch: adapter returned a root that differs ' +
+      'from the provided options.issuerTreeRoot.  The indexer may be ' +
+      'behind the on-chain IssuerTreeBinding, or the binding itself is ' +
+      'ahead of the tree -- check update_issuer_tree_root was called ' +
+      'after the most recent append/replace.',
+    );
+  }
+
   const queryFieldIndices = Array(MAX_PREDICATES).fill(0);
   const queryOperators = Array(MAX_PREDICATES).fill(0);
   const queryValues = Array(MAX_PREDICATES).fill('0');
@@ -163,6 +212,8 @@ export async function generateProof(
     schemaHash: bufToDecimal(credential.schemaHash),
     issuerPubKeyAx: bufToDecimal(credential.issuerPubKeyX),
     issuerPubKeyAy: bufToDecimal(credential.issuerPubKeyY),
+    // ADR-0014: new public input -- the singleton issuer-tree root.
+    issuerTreeRoot: bufToDecimal(options.issuerTreeRoot),
     queryFieldIndices,
     queryOperators,
     queryValues,
@@ -171,10 +222,11 @@ export async function generateProof(
     // SOLID-SEC-031: Solana pubkeys must be interpreted as big-endian so
     // that the round-trip through `bigintToBytes32` (which packs BE) lands
     // byte-for-byte equal to `ID.to_bytes()` on-chain -- the exact equality
-    // `verify_batch_proof` requires (see `public_inputs[28] == ID.to_bytes()`).
-    // Field elements (merkle roots, schema hashes, BJJ scalars) stay on
-    // the LE `bufToDecimal` path because that matches the snarkjs /
-    // circomlib convention for field-element serialization.
+    // `verify_batch_proof` requires (see `public_inputs[VERIFIER_ADDRESS_
+    // INPUT_INDEX] == ID.to_bytes()`).  Field elements (merkle roots,
+    // schema hashes, BJJ scalars) stay on the LE `bufToDecimal` path
+    // because that matches the snarkjs / circomlib convention for
+    // field-element serialization.
     verifierAddress: bufToDecimalBE(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
@@ -193,6 +245,13 @@ export async function generateProof(
     merkleSiblings: merkleProof.siblings,
     merklePathIndices: merkleProof.pathIndices,
     expirationTimestamp: credential.expirationTimestamp,
+
+    // ADR-0014: issuer-tree membership private inputs.
+    issuerAuthority: bufToDecimal(credential.issuerAuthority.toBytes()),
+    issuerStatusEpoch: credential.issuerStatusEpoch.toString(),
+    issuerRevocationNonce: credential.issuerRevocationNonce.toString(),
+    issuerSiblings: issuerProof.siblings,
+    issuerPathIndices: issuerProof.pathIndices,
   };
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
@@ -232,6 +291,13 @@ export async function generateBatchProof(
   options: MerkleProofSource & {
     /** Address of the global-state tree (mirrored in `schema_registry::global_binding`). */
     globalStateTree: PublicKey;
+    /** ADR-0014: SPL AC account backing the singleton issuer tree. */
+    issuerMerkleTree: PublicKey;
+    /** ADR-0014: the singleton issuer-tree root the caller claims is
+     *  current.  Cross-checked against the adapter's per-leaf root on
+     *  each credential; the on-chain verifier additionally cross-checks
+     *  it against `IssuerTreeBinding.current_root` at submission. */
+    issuerTreeRoot: Uint8Array;
   },
 ): Promise<BatchProofResult> {
   await initWasm();
@@ -338,12 +404,67 @@ export async function generateBatchProof(
     }
   }
 
+  // 5b. ADR-0014: per-credential issuer-tree inclusion proofs.  The
+  // issuer tree is a singleton; every credential's issuer-leaf proof
+  // traces back to the same root, so we cross-check in a batch.  The
+  // leaf preimage is Poseidon(5) over IssuerAccount fields, matching
+  // `compute_issuer_leaf_bytes` on-chain.
+  //
+  // For padding slots (inactive credentials), the circuit skips the
+  // inclusion check via `enabled = 0` (SOLID-SEC-029), but we still
+  // need PATH-SHAPED garbage to hand snarkjs; any zero-filled path
+  // works because the MerkleInclusion template short-circuits.
+  const ISSUER_TREE_DEPTH = 16; // matches batch_credential_query.circom's
+                                 // main-component param
+  const zeroSiblings = Array.from({ length: ISSUER_TREE_DEPTH }, () => '0');
+  const zeroPathIndices = Array.from({ length: ISSUER_TREE_DEPTH }, () => 0);
+
+  const issuerProofs = await Promise.all(
+    sortedCredentials.map(async (c) => {
+      // Padding slot?  schemaHash == 0 is the circuit's active-flag
+      // sentinel; return a placeholder proof shape that the circuit
+      // will ignore.
+      const isPadding = Buffer.from(c.schemaHash).every((b) => b === 0);
+      if (isPadding) {
+        return {
+          leaf: new Uint8Array(32),
+          siblings: zeroSiblings,
+          pathIndices: zeroPathIndices,
+          root: options.issuerTreeRoot,
+        };
+      }
+      const leaf = computeIssuerLeaf(
+        c.issuerAuthority.toBytes(),
+        c.issuerPubKeyX,
+        c.issuerPubKeyY,
+        c.issuerStatusEpoch,
+        c.issuerRevocationNonce,
+      );
+      const proof = await lightFetchMerkleProof(
+        options.merkleProofAdapter,
+        options.issuerMerkleTree,
+        leaf,
+      );
+      if (Buffer.from(proof.root).compare(options.issuerTreeRoot) !== 0) {
+        throw new Error(
+          'Issuer-tree root mismatch: adapter returned a root that ' +
+          'differs from options.issuerTreeRoot for one of the active ' +
+          "credentials (schemaHash = 0x" +
+          Buffer.from(c.schemaHash).toString('hex').slice(0, 16) + '...).',
+        );
+      }
+      return { leaf, siblings: proof.siblings, pathIndices: proof.pathIndices, root: proof.root };
+    }),
+  );
+
   // 6. Build Batch Circuit Input.
   const circuitInput: any = {
     // Public Inputs
     globalRoot: bufToDecimal(canonicalGlobalRoot),
     merkleRoots: credentialProofs.map((p: any) => bufToDecimal(p.root)),
     schemaHashes: sortedCredentials.map(c => bufToDecimal(c.schemaHash)),
+    // ADR-0014: new public input at index [10].
+    issuerTreeRoot: bufToDecimal(options.issuerTreeRoot),
 
     queryCredentialIndices: Array(MAX_PREDICATES).fill(0),
     queryFieldIndices: Array(MAX_PREDICATES).fill(0),
@@ -355,10 +476,11 @@ export async function generateBatchProof(
     // SOLID-SEC-031: Solana pubkeys must be interpreted as big-endian so
     // that the round-trip through `bigintToBytes32` (which packs BE) lands
     // byte-for-byte equal to `ID.to_bytes()` on-chain -- the exact equality
-    // `verify_batch_proof` requires (see `public_inputs[28] == ID.to_bytes()`).
-    // Field elements (merkle roots, schema hashes, BJJ scalars) stay on
-    // the LE `bufToDecimal` path because that matches the snarkjs /
-    // circomlib convention for field-element serialization.
+    // `verify_batch_proof` requires (see `public_inputs[VERIFIER_ADDRESS_
+    // INPUT_INDEX] == ID.to_bytes()`).  Field elements (merkle roots,
+    // schema hashes, BJJ scalars) stay on the LE `bufToDecimal` path
+    // because that matches the snarkjs / circomlib convention for
+    // field-element serialization.
     verifierAddress: bufToDecimalBE(VERIFIER_ID_BYTES),
     verifierNonce: bufToDecimal(query.verifierNonce),
     currentTimestamp: Math.floor(Date.now() / 1000),
@@ -380,6 +502,27 @@ export async function generateBatchProof(
     merkleSiblings: credentialProofs.map((p: any) => p.siblings),
     merklePathIndices: credentialProofs.map((p: any) => p.pathIndices),
     expirationTimestamps: sortedCredentials.map(c => c.expirationTimestamp),
+
+    // ADR-0014: issuer-tree membership private inputs.  Zero for
+    // padding slots; the circuit's `anchors[i].enabled = 1 -
+    // isZero[i].out` gates the Merkle check off for those.
+    issuerAuthorities: sortedCredentials.map(c =>
+      Buffer.from(c.schemaHash).every(b => b === 0)
+        ? '0'
+        : bufToDecimal(c.issuerAuthority.toBytes()),
+    ),
+    issuerStatusEpochs: sortedCredentials.map(c =>
+      Buffer.from(c.schemaHash).every(b => b === 0)
+        ? '0'
+        : c.issuerStatusEpoch.toString(),
+    ),
+    issuerRevocationNonces: sortedCredentials.map(c =>
+      Buffer.from(c.schemaHash).every(b => b === 0)
+        ? '0'
+        : c.issuerRevocationNonce.toString(),
+    ),
+    issuerSiblings: issuerProofs.map(p => p.siblings),
+    issuerPathIndices: issuerProofs.map(p => p.pathIndices),
   };
 
   // 5. Map predicates to circuit arrays & REMAP indices

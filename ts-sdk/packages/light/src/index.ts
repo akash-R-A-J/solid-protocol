@@ -140,6 +140,26 @@ export function deriveGlobalBinding(): { pda: PublicKey; bump: number } {
   return { pda, bump };
 }
 
+/** `(b"issuer-tree-binding")` under `issuer-registry`.  ADR-0014. */
+export function deriveIssuerTreeBinding(): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [Buffer.from('issuer-tree-binding')],
+    ISSUER_REGISTRY_PROGRAM_ID,
+  );
+  return { pda, bump };
+}
+
+/** `(b"issuer-tree-authority")` under `issuer-registry`.
+ *  Signs SPL AC `append` / `replace_leaf` CPIs on behalf of the
+ *  issuer-tree; singleton, no parameter.  ADR-0014. */
+export function deriveIssuerTreeAuthority(): { pda: PublicKey; bump: number } {
+  const [pda, bump] = PublicKey.findProgramAddressSync(
+    [Buffer.from('issuer-tree-authority')],
+    ISSUER_REGISTRY_PROGRAM_ID,
+  );
+  return { pda, bump };
+}
+
 // ─── Tree creation ─────────────────────────────────────────────────────────
 
 export interface TreeParams {
