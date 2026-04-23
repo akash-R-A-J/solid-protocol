@@ -54,14 +54,22 @@ async function main() {
   }
   console.log('✔ commitment matches Rust reference');
 
-  // Nullifier
+  // Nullifier (6-input post ADR-0014)
   const n = vectors.nullifier;
+  if (typeof n.issuer_tree_root_hex !== 'string') {
+    console.error(
+      'nullifier vector missing issuer_tree_root_hex; regenerate via ' +
+      '`cargo run -p solid-core --example gen_vectors -- tests/vectors/commitment_and_nullifier.json`',
+    );
+    process.exit(1);
+  }
   const nullifierTs = computeNullifier(
     hexToBytes(n.master_key_hex),
     BigInt(n.rev_nonce),
     hexToBytes(n.verifier_addr_hex),
     hexToBytes(n.query_hash_hex),
     hexToBytes(n.verifier_nonce_hex),
+    hexToBytes(n.issuer_tree_root_hex),
   );
   const nullifierHexTs = bytesToHex(nullifierTs);
   if (nullifierHexTs !== n.expected_nullifier_hex) {

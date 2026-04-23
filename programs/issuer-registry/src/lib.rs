@@ -166,6 +166,13 @@ pub mod issuer_registry {
         issuer.voting_ends_at = Clock::get()?.unix_timestamp + registry.voting_period_seconds;
         issuer.credentials_issued = 0;
         issuer.slash_count = 0;
+        // ADR-0014: both counters start at zero.  `status_epoch` bumps
+        // to the finalisation slot at first approval (finalize_voting
+        // or approve_via_trust_anchor); `revocation_nonce` bumps only
+        // on revoke_issuer / slash_issuer / submit_fraud_proof and on
+        // re-approval of a previously-revoked issuer.
+        issuer.revocation_nonce = 0;
+        issuer.status_epoch = 0;
 
         let config = &mut ctx.accounts.registry_config;
         config.total_issuers += 1;
@@ -1385,6 +1392,19 @@ pub struct IssuerAccount {
     pub voting_ends_at: i64,
     pub credentials_issued: u64,
     pub slash_count: u64,
+    /// ADR-0014: monotonic counter, bumped on every revoke / re-approve.
+    /// Feeds the issuer-tree leaf's 5th Poseidon input.  Starts at 0 on
+    /// `register_issuer`.  Strictly monotone -- re-approval of a
+    /// previously-revoked issuer MUST bump again so their post-re-approval
+    /// leaf is distinct from the pre-revocation leaf; otherwise the
+    /// in-circuit nullifier universe wouldn't rotate and SEC-008 would
+    /// re-open.
+    pub revocation_nonce: u64,
+    /// ADR-0014: slot at which the issuer was last flipped to
+    /// `IssuerStatus::Approved`.  Feeds the leaf's 4th Poseidon input so
+    /// status transitions (Approved -> Cooldown -> Revoked -> re-Approved)
+    /// each change the leaf regardless of whether `revocation_nonce` bumps.
+    pub status_epoch: u64,
 }
 
 impl IssuerAccount {
@@ -1393,10 +1413,10 @@ impl IssuerAccount {
     /// + (4 + 128) metadata_uri (len-prefixed String, capped by MetadataTooLong)
     /// + 32 bjj_x + 32 bjj_y
     /// + 1 tier + 1 status
-    /// + 8 × 9 numeric fields (staked_amount, registered_at, creation_slot,
+    /// + 8 * 11 numeric fields (staked_amount, registered_at, creation_slot,
     ///    cooldown_ends_at, votes_for, votes_against, voting_ends_at,
-    ///    credentials_issued, slash_count)
-    pub const SPACE: usize = 32 + (4 + 64) + (4 + 128) + 32 + 32 + 1 + 1 + 8 * 9;
+    ///    credentials_issued, slash_count, revocation_nonce, status_epoch)
+    pub const SPACE: usize = 32 + (4 + 64) + (4 + 128) + 32 + 32 + 1 + 1 + 8 * 11;
 }
 
 #[account]

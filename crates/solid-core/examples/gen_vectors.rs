@@ -40,11 +40,14 @@ struct NullifierVector {
     verifier_addr_hex: String,
     query_hash_hex: String,
     verifier_nonce_hex: String,
+    /// ADR-0014 / SOLID-SEC-008: 6th nullifier input binding the proof
+    /// to an issuer-tree epoch.
+    issuer_tree_root_hex: String,
     expected_nullifier_hex: String,
 }
 
 fn main() -> anyhow::Result<()> {
-    // Fixed, reproducible inputs — matching `docs/test_vectors.md`.
+    // Fixed, reproducible inputs -- matching `docs/test_vectors.md`.
     let data_fields = vec![21u64, 840, 1, 0, 0, 0, 0, 0]; // age=21, country=US
     let schema_hash = poseidon::hash_fields_to_bytes(&[1u64, 2, 3])?;
     let holder_x = [7u8; 32];
@@ -59,7 +62,15 @@ fn main() -> anyhow::Result<()> {
     let verifier_addr = [0x22u8; 32];
     let query_hash = [0x33u8; 32];
     let verifier_nonce = [0x44u8; 32];
-    let nullifier = compute_nullifier(&master_key, rev_nonce, &verifier_addr, &query_hash, &verifier_nonce)?;
+    let issuer_tree_root = [0x55u8; 32];
+    let nullifier = compute_nullifier(
+        &master_key,
+        rev_nonce,
+        &verifier_addr,
+        &query_hash,
+        &verifier_nonce,
+        &issuer_tree_root,
+    )?;
 
     let vectors = Vectors {
         description: "SolID cross-language test vectors. Any SDK must reproduce these bytes.",
@@ -77,6 +88,7 @@ fn main() -> anyhow::Result<()> {
             verifier_addr_hex: hex::encode(verifier_addr),
             query_hash_hex: hex::encode(query_hash),
             verifier_nonce_hex: hex::encode(verifier_nonce),
+            issuer_tree_root_hex: hex::encode(issuer_tree_root),
             expected_nullifier_hex: hex::encode(nullifier),
         },
     };

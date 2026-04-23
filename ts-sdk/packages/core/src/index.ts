@@ -145,11 +145,21 @@ export function computeCommitment(
 }
 
 /**
- * Compute the hardened nullifier:
- *   `nullifier = Poseidon(masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)`
+ * Compute the hardened 6-input nullifier (ADR-0006 Phase 2 revision):
+ *
+ *   nullifier = Poseidon(
+ *     masterKey,
+ *     revocationNonce,
+ *     verifierAddress,
+ *     queryContextHash,
+ *     verifierNonce,
+ *     issuerTreeRoot,         // ADR-0014 / SOLID-SEC-008 epoch bind
+ *   )
  *
  * Produces bytes bit-compatible with `solid_core::nullifier::compute_nullifier`
- * and the Circom `batch_credential_query.circom` Step 5.
+ * and the Circom `batch_credential_query.circom` STEP 5.  A callsite using
+ * the old 5-argument signature fails to compile -- intentional, since the
+ * 5-input value no longer matches the on-chain verifier.
  */
 export function computeNullifier(
   masterKey: Uint8Array,
@@ -157,10 +167,12 @@ export function computeNullifier(
   verifierAddress: Uint8Array,
   queryContextHash: Uint8Array,
   verifierNonce: Uint8Array,
+  issuerTreeRoot: Uint8Array,
 ): Uint8Array {
   ensureInit();
   return new Uint8Array(wasmModule.computeHardenedNullifier(
-    masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce,
+    masterKey, revocationNonce, verifierAddress,
+    queryContextHash, verifierNonce, issuerTreeRoot,
   ));
 }
 

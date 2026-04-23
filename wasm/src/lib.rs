@@ -172,9 +172,14 @@ pub fn compute_commitment(
     Ok(commitment.to_vec())
 }
 
-/// Compute the hardened (5-way) nullifier hash.
+/// Compute the hardened (6-input) nullifier hash.
 ///
-/// `nullifier = Poseidon(masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)`
+/// `nullifier = Poseidon(masterKey, revocationNonce, verifierAddress,`
+/// `                     queryContextHash, verifierNonce, issuerTreeRoot)`
+///
+/// ADR-0014 / SOLID-SEC-008: the 6th input binds every proof to a
+/// specific issuer-tree epoch.  See `crates/solid-core/src/nullifier.rs`
+/// for the full rationale.
 #[wasm_bindgen(js_name = "computeHardenedNullifier")]
 pub fn compute_hardened_nullifier(
     master_key: &[u8],
@@ -182,6 +187,7 @@ pub fn compute_hardened_nullifier(
     verifier_address: &[u8],
     query_context_hash: &[u8],
     verifier_nonce: &[u8],
+    issuer_tree_root: &[u8],
 ) -> Result<Vec<u8>, JsError> {
     let null = solid_core::nullifier::compute_nullifier(
         &to_arr32(master_key)?,
@@ -189,6 +195,7 @@ pub fn compute_hardened_nullifier(
         &to_arr32(verifier_address)?,
         &to_arr32(query_context_hash)?,
         &to_arr32(verifier_nonce)?,
+        &to_arr32(issuer_tree_root)?,
     )
     .map_err(|e| JsError::new(&format!("{}", e)))?;
     Ok(null.to_vec())
