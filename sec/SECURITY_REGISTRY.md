@@ -28,11 +28,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
-| HIGH      | 6    | 0           | 6     | 0        | 0         | 12    |
+| HIGH      | 4    | 2           | 6     | 0        | 0         | 12    |
 | MEDIUM    | 9    | 0           | 4     | 0        | 0         | 13    |
-| LOW       | 6    | 0           | 2     | 0        | 0         | 8     |
+| LOW       | 5    | 0           | 3     | 0        | 0         | 8     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 25   | 0           | 17    | 0        | 0         | 42    |
+| **Total** | 22   | 2           | 18    | 0        | 0         | 42    |
 
 ---
 
@@ -43,11 +43,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-001   | CRITICAL | Fixed  | Batch circuit: `queryCredentialIndices` / `queryFieldIndices` unconstrained |
 | SOLID-SEC-002   | CRITICAL | Fixed  | `register_schema` Poseidon integrity check commented out           |
 | SOLID-SEC-003   | CRITICAL | Fixed  | `issue_credential` missing schema + tree pubkey binding            |
-| SOLID-SEC-004   | HIGH     | Open   | No in-circuit issuer pubkey binding; revoked issuers still verify  |
+| SOLID-SEC-004   | HIGH     | In Progress | No in-circuit issuer pubkey binding; revoked issuers still verify  |
 | SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
 | SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
-| SOLID-SEC-008   | HIGH     | Open   | Nullifier does not include epoch / global root                     |
+| SOLID-SEC-008   | HIGH     | In Progress | Nullifier does not include epoch / global root                     |
 | SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
 | SOLID-SEC-011   | HIGH     | Fixed  | E2E scripts bugged: zkey name, missing import, missing issuer flow |
@@ -75,7 +75,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-033   | HIGH     | Fixed  | Identity cohesion check compares master pubkey; circuit uses per-schema derived (E2E blocker) |
 | SOLID-SEC-034   | MEDIUM   | Open   | `SubmitFraudProof` / `SlashIssuer` contexts missing PDA seed constraint on `issuer_account` |
 | SOLID-SEC-035   | LOW      | Open   | `set_binding_status` can unfreeze without timelock                 |
-| SOLID-SEC-036   | LOW      | Open   | `nullifier.rs` module docstring describes stale 3-arg formula (impl is correct 5-arg) |
+| SOLID-SEC-036   | LOW      | Fixed  | `nullifier.rs` module docstring describes stale 3-arg formula (impl is correct 5-arg) |
 | SOLID-SEC-037   | INFO     | Open   | `WithdrawAfterCooldown` missing explicit authority constraint (seeds provide partial protection) |
 | SOLID-SEC-038   | INFO     | Open   | Master-audit informational cluster: `i16` borrow signedness, reader/writer size asymmetry, `GreaterThan(8)` bound comment |
 | SOLID-SEC-039   | LOW      | Fixed  | `scripts/bootstrap_issuer.ts` test-only DAO parameters deployable to mainnet by mistake |

@@ -7,16 +7,20 @@ include "lib/identity_anchor.circom";
 include "lib/credential_atom.circom";
 include "lib/predicate_evaluator.circom";
 include "lib/nullifier_expiry.circom";
+include "lib/merkle_inclusion.circom";   // ADR-0014 issuer-tree inclusion
 
 /// ═══════════════════════════════════════════════════════════════════════════
-/// SolID Compound Query Circuit (Hardened Phase 3.5)
+/// SolID Compound Query Circuit (Hardened Phase 3.5 + ADR-0014 revision)
 /// ═══════════════════════════════════════════════════════════════════════════
 ///
 /// Proves: "I hold a valid credential matching a compound query."
 ///
-/// Standardized on the 5-way Hardened Nullifier and Query Context Binding.
+/// Kept in lock-step with `batch_credential_query.circom` for the
+/// ADR-0014 revision: the nullifier is 6-Poseidon and the issuer-tree
+/// inclusion proof is mandatory.  Single-credential variant; the
+/// BATCH variant is the one `scripts/prove.ts` exercises.
 ///
-template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
+template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH, NUM_FIELDS, MAX_PREDICATES) {
 
     // --- Public Inputs ------------------------------------------------
     signal input globalRoot;
@@ -24,6 +28,7 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
     signal input schemaHash;
     signal input issuerPubKeyAx;
     signal input issuerPubKeyAy;
+    signal input issuerTreeRoot;              // ADR-0014 / SEC-004 / SEC-008
     signal input queryFieldIndices[MAX_PREDICATES];
     signal input queryOperators[MAX_PREDICATES];
     signal input queryValues[MAX_PREDICATES];
@@ -48,6 +53,13 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
     signal input merklePathIndices[TREE_DEPTH];
     signal input expirationTimestamp;
     signal input holderBJJPrivKey;
+
+    // ADR-0014 issuer-tree leaf components + membership proof.
+    signal input issuerAuthority;
+    signal input issuerStatusEpoch;
+    signal input issuerRevocationNonce;
+    signal input issuerSiblings[ISSUER_TREE_DEPTH];
+    signal input issuerPathIndices[ISSUER_TREE_DEPTH];
 
     // --- Public Output ------------------------------------------------
     signal output nullifierHash;
@@ -104,6 +116,29 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
     holderKeyDerivation.in <== holderBJJPrivKey;
     holderKeyDerivation.Ax === anchor.credentialPubKeyAx;
     holderKeyDerivation.Ay === anchor.credentialPubKeyAy;
+
+    // ═════════════════════════════════════════════════════════════════
+    // STEP 0.75: Issuer-tree Membership (ADR-0014; SEC-004)
+    //   leaf = Poseidon(issuerAuthority, issuerPubKeyAx, issuerPubKeyAy,
+    //                   issuerStatusEpoch, issuerRevocationNonce)
+    //   Single-credential circuit, so enabled is always 1; the main
+    //   guard is `schemaIsZero.out === 0` above.
+    // ═════════════════════════════════════════════════════════════════
+    component issuerLeafHasher = Poseidon(5);
+    issuerLeafHasher.inputs[0] <== issuerAuthority;
+    issuerLeafHasher.inputs[1] <== issuerPubKeyAx;
+    issuerLeafHasher.inputs[2] <== issuerPubKeyAy;
+    issuerLeafHasher.inputs[3] <== issuerStatusEpoch;
+    issuerLeafHasher.inputs[4] <== issuerRevocationNonce;
+
+    component issuerInclusion = MerkleInclusion(ISSUER_TREE_DEPTH);
+    issuerInclusion.enabled <== 1;
+    issuerInclusion.leaf    <== issuerLeafHasher.out;
+    issuerInclusion.root    <== issuerTreeRoot;
+    for (var i = 0; i < ISSUER_TREE_DEPTH; i++) {
+        issuerInclusion.siblings[i]    <== issuerSiblings[i];
+        issuerInclusion.pathIndices[i] <== issuerPathIndices[i];
+    }
 
     // ═════════════════════════════════════════════════════════════════
     // STEP 1: Credential Verification (Phase 3.1)
@@ -205,15 +240,19 @@ template CompoundQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, MAX_PREDICATE
     signal queryContextHash <== qHasherFinal.out;
 
     // ═════════════════════════════════════════════════════════════════
-    // STEP 5: Hardened Nullifier (Anti-Replay & Identity Rotation)
-    //   nullifier = Poseidon(masterKey, revocationNonce, verifierAddress, queryContextHash, verifierNonce)
+    // STEP 5: Hardened Nullifier (ADR-0006 + ADR-0014 revision)
+    //   nullifier = Poseidon6(masterKey, revocationNonce, verifierAddress,
+    //                         queryContextHash, verifierNonce, issuerTreeRoot)
+    //   `issuerTreeRoot` addition binds every proof to a specific
+    //   issuer-tree epoch (SOLID-SEC-008 epoch replay protection).
     // ═════════════════════════════════════════════════════════════════
-    component nullifier = Poseidon(5);
+    component nullifier = Poseidon(6);
     nullifier.inputs[0] <== masterIdentityKey;
     nullifier.inputs[1] <== revocationNonce;
     nullifier.inputs[2] <== verifierAddress;
     nullifier.inputs[3] <== queryContextHash;
     nullifier.inputs[4] <== verifierNonce;
+    nullifier.inputs[5] <== issuerTreeRoot;
     nullifierHash <== nullifier.out;
 }
 
@@ -224,6 +263,7 @@ component main {public [
     schemaHash,
     issuerPubKeyAx,
     issuerPubKeyAy,
+    issuerTreeRoot,
     queryFieldIndices,
     queryOperators,
     queryValues,
@@ -232,4 +272,4 @@ component main {public [
     verifierAddress,
     verifierNonce,
     currentTimestamp
-]} = CompoundQuerySolana(20, 20, 8, 4);
+]} = CompoundQuerySolana(20, 20, 16, 8, 4);

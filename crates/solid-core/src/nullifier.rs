@@ -1,11 +1,28 @@
 //! Nullifier computation for anti-replay and unlinkability.
 //!
-//! `nullifier = Poseidon(holderPrivateKey, schemaHash, verifierNonce)`
+//! The authoritative preimage is documented in ADR-0006.  The formula
+//! evolved as:
 //!
-//! Properties:
-//! - Same holder + same schema + same verifier nonce → same nullifier (detect double-use)
-//! - Different verifier nonce → different nullifier (unlinkable across verifiers)
-//! - Private key is never revealed — only the hash output is public
+//!   v0.x (3-input, historical):
+//!     Poseidon(holderPrivateKey, schemaHash, verifierNonce)
+//!
+//!   Phase 3.5 (5-input; currently implemented in `compute_nullifier`):
+//!     Poseidon(masterKey, revocationNonce, verifierAddress,
+//!              queryContextHash, verifierNonce)
+//!
+//!   ADR-0014 / Phase 2 impl 3 (6-input; target):
+//!     Poseidon(masterKey, revocationNonce, verifierAddress,
+//!              queryContextHash, verifierNonce, issuerTreeRoot)
+//!
+//! The circuit (`batch_credential_query.circom`) and the on-chain
+//! verifier are already on the 6-input form as of the ADR-0014
+//! circuit rev.  This host-side helper migrates together with the
+//! holder SDK + cross-language vectors in the Phase 2 impl 3 commit;
+//! until then, `compute_nullifier` below is the 5-input Phase 3.5
+//! form used for off-chain vector sanity-checks ONLY -- do NOT
+//! treat it as a mirror of what the circuit currently emits.
+//!
+//! Closes SOLID-SEC-036 on the docstring axis.
 
 use crate::error::Result;
 use crate::poseidon;

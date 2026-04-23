@@ -28,14 +28,26 @@ soundness or availability:
   - schema_registry: DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
 - Rust and TypeScript primitives must agree byte-for-byte. The
   cross_language_vectors CI job hard-gates this via tests/vectors/.
-- The on-chain verifier must owner-check global_tree and schema_tree_N
-  against schema_registry's program ID. Removing the owner check re-opens
-  the forged-trust-root attack.
-- VerifierConfig layout includes next_vk_chunk (2 bytes). Any change to
+- The on-chain verifier must owner-check global_tree, schema_tree_N,
+  AND issuer_tree_binding. global_tree + schema_tree_N are checked
+  against schema_registry's program ID; issuer_tree_binding is
+  checked against issuer_registry's program ID (ADR-0014). Removing
+  any of these owner-checks re-opens the forged-trust-root attack.
+- VerifierConfig layout includes next_vk_chunk (2 bytes) and
+  timestamp_skew_seconds (4 bytes) -- SPACE = 49. Any change to
   VerifierConfig requires bumping the constant VerifierConfig::SPACE.
-- circuits/batch_credential_query.circom has NR_PUBLIC_INPUTS = 31 with a
-  fixed index scheme. zk-verifier's verify_batch_proof depends on this
-  exact ordering. See docs/circuits.md for the layout.
+- circuits/batch_credential_query.circom has NR_PUBLIC_INPUTS = 32
+  post ADR-0014 (was 31 pre-2026-04-24) with a fixed index scheme:
+  issuerTreeRoot is at [10]; the later slots (queryCredentialIndices
+  onward) shifted +1. zk-verifier's verify_batch_proof depends on
+  this exact ordering; the constants ISSUER_TREE_ROOT_INPUT_INDEX,
+  VERIFIER_ADDRESS_INPUT_INDEX, and CURRENT_TIMESTAMP_INPUT_INDEX
+  in programs/zk-verifier/src/lib.rs are the handler's single
+  source of truth for the shifted slots. See ADR-0012 for the
+  full layout.
+- Nullifier preimage is 6-input Poseidon (ADR-0006 revision): adds
+  issuerTreeRoot so revoking any issuer invalidates every
+  pre-revocation proof's nullifier universe (SOLID-SEC-008).
 
 ## Build sequence
 

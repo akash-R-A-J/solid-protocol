@@ -7,6 +7,7 @@ include "lib/identity_anchor.circom";
 include "lib/credential_atom.circom";
 include "lib/predicate_evaluator.circom";
 include "lib/nullifier_expiry.circom";
+include "lib/merkle_inclusion.circom";   // ADR-0014 issuer-tree inclusion
 
 /// ============================================================================
 /// BatchCredentialQuerySolana (Phase 3.6)
@@ -16,27 +17,29 @@ include "lib/nullifier_expiry.circom";
 /// compound query" without revealing identity, attribute values, or which
 /// credentials were inspected.
 ///
-/// Public inputs (NR_PUBLIC_INPUTS = 31 total; index in brackets):
+/// Public inputs (NR_PUBLIC_INPUTS = 32 total post ADR-0014; index in brackets):
 ///   [0]      nullifierHash (circuit output)
 ///   [1]      globalRoot
 ///   [2..5]   merkleRoots[NUM_CREDS]
 ///   [6..9]   schemaHashes[NUM_CREDS]
-///   [10..13] queryCredentialIndices[MAX_PREDICATES]
-///   [14..17] queryFieldIndices[MAX_PREDICATES]
-///   [18..21] queryOperators[MAX_PREDICATES]
-///   [22..25] queryValues[MAX_PREDICATES]
-///   [26]     numPredicates
-///   [27]     compoundLogic (0=AND, 1=OR)
-///   [28]     verifierAddress
-///   [29]     verifierNonce
-///   [30]     currentTimestamp
+///   [10]     issuerTreeRoot            (ADR-0014; SEC-004 / SEC-008)
+///   [11..14] queryCredentialIndices[MAX_PREDICATES]
+///   [15..18] queryFieldIndices[MAX_PREDICATES]
+///   [19..22] queryOperators[MAX_PREDICATES]
+///   [23..26] queryValues[MAX_PREDICATES]
+///   [27]     numPredicates
+///   [28]     compoundLogic (0=AND, 1=OR)
+///   [29]     verifierAddress
+///   [30]     verifierNonce
+///   [31]     currentTimestamp
 ///
 /// Parameters:
-///   TREE_DEPTH     Depth of each per-schema SPL AC credential tree (default 20)
-///   GLOBAL_DEPTH   Depth of the identity tree (default 20, may diverge)
-///   NUM_FIELDS     Attributes per credential (default 8)
-///   NUM_CREDS      Credentials per batch (default 4)
-///   MAX_PREDICATES Query predicates per proof (default 4)
+///   TREE_DEPTH         Depth of each per-schema SPL AC credential tree (default 20)
+///   GLOBAL_DEPTH       Depth of the identity tree (default 20, may diverge)
+///   ISSUER_TREE_DEPTH  Depth of the singleton issuer tree (default 16 per ADR-0014)
+///   NUM_FIELDS         Attributes per credential (default 8)
+///   NUM_CREDS          Credentials per batch (default 4)
+///   MAX_PREDICATES     Query predicates per proof (default 4)
 ///
 /// Hardening added in Phase 3.6 (relative to the 3.1 baseline):
 ///   1. GLOBAL_DEPTH is parameterised instead of hardcoded 20.
@@ -45,12 +48,25 @@ include "lib/nullifier_expiry.circom";
 ///   4. Expiration is enforced per active credential against currentTimestamp
 ///      (previously the public input was declared but never constrained,
 ///      meaning expired credentials passed the batch verifier silently).
-template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CREDS, MAX_PREDICATES) {
+///
+/// Hardening added in Phase 2 revision (ADR-0014; SEC-004 + SEC-008):
+///   5. Every active credential must prove Merkle membership of an
+///      *Approved* issuer leaf in `issuerTreeRoot`. The leaf binds the
+///      BJJ signing key (issuerPubKeyAx/Ay), the Solana authority, and
+///      a monotonic revocation_nonce together.  Revoking an issuer bumps
+///      their leaf's revocation_nonce -> tree root changes -> every
+///      pre-revocation proof's membership check fails AND the embedded
+///      nullifier universe shifts (below).
+///   6. Nullifier preimage extended to 6 Poseidon inputs with
+///      `issuerTreeRoot` appended, binding every proof to a specific
+///      issuer-tree epoch (SEC-008 epoch replay protection).
+template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH, NUM_FIELDS, NUM_CREDS, MAX_PREDICATES) {
 
     // --- Public Inputs ------------------------------------------------------
     signal input globalRoot;
     signal input merkleRoots[NUM_CREDS];
     signal input schemaHashes[NUM_CREDS];
+    signal input issuerTreeRoot;                   // ADR-0014 / SEC-004 / SEC-008
 
     // Query specification
     signal input queryCredentialIndices[MAX_PREDICATES];
@@ -83,6 +99,23 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
     signal input merkleSiblings[NUM_CREDS][TREE_DEPTH];
     signal input merklePathIndices[NUM_CREDS][TREE_DEPTH];
     signal input expirationTimestamps[NUM_CREDS];
+
+    // Per-credential issuer-tree membership (ADR-0014).
+    //   `issuerAuthority` is the Solana authority Pubkey of the issuer,
+    //   encoded as a big-endian field element (SEC-031).
+    //   `issuerStatusEpoch` is the slot at which the issuer was flipped
+    //   to Approved; changes on every status transition.
+    //   `issuerRevocationNonce` is a monotonic counter bumped on every
+    //   revoke_issuer / re-approval (distinct from `revocationNonce`
+    //   above, which is the *holder*'s nonce).
+    //   Leaf =
+    //     Poseidon5(issuerAuthority, issuerPubKeyAx, issuerPubKeyAy,
+    //               issuerStatusEpoch, issuerRevocationNonce).
+    signal input issuerAuthorities[NUM_CREDS];
+    signal input issuerStatusEpochs[NUM_CREDS];
+    signal input issuerRevocationNonces[NUM_CREDS];
+    signal input issuerSiblings[NUM_CREDS][ISSUER_TREE_DEPTH];
+    signal input issuerPathIndices[NUM_CREDS][ISSUER_TREE_DEPTH];
 
     // --- Public Output ------------------------------------------------------
     signal output nullifierHash;
@@ -150,6 +183,16 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
         isZero[i].out * issuerSigR8ys[i] === 0;
         isZero[i].out * issuerSigSs[i] === 0;
         isZero[i].out * expirationTimestamps[i] === 0;
+
+        // ADR-0014: zero-constrain the new per-credential issuer fields
+        // for padding slots.  Without these, a prover could smuggle
+        // arbitrary authority / epoch / nonce values into inactive
+        // slots.  Merkle-inclusion for padding slots is skipped below
+        // via the `enabled` flag; these integrity constraints prevent
+        // any non-inclusion side-channel.
+        isZero[i].out * issuerAuthorities[i] === 0;
+        isZero[i].out * issuerStatusEpochs[i] === 0;
+        isZero[i].out * issuerRevocationNonces[i] === 0;
     }
 
     for (var i = 0; i < NUM_CREDS - 1; i++) {
@@ -185,6 +228,53 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
         for (var j = 0; j < GLOBAL_DEPTH; j++) {
             anchors[i].globalSiblings[j] <== globalSiblings[i][j];
             anchors[i].globalPathIndices[j] <== globalPathIndices[i][j];
+        }
+    }
+
+    // ========================================================================
+    // STEP 0.75: Issuer-tree Membership (ADR-0014; SEC-004)
+    //
+    //   For every ACTIVE slot, prove that an issuer leaf exists in the
+    //   singleton issuer tree whose root is the public input
+    //   `issuerTreeRoot`.  The leaf binds, in Poseidon(5) form:
+    //     issuer_leaf = Poseidon(
+    //         issuerAuthority,       // Solana authority pubkey (BE field)
+    //         issuerPubKeyAx,        // BJJ x-coord (already in-circuit)
+    //         issuerPubKeyAy,        // BJJ y-coord (already in-circuit)
+    //         issuerStatusEpoch,     // monotonic; bumps on status txn
+    //         issuerRevocationNonce, // monotonic; bumps on revoke/re-approve
+    //     )
+    //
+    //   The BJJ key in the leaf is the LOAD-BEARING bit (see ADR-0014
+    //   "leaf composition"): without it, a prover could supply an
+    //   approved authority + an attacker-chosen BJJ key pair, and the
+    //   signature-verify in the credential atom would succeed against
+    //   that forged BJJ key.  Embedding (Ax, Ay) in the leaf ties the
+    //   on-chain issuer state to the in-circuit signing key.
+    //
+    //   Padding slots skip the inclusion proof via `enabled = 0`.  The
+    //   integrity constraints in STEP 0 already zero-constrain
+    //   issuerAuthorities/issuerStatusEpochs/issuerRevocationNonces for
+    //   padding slots, so the skipped check cannot be used to smuggle
+    //   state.
+    // ========================================================================
+    component issuerLeafHasher[NUM_CREDS];
+    component issuerInclusion[NUM_CREDS];
+    for (var i = 0; i < NUM_CREDS; i++) {
+        issuerLeafHasher[i] = Poseidon(5);
+        issuerLeafHasher[i].inputs[0] <== issuerAuthorities[i];
+        issuerLeafHasher[i].inputs[1] <== issuerPubKeyAxs[i];
+        issuerLeafHasher[i].inputs[2] <== issuerPubKeyAys[i];
+        issuerLeafHasher[i].inputs[3] <== issuerStatusEpochs[i];
+        issuerLeafHasher[i].inputs[4] <== issuerRevocationNonces[i];
+
+        issuerInclusion[i] = MerkleInclusion(ISSUER_TREE_DEPTH);
+        issuerInclusion[i].enabled <== 1 - isZero[i].out;
+        issuerInclusion[i].leaf    <== issuerLeafHasher[i].out;
+        issuerInclusion[i].root    <== issuerTreeRoot;
+        for (var j = 0; j < ISSUER_TREE_DEPTH; j++) {
+            issuerInclusion[i].siblings[j]    <== issuerSiblings[i][j];
+            issuerInclusion[i].pathIndices[j] <== issuerPathIndices[i][j];
         }
     }
 
@@ -311,16 +401,31 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, NUM_FIELDS, NUM_CR
     queryContextHash <== qHasherFinal.out;
 
     // ========================================================================
-    // STEP 5: Hardened Nullifier
-    //   nullifier = Poseidon(masterKey, revocationNonce, verifierAddress,
-    //                        queryContextHash, verifierNonce)
+    // STEP 5: Hardened Nullifier (ADR-0006 + ADR-0014 revision; SEC-008)
+    //   nullifier = Poseidon(masterKey,
+    //                        revocationNonce,       // holder's
+    //                        verifierAddress,
+    //                        queryContextHash,
+    //                        verifierNonce,
+    //                        issuerTreeRoot)        // NEW: epoch bind
+    //
+    //   Binding the nullifier to `issuerTreeRoot` is what closes the
+    //   post-revocation replay window (SOLID-SEC-008).  When any
+    //   issuer is revoked, the tree root changes -> the nullifier a
+    //   new proof computes is drawn from a different universe than
+    //   the one a pre-revocation cached proof used -> on-chain
+    //   nullifier-PDA collision CANNOT happen between epochs, and
+    //   the membership check above ALSO rejects the pre-revocation
+    //   proof because its siblings no longer recompute to the new
+    //   root.  Both directions of the epoch boundary are closed.
     // ========================================================================
-    component nullifier = Poseidon(5);
+    component nullifier = Poseidon(6);
     nullifier.inputs[0] <== masterIdentityKey;
     nullifier.inputs[1] <== revocationNonce;
     nullifier.inputs[2] <== verifierAddress;
     nullifier.inputs[3] <== queryContextHash;
     nullifier.inputs[4] <== verifierNonce;
+    nullifier.inputs[5] <== issuerTreeRoot;
     nullifierHash <== nullifier.out;
 }
 
@@ -329,6 +434,7 @@ component main {public [
     globalRoot,
     merkleRoots,
     schemaHashes,
+    issuerTreeRoot,
     queryCredentialIndices,
     queryFieldIndices,
     queryOperators,
@@ -338,4 +444,4 @@ component main {public [
     verifierAddress,
     verifierNonce,
     currentTimestamp
-]} = BatchCredentialQuerySolana(20, 20, 8, 4, 4);
+]} = BatchCredentialQuerySolana(20, 20, 16, 8, 4, 4);

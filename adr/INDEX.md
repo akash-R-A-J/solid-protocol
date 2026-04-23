@@ -12,16 +12,19 @@ Last updated: 2026-04-23
   (Accepted) -- Use BabyJubJub + Poseidon for issuance signatures and
   commitments.
 - [ADR-0006](0006-hardened-nullifier-five-poseidon-inputs.md)
-  (Accepted) -- Five-element Poseidon nullifier preimage.  **Superseded
-  in spirit by ADR-0014's 6-input nullifier once the Phase 2 circuit
-  rev lands; this ADR stays as the historical v0.x record.**
+  (Accepted; revised 2026-04-24) -- Nullifier preimage.  Phase 2
+  revision extends 5-input to 6-input with `issuerTreeRoot` appended
+  (ADR-0014).  File kept at its legacy name for git continuity.
 - [ADR-0012](0012-thirty-one-public-input-contract.md)
-  (Accepted) -- 31 public-input contract between circuit and verifier.
-  **To be revised to 32 by ADR-0014 in the Phase 2 circuit rev.**
+  (Accepted; revised 2026-04-24) -- Public-input contract between
+  circuit and verifier.  Phase 2 revision raises count 31 -> 32 with
+  `issuerTreeRoot` at slot [10]; later slots shifted +1 (ADR-0014).
 - [ADR-0014](0014-compressed-issuer-tree-with-bjj-binding-leaf.md)
-  (Accepted, pending implementation) -- Compressed issuer tree with
-  BJJ-binding leaf; closes SOLID-SEC-004 and bundles SOLID-SEC-008
-  epoch-bound nullifier into one Phase 2 circuit revision.
+  (Accepted; circuit rev landed 2026-04-24; status-transition hooks
+  + IssuerAccount.revocation_nonce + backfill in Phase 2 impl 3) --
+  Compressed issuer tree with BJJ-binding leaf; closes SOLID-SEC-004
+  and bundles SOLID-SEC-008 epoch-bound nullifier into one circuit
+  revision.
 
 ## Storage and state
 
@@ -61,9 +64,7 @@ Last updated: 2026-04-23
 
 ## Proposed / pending
 
-- **Revision to ADR-0012** (31 -> 32 public inputs) attached to the
-  Phase 2 circuit revision under ADR-0014.
-- **Revision to ADR-0006** (5 -> 6 Poseidon nullifier inputs)
-  attached to the same circuit revision.
-
-Both revisions land together; either is a no-op without the other.
+None.  Phase 2 impl 3 (status-transition hooks, IssuerAccount
+revocation_nonce, backfill script, SDK updates, cross-language
+vector regen) consumes the ADR-0014 decision but does not itself
+need a new ADR.

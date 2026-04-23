@@ -17,26 +17,40 @@
 use anchor_lang::prelude::*;
 use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solid_light::cpi_helpers;
-use solid_light::cpi_helpers::SCHEMA_REGISTRY_ID;
+use solid_light::cpi_helpers::{ISSUER_REGISTRY_ID, SCHEMA_REGISTRY_ID};
 
 declare_id!("BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2");
 
 // ─── Circuit Constants ─────────────────────────────────────────────────────
-// batch_credential_query (Phase 3.1) public inputs (31 total):
-//   [0]      = nullifierHash (circuit output)
+// batch_credential_query public inputs (32 total; ADR-0014 revision of
+// ADR-0012, which previously pinned 31):
+//   [0]      = nullifierHash (circuit output; 6-input Poseidon post ADR-0014)
 //   [1]      = globalRoot
 //   [2..5]   = merkleRoots[4]
 //   [6..9]   = schemaHashes[4]
-//   [10..13] = queryCredentialIndices[4]
-//   [14..17] = queryFieldIndices[4]
-//   [18..21] = queryOperators[4]
-//   [22..25] = queryValues[4]
-//   [26]     = numPredicates
-//   [27]     = compoundLogic
-//   [28]     = verifierAddress
-//   [29]     = verifierNonce
-//   [30]     = currentTimestamp
-pub const NR_PUBLIC_INPUTS: usize = 31;
+//   [10]     = issuerTreeRoot                  (NEW; SEC-004 / SEC-008)
+//   [11..14] = queryCredentialIndices[4]
+//   [15..18] = queryFieldIndices[4]
+//   [19..22] = queryOperators[4]
+//   [23..26] = queryValues[4]
+//   [27]     = numPredicates
+//   [28]     = compoundLogic
+//   [29]     = verifierAddress
+//   [30]     = verifierNonce
+//   [31]     = currentTimestamp
+pub const NR_PUBLIC_INPUTS: usize = 32;
+
+/// Index of `issuerTreeRoot` in `public_inputs[]`.  Load-bearing: the
+/// handler reads this slot and cross-checks it against the on-chain
+/// `IssuerTreeBinding.current_root` (ADR-0014).  Any reshuffle of the
+/// public-input layout MUST update this constant in the same commit.
+pub const ISSUER_TREE_ROOT_INPUT_INDEX: usize = 10;
+
+/// Index of `verifierAddress` in `public_inputs[]` post ADR-0014 shift.
+pub const VERIFIER_ADDRESS_INPUT_INDEX: usize = 29;
+
+/// Index of `currentTimestamp` in `public_inputs[]` post ADR-0014 shift.
+pub const CURRENT_TIMESTAMP_INPUT_INDEX: usize = 31;
 
 /// Maximum number of IC points the on-chain VK parser is willing to materialize
 /// on the stack. `IC` has `NR_PUBLIC_INPUTS + 1` entries by construction.
@@ -204,8 +218,9 @@ pub mod zk_verifier {
         // the `nullifier` the caller is about to register as a PDA seed.
         require!(nullifier == public_inputs[0], ErrorCode::NullifierMismatch);
 
-        // (2) SEC-13: verifier scope binding.
-        let verifier_address_input = public_inputs[28];
+        // (2) SEC-13: verifier scope binding.  Index shifted to 29
+        // by ADR-0014 (issuerTreeRoot inserted at [10]).
+        let verifier_address_input = public_inputs[VERIFIER_ADDRESS_INPUT_INDEX];
         require!(
             verifier_address_input == ID.to_bytes(),
             ErrorCode::InvalidVerifierAddress
@@ -216,13 +231,14 @@ pub mod zk_verifier {
         // per credential, but without an on-chain freshness check a prover may
         // pass `currentTimestamp = 0` and defeat every expiration gate.
         //
-        // public_inputs[30] is a 32-byte LE encoding of a BN254 field element.
-        // Plausible unix timestamps fit in a u64, so bytes [8..32] MUST be
-        // zero; otherwise the caller has either (a) fed the circuit a
-        // pathological value or (b) packed the input with the wrong encoding
-        // (see SOLID-SEC-031 for the related SDK-side fix). Either way we
+        // public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX] is a 32-byte LE
+        // encoding of a BN254 field element.  Plausible unix timestamps
+        // fit in a u64, so bytes [8..32] MUST be zero; otherwise the
+        // caller has either (a) fed the circuit a pathological value
+        // or (b) packed the input with the wrong encoding (see
+        // SOLID-SEC-031 for the related SDK-side fix). Either way we
         // reject.
-        let ts_bytes = public_inputs[30];
+        let ts_bytes = public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX];
         for i in 8..32 {
             require!(ts_bytes[i] == 0, ErrorCode::StaleTimestamp);
         }
@@ -261,6 +277,37 @@ pub mod zk_verifier {
             cpi_helpers::verify_state_root_matches(&tree_account_data, &global_root),
             ErrorCode::InvalidGlobalRoot
         );
+
+        // (3b) ADR-0014: issuer-tree root binding.
+        //
+        // Cross-check `public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX]`
+        // against the singleton `IssuerTreeBinding.current_root`.  The
+        // owner check is load-bearing for the same reason as (3) -- a
+        // system-owned account with a forged `issrtree` discriminator
+        // would otherwise parse cleanly.  Bundled with the SOLID-SEC-008
+        // epoch nullifier (the root is already in `public_inputs[0]`'s
+        // preimage), this closes the post-revocation replay window.
+        require_keys_eq!(
+            *ctx.accounts.issuer_tree_binding.owner,
+            ISSUER_REGISTRY_ID,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        let issuer_tree_root_input = public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX];
+        let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
+        cpi_helpers::verify_issuer_tree_binding_for_proof(
+            &issuer_binding_data,
+            &issuer_tree_root_input,
+        )
+        .map_err(|e| match e {
+            cpi_helpers::LightError::IssuerTreeRootMismatch => {
+                ErrorCode::IssuerTreeRootMismatch
+            }
+            cpi_helpers::LightError::IssuerTreeBindingFrozen => {
+                ErrorCode::IssuerTreeBindingFrozen
+            }
+            _ => ErrorCode::InvalidIssuerTreeBinding,
+        })?;
+        drop(issuer_binding_data);
 
         // (4) Schema ↔ root binding + canonical ordering.
         //
@@ -584,6 +631,22 @@ pub struct VerifyBatchProof<'info> {
     /// CHECK: slot 3
     pub schema_tree_3: UncheckedAccount<'info>,
 
+    /// ADR-0014: singleton `IssuerTreeBinding` PDA owned by
+    /// `issuer-registry`.  The seed literal `b"issuer-tree-binding"`
+    /// is the source of truth declared in
+    /// `programs/issuer-registry/src/lib.rs`
+    /// (`ISSUER_TREE_BINDING_SEED`).  The handler additionally
+    /// owner-checks this account against `ISSUER_REGISTRY_ID` and
+    /// asserts the parsed `current_root` equals
+    /// `public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX]`.  CHECK handled
+    /// in-handler.
+    #[account(
+        seeds = [b"issuer-tree-binding"],
+        bump,
+        seeds::program = ISSUER_REGISTRY_ID,
+    )]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
+
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -665,6 +728,12 @@ pub enum ErrorCode {
     StaleTimestamp,
     #[msg("Timestamp skew value exceeds MAX_TIMESTAMP_SKEW_SECONDS (3600)")]
     TimestampSkewTooLarge,
+    #[msg("IssuerTreeBinding account is invalid or not owned by issuer-registry (ADR-0014)")]
+    InvalidIssuerTreeBinding,
+    #[msg("IssuerTreeBinding.current_root does not match the proof's issuerTreeRoot public input (ADR-0014)")]
+    IssuerTreeRootMismatch,
+    #[msg("IssuerTreeBinding is frozen; cannot verify proofs under this root (ADR-0014)")]
+    IssuerTreeBindingFrozen,
 }
 
 // ─── Unit tests ────────────────────────────────────────────────────────────
