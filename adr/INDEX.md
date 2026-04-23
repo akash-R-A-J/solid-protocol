@@ -2,7 +2,7 @@
 
 Living index. One line per ADR. See individual files for detail.
 
-Last updated: 2026-04-22
+Last updated: 2026-04-23
 
 ## Cryptography and proof system
 
@@ -12,9 +12,16 @@ Last updated: 2026-04-22
   (Accepted) -- Use BabyJubJub + Poseidon for issuance signatures and
   commitments.
 - [ADR-0006](0006-hardened-nullifier-five-poseidon-inputs.md)
-  (Accepted) -- Five-element Poseidon nullifier preimage.
+  (Accepted) -- Five-element Poseidon nullifier preimage.  **Superseded
+  in spirit by ADR-0014's 6-input nullifier once the Phase 2 circuit
+  rev lands; this ADR stays as the historical v0.x record.**
 - [ADR-0012](0012-thirty-one-public-input-contract.md)
   (Accepted) -- 31 public-input contract between circuit and verifier.
+  **To be revised to 32 by ADR-0014 in the Phase 2 circuit rev.**
+- [ADR-0014](0014-compressed-issuer-tree-with-bjj-binding-leaf.md)
+  (Accepted, pending implementation) -- Compressed issuer tree with
+  BJJ-binding leaf; closes SOLID-SEC-004 and bundles SOLID-SEC-008
+  epoch-bound nullifier into one Phase 2 circuit revision.
 
 ## Storage and state
 
@@ -54,5 +61,9 @@ Last updated: 2026-04-22
 
 ## Proposed / pending
 
-None as of 2026-04-22. New ADRs attached when the Phase 1 scope is
-accepted (see `plan/IMPLEMENTATION_PLAN.md`).
+- **Revision to ADR-0012** (31 -> 32 public inputs) attached to the
+  Phase 2 circuit revision under ADR-0014.
+- **Revision to ADR-0006** (5 -> 6 Poseidon nullifier inputs)
+  attached to the same circuit revision.
+
+Both revisions land together; either is a no-op without the other.
