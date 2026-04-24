@@ -180,7 +180,7 @@ and `SOLID_GOVERNANCE_MINT` for pinning pre-existing accounts.
 - [Key Management](docs/key-management.md)
 - [Schema Reference](docs/schemas.md)
 - [Revocation Design (v1 and v1.1 SMT)](docs/REVOCATION_DESIGN.md)
-- [Deployment and Testing](docs/DEPLOYMENT_AND_TESTING.md)
+- [Deployment, E2E Testing, and Verification](docs/DEPLOYMENT_AND_TESTING.md) -- canonical runbook: install toolchain, build, deploy, run, verify correctness, probe security invariants
 - [Program-ID Reconciliation Runbook](docs/PROGRAM_ID_RECONCILIATION.md)
 - [Post-Remediation Audit -- Phase 1 (April 2026)](docs/POST_REMEDIATION_AUDIT.md) -- historical; superseded by the v0.6 deep audit
 - [v0.6 Deep Comprehensive Audit -- post-Phase-2 (2026-04-24)](sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md) -- canonical state-of-protocol

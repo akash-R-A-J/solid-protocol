@@ -23,6 +23,10 @@ result-*
 # Tooling worktrees
 tools/solid-prover/target
 
+# solana-test-validator runtime ledger (populated by `solana-test-validator`).
+# Runtime-only; regenerated on every --reset.  Never commit.
+test-ledger/
+
 # SolID Research & Audit (Local Only)
 # docs/SOLID_INFRA_MANIFESTO.md
 # docs/SOLID_SECURITY_AUDIT.md
