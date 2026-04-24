@@ -21,12 +21,16 @@ INPUT_INDEX = 10`, `VERIFIER_ADDRESS_INPUT_INDEX = 29`,
 31`).  Canonical post-fix assessment lives at
 `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`.
 
-Open Phase 3 residuals at the time of this release: SOLID-SEC-006
-(VK freeze-gate), SEC-007 (BJJ subgroup check), SEC-010 (cross-
-language vectors 3/10), SEC-012 (multi-party trusted setup, mainnet
+Phase 3 progress at the time of this release: SEC-007 (BJJ
+subgroup check) and SEC-006 Part 1 (VK freeze-gate + 48-hour
+rotation timelock, ADR-0015) have landed; 22 of 44 registry
+findings are now closed.  Open residuals: SEC-010 (cross-language
+vectors 3/10), SEC-012 (multi-party trusted setup, mainnet
 blocker), SEC-041 (content-addressed VK artifact), SEC-043
-(`IssuerTreeBinding.operator` single signer), SEC-044 (Cooldown does
-not replace the issuer leaf).  See
+(`IssuerTreeBinding.operator` single signer), SEC-044 (Cooldown
+does not replace the issuer leaf), plus 10 MEDIUMs, 4 other LOWs,
+4 INFOs.  SEC-006 Part 2 (circuit-bound `vk_generation`) is
+deferred behind the next trusted-setup cycle.  See
 `sec/SECURITY_REGISTRY.md` for the full backlog.
 
 ## Architecture

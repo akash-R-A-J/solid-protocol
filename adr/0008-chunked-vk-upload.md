@@ -41,13 +41,13 @@ pub struct VerifierConfig {
 - Increments `next_vk_chunk` monotonically.
 - Flips `vk_initialized = true` when `is_final_chunk`.
 
-`VerifierConfig::SPACE = 49` pins the layout (the doc-drift gap
-that had this as 45 was closed in SEC-042; `next_vk_chunk` is a
-u16 and `timestamp_skew_seconds` is a u32 from SEC-005); any change
-must bump the constant. The constraint is called out in CLAUDE.md
-under "Hard invariants". SEC-006 is expected to grow the struct
-further (`vk_finalized` + `vk_generation`); the `SPACE` constant
-moves with it.
+`VerifierConfig::SPACE = 60` pins the layout post ADR-0015
+(Phase 3 impl 2 grew the struct by `vk_finalized: bool` +
+`vk_generation: u16` + `rotate_request_ts: i64`, 11 bytes on top of
+the Phase 2 baseline of 49).  The doc-drift gap that had this at 45
+was closed in SEC-042; at 49 in the Phase 2 baseline; now 60.  Any
+future change must bump the constant in the same commit.  The
+constraint is called out in CLAUDE.md under "Hard invariants".
 
 ## Consequences
 

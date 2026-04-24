@@ -69,6 +69,14 @@ pub const DEFAULT_TIMESTAMP_SKEW_SECONDS: u32 = 600;
 /// single config call.
 pub const MAX_TIMESTAMP_SKEW_SECONDS: u32 = 3_600;
 
+/// SOLID-SEC-006.  A finalised verification key can only be rotated
+/// after this many seconds have elapsed since `request_vk_rotation`.
+/// 48 hours gives the DAO / watchers time to react to a compromised
+/// authority attempting to swap the VK.  Once SOLID-SEC-043 replaces
+/// the single-pubkey authority with a Squads 3-of-5 PDA signer, the
+/// timelock composes with the multisig quorum for full DAO gating.
+pub const VK_ROTATION_TIMELOCK_SECONDS: i64 = 48 * 60 * 60;
+
 // Compile-time assertion: the stack-owned VK buffer must fit comfortably
 // inside Solana's per-frame BPF stack budget (4 KB).
 //   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma) + 128 (delta)
@@ -95,6 +103,14 @@ pub mod zk_verifier {
         // authority can tune this via `set_timestamp_skew` without a program
         // upgrade. Stored as u32 seconds; practical range is 0..=3600.
         config.timestamp_skew_seconds = DEFAULT_TIMESTAMP_SKEW_SECONDS;
+        // SOLID-SEC-006 freeze-gate defaults.  The VK is not finalized
+        // until the authority explicitly calls `finalize_verification_
+        // key`; until then `store_verification_key` can keep
+        // appending.  `vk_generation` starts at 0 and only bumps on a
+        // completed rotation.
+        config.vk_finalized = false;
+        config.vk_generation = 0;
+        config.rotate_request_ts = 0;
         msg!("SolID ZK Verifier initialized. Authority: {}", config.authority);
         Ok(())
     }
@@ -120,13 +136,19 @@ pub mod zk_verifier {
 
     /// Store the verification key in chunks.
     ///
-    /// Two invariants the old implementation missed:
+    /// Invariants:
     ///   1. Chunks must arrive in order (`chunk_index == config.next_vk_chunk`).
     ///      Without this a confused operator could scramble the VK and the
     ///      parser would silently accept a corrupt key.
     ///   2. The cumulative VK size is capped at the allocated 10_240 bytes.
     ///      Without the cap the Vec's realloc would fail at serialize-time
     ///      with an opaque error on the final chunk.
+    ///   3. SOLID-SEC-006: the VK is immutable once `vk_finalized` is
+    ///      true.  A rotation MUST go through
+    ///      `request_vk_rotation` + the 48-hour timelock +
+    ///      `rotate_verification_key` path, which clears the
+    ///      finalized flag and resets `next_vk_chunk` to 0 for the
+    ///      next upload cycle.
     pub fn store_verification_key(
         ctx: Context<StoreVerificationKey>,
         chunk_index: u16,
@@ -139,6 +161,13 @@ pub mod zk_verifier {
         require!(
             config.authority == ctx.accounts.authority.key(),
             ErrorCode::Unauthorized
+        );
+        // SOLID-SEC-006.  Refuse every write against a finalized VK.
+        // The only legitimate way back to an open-for-writes state is
+        // `request_vk_rotation` + timelock + `rotate_verification_key`.
+        require!(
+            !config.vk_finalized,
+            ErrorCode::VerificationKeyFinalized
         );
         require!(
             chunk_index == config.next_vk_chunk,
@@ -174,6 +203,119 @@ pub mod zk_verifier {
                 config.next_vk_chunk
             );
         }
+        Ok(())
+    }
+
+    /// SOLID-SEC-006.  Freeze the VK.  After this call
+    /// `store_verification_key` refuses every chunk; any further
+    /// change to the VK must flow through
+    /// `request_vk_rotation` + `rotate_verification_key`.
+    /// Requires `vk_initialized == true` (no point freezing an empty
+    /// store).  Idempotent only in the trivial sense that repeated
+    /// calls are rejected via `VerificationKeyAlreadyFinalized`.
+    pub fn finalize_verification_key(ctx: Context<AuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.verifier_config;
+        require!(
+            config.vk_initialized,
+            ErrorCode::VerificationKeyNotSet
+        );
+        require!(
+            !config.vk_finalized,
+            ErrorCode::VerificationKeyAlreadyFinalized
+        );
+        config.vk_finalized = true;
+        msg!(
+            "Verification key finalized at generation {} (SOLID-SEC-006).  \
+             Further writes rejected; rotation path requires \
+             request_vk_rotation + {}s timelock + rotate_verification_key.",
+            config.vk_generation,
+            VK_ROTATION_TIMELOCK_SECONDS
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006.  Start the rotation timelock.  The VK stays
+    /// finalized and in effect for the full window; this call only
+    /// records the moment after which `rotate_verification_key` is
+    /// permitted.  Refuses if a rotation is already pending
+    /// (`RotationAlreadyRequested`) or if the VK is not finalized
+    /// (`VerificationKeyNotFinalized`).
+    pub fn request_vk_rotation(ctx: Context<AuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.verifier_config;
+        require!(
+            config.vk_finalized,
+            ErrorCode::VerificationKeyNotFinalized
+        );
+        require!(
+            config.rotate_request_ts == 0,
+            ErrorCode::RotationAlreadyRequested
+        );
+        let now = Clock::get()?.unix_timestamp;
+        require!(now > 0, ErrorCode::RotationClockInvalid);
+        config.rotate_request_ts = now;
+        msg!(
+            "VK rotation requested at unix_ts={} (SOLID-SEC-006).  \
+             Earliest rotation at unix_ts={}.",
+            now,
+            now.saturating_add(VK_ROTATION_TIMELOCK_SECONDS)
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006.  Cancel a pending rotation.  No-op if there is
+    /// nothing pending.  Authority-only.  Used when the operator
+    /// decides against rotating, or when they need to reset the
+    /// timelock anchor after discovering a problem.
+    pub fn cancel_vk_rotation(ctx: Context<AuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.verifier_config;
+        let prior = config.rotate_request_ts;
+        config.rotate_request_ts = 0;
+        msg!(
+            "VK rotation cancelled (prior request_ts={}).",
+            prior
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006.  Complete a timelocked rotation.  Requires:
+    ///   - `vk_finalized == true` (we are rotating a frozen VK).
+    ///   - `rotate_request_ts != 0` (a rotation was requested).
+    ///   - `Clock::unix_timestamp >= rotate_request_ts + VK_ROTATION_
+    ///     TIMELOCK_SECONDS` (the 48-hour window elapsed).
+    /// On success, resets `vk_initialized`, `vk_finalized`, and
+    /// `next_vk_chunk` so the operator can upload a fresh VK via
+    /// `store_verification_key`.  Bumps `vk_generation`.  Clears the
+    /// pending rotation.  `vk_storage.data` is NOT cleared here; the
+    /// next chunk-0 write via `store_verification_key` overwrites the
+    /// buffer atomically (same pattern as initial upload).
+    pub fn rotate_verification_key(ctx: Context<AuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.verifier_config;
+        require!(
+            config.vk_finalized,
+            ErrorCode::VerificationKeyNotFinalized
+        );
+        require!(
+            config.rotate_request_ts != 0,
+            ErrorCode::NoPendingRotation
+        );
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            vk_rotation_timelock_expired(config, now),
+            ErrorCode::RotationTimelockNotExpired
+        );
+        config.vk_initialized = false;
+        config.vk_finalized = false;
+        config.next_vk_chunk = 0;
+        config.rotate_request_ts = 0;
+        config.vk_generation = config
+            .vk_generation
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        msg!(
+            "VK rotated; generation now {} (SOLID-SEC-006).  Upload fresh \
+             chunks via store_verification_key + finalize_verification_key.",
+            config.vk_generation
+        );
         Ok(())
     }
 
@@ -662,20 +804,53 @@ pub struct VerifierConfig {
     pub paused: bool,
     pub bump: u8,
     /// Index of the next chunk expected by `store_verification_key`.
-    /// Reset to zero only through a redeploy; once the VK is finalized this
-    /// serves as an audit trail of how many chunks were stitched together.
+    /// Reset to zero only through a redeploy or a completed rotation;
+    /// once the VK is finalized this serves as an audit trail of how
+    /// many chunks were stitched together.
     pub next_vk_chunk: u16,
     /// SOLID-SEC-005: tolerance (seconds) between the `currentTimestamp`
     /// public input and the on-chain Clock at `verify_batch_proof` time.
     /// Default `DEFAULT_TIMESTAMP_SKEW_SECONDS`; configurable via
     /// `set_timestamp_skew` up to `MAX_TIMESTAMP_SKEW_SECONDS`.
     pub timestamp_skew_seconds: u32,
+    /// SOLID-SEC-006 freeze-gate.  Flips to `true` on
+    /// `finalize_verification_key`.  While `true`, `store_verification_
+    /// key` refuses every chunk-0 overwrite and every append -- the VK
+    /// is immutable until the DAO-gated rotation path completes.
+    pub vk_finalized: bool,
+    /// SOLID-SEC-006 monotonic rotation counter.  Starts at 0; bumps
+    /// on every successful `rotate_verification_key`.  Observers can
+    /// detect rotation out-of-band; a future circuit revision will
+    /// bind this into the public-input contract so cross-VK replay is
+    /// impossible (currently SEC-006 Part 2, deferred to the next
+    /// trusted-setup regeneration).
+    pub vk_generation: u16,
+    /// SOLID-SEC-006 rotation-request timelock anchor.  Zero means no
+    /// pending rotation.  Non-zero means the authority has requested a
+    /// rotation; `rotate_verification_key` refuses until
+    /// `Clock::unix_timestamp >= rotate_request_ts + VK_ROTATION_
+    /// TIMELOCK_SECONDS`.  `cancel_vk_rotation` resets to zero.
+    pub rotate_request_ts: i64,
 }
 
 impl VerifierConfig {
     // 32 authority + 8 proof_count + 1 vk_initialized + 1 paused + 1 bump
-    // + 2 next_vk_chunk + 4 timestamp_skew_seconds.
-    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1 + 2 + 4;
+    // + 2 next_vk_chunk + 4 timestamp_skew_seconds
+    // + 1 vk_finalized + 2 vk_generation + 8 rotate_request_ts.
+    // SOLID-SEC-006 growth from 49 -> 60.  ADR-0015 notes the layout
+    // bump; any future add must bump this constant in the same commit.
+    pub const SPACE: usize = 32 + 8 + 1 + 1 + 1 + 2 + 4 + 1 + 2 + 8;
+}
+
+/// SOLID-SEC-006 helper: is the pending rotation past its timelock?
+/// Pure so the state-transition invariants are host-testable without
+/// spinning up a validator.  Returns `false` when there is no pending
+/// rotation (request_ts == 0).
+pub fn vk_rotation_timelock_expired(config: &VerifierConfig, now_unix_ts: i64) -> bool {
+    if config.rotate_request_ts == 0 {
+        return false;
+    }
+    now_unix_ts >= config.rotate_request_ts.saturating_add(VK_ROTATION_TIMELOCK_SECONDS)
 }
 
 #[account]
@@ -734,6 +909,20 @@ pub enum ErrorCode {
     IssuerTreeRootMismatch,
     #[msg("IssuerTreeBinding is frozen; cannot verify proofs under this root (ADR-0014)")]
     IssuerTreeBindingFrozen,
+    #[msg("Verification key is finalized; further writes rejected (SOLID-SEC-006)")]
+    VerificationKeyFinalized,
+    #[msg("Verification key is not finalized; finalize_verification_key must run first (SOLID-SEC-006)")]
+    VerificationKeyNotFinalized,
+    #[msg("Verification key is already finalized (SOLID-SEC-006)")]
+    VerificationKeyAlreadyFinalized,
+    #[msg("A VK rotation is already pending; cancel it before requesting another (SOLID-SEC-006)")]
+    RotationAlreadyRequested,
+    #[msg("No VK rotation is pending (SOLID-SEC-006)")]
+    NoPendingRotation,
+    #[msg("VK rotation timelock has not yet expired (SOLID-SEC-006)")]
+    RotationTimelockNotExpired,
+    #[msg("Clock returned a non-positive unix timestamp during VK rotation request (SOLID-SEC-006)")]
+    RotationClockInvalid,
 }
 
 // ─── Unit tests ────────────────────────────────────────────────────────────
@@ -829,6 +1018,112 @@ mod tests {
         // Mirrors the const assertion in the top of the file — having it also
         // as a runtime test makes the failure message readable.
         assert!(core::mem::size_of::<VkBuf>() < 3072);
+    }
+
+    // ─── SOLID-SEC-006 freeze-gate + timelock regression gates ──────────
+
+    /// Construct a minimal `VerifierConfig` in a pre-finalize state for
+    /// the timelock tests.  Not an Anchor Context; just the struct.
+    fn blank_config() -> VerifierConfig {
+        VerifierConfig {
+            authority: Pubkey::default(),
+            proof_count: 0,
+            vk_initialized: true,
+            paused: false,
+            bump: 0,
+            next_vk_chunk: 0,
+            timestamp_skew_seconds: DEFAULT_TIMESTAMP_SKEW_SECONDS,
+            vk_finalized: false,
+            vk_generation: 0,
+            rotate_request_ts: 0,
+        }
+    }
+
+    #[test]
+    fn vk_rotation_not_expired_when_no_pending_request() {
+        let config = blank_config();
+        assert!(!vk_rotation_timelock_expired(&config, 0));
+        assert!(!vk_rotation_timelock_expired(&config, i64::MAX));
+    }
+
+    #[test]
+    fn vk_rotation_not_expired_inside_window() {
+        let mut config = blank_config();
+        config.rotate_request_ts = 1_700_000_000; // arbitrary epoch
+        // Checking at request-time and at request + (timelock - 1)
+        // both must reject.  The handler will use Clock::unix_timestamp.
+        assert!(!vk_rotation_timelock_expired(
+            &config,
+            config.rotate_request_ts
+        ));
+        assert!(!vk_rotation_timelock_expired(
+            &config,
+            config
+                .rotate_request_ts
+                .saturating_add(VK_ROTATION_TIMELOCK_SECONDS - 1)
+        ));
+    }
+
+    #[test]
+    fn vk_rotation_expired_at_and_beyond_timelock() {
+        let mut config = blank_config();
+        config.rotate_request_ts = 1_700_000_000;
+        // Exactly at the boundary: `>=` semantics.
+        assert!(vk_rotation_timelock_expired(
+            &config,
+            config
+                .rotate_request_ts
+                .saturating_add(VK_ROTATION_TIMELOCK_SECONDS)
+        ));
+        // Well past.
+        assert!(vk_rotation_timelock_expired(
+            &config,
+            config
+                .rotate_request_ts
+                .saturating_add(VK_ROTATION_TIMELOCK_SECONDS * 10)
+        ));
+    }
+
+    #[test]
+    fn vk_rotation_handles_saturation_safely() {
+        // If an operator somehow set rotate_request_ts to near-i64::MAX,
+        // `saturating_add(VK_ROTATION_TIMELOCK_SECONDS)` caps at i64::MAX.
+        // The expected behaviour is: no panic, and `now < cap` still
+        // reads as not-expired.  Practical unix timestamps on Solana
+        // are nowhere near i64::MAX, and `rotate_request_ts` is only
+        // ever set from `Clock::get()?.unix_timestamp` in
+        // `request_vk_rotation`, which `require!`s `now > 0`.  This
+        // test guards the math, not a realistic attack surface.
+        let mut config = blank_config();
+        config.rotate_request_ts = i64::MAX - 1;
+        // `now = 0` is far below the saturated cap -> not expired.
+        assert!(!vk_rotation_timelock_expired(&config, 0));
+        // At `now = i64::MAX` the saturating sum also equals i64::MAX,
+        // so `now >= cap` is true.  This is the mathematically correct
+        // outcome; it is harmless because no honest caller can reach
+        // that state.  Documenting the expectation prevents a future
+        // "fix" from introducing a wraparound bug elsewhere.
+        assert!(vk_rotation_timelock_expired(&config, i64::MAX));
+    }
+
+    #[test]
+    fn verifier_config_space_matches_layout() {
+        // Guard against silent SPACE drift; mirrors the SEC-042 pattern
+        // of "compute the exact byte size and compare to the constant".
+        // 32 authority + 8 proof_count + 1 vk_initialized + 1 paused
+        // + 1 bump + 2 next_vk_chunk + 4 timestamp_skew_seconds
+        // + 1 vk_finalized + 2 vk_generation + 8 rotate_request_ts.
+        let expected: usize = 32 + 8 + 1 + 1 + 1 + 2 + 4 + 1 + 2 + 8;
+        assert_eq!(VerifierConfig::SPACE, expected);
+        assert_eq!(VerifierConfig::SPACE, 60);
+    }
+
+    #[test]
+    fn vk_rotation_timelock_is_48_hours() {
+        // Doc-as-test: the timelock constant is load-bearing.  If a
+        // future refactor changes it, this test forces a conscious
+        // update here + the ADR.
+        assert_eq!(VK_ROTATION_TIMELOCK_SECONDS, 48 * 3600);
     }
 
     #[test]

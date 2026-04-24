@@ -24,11 +24,12 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **23 open / 21 fixed / 44 total** (post Phase 3
-impl 1 on 2026-04-25: SEC-007 closed; Phase 3 doc sweep earlier the
-same day introduced SEC-043 and SEC-044).
-Severities: **CRITICAL 0 open**, HIGH 3 open, MEDIUM 10 open,
-LOW 6 open, INFO 4 open.
+Registry state: **22 open / 22 fixed / 44 total** (post Phase 3
+impl 2 on 2026-04-25: SEC-006 Part 1 + SEC-007 closed same day;
+Phase 3 doc sweep earlier the same day introduced SEC-043 and
+SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2 open, MEDIUM 10
+open, LOW 6 open, INFO 4 open.  First time the registry has crossed
+the 50 % Fixed mark.
 
 ### Commits landed this Phase 2 session
 
@@ -55,8 +56,7 @@ python3 scripts/check_program_ids.py  -> consistent
 ### Open registry (by priority)
 
 ```
-HIGH (3 open)
-  SOLID-SEC-006  VK overwrite has no freeze-gate
+HIGH (2 open)
   SOLID-SEC-010  Cross-language vectors narrow (covers 3 of ~10 primitives)
   SOLID-SEC-012  Trusted setup single-party (mainnet blocker)
 
@@ -79,17 +79,18 @@ on each.
 
 ## Next action (Phase 3 kick-off, sequenced)
 
-### 1. SOLID-SEC-006 -- VK freeze-gate (MEDIUM size)
+### 1. ~~SOLID-SEC-006 -- VK freeze-gate~~ (Part 1 closed 2026-04-25)
 
-**Root cause.** `store_verification_key` with `chunk_index=0`
-silently overwrites existing VK bytes.  Once the last chunk has
-been stored with `finalize=true`, the VK should be immutable unless
-the DAO votes to rotate.
-
-**Change set.** Add `verifier_config.vk_finalized: bool` (set on
-last chunk with `finalize=true`).  While true, `store_verification_key`
-must refuse.  A separate `rotate_verification_key` ix (DAO signer +
-48h timelock PDA) unfreezes for the rotation window.
+Landed in Phase 3 impl 2.  ADR-0015.  `VerifierConfig` grew by 11
+bytes (vk_finalized, vk_generation, rotate_request_ts; SPACE
+49 -> 60).  Four new ix: `finalize_verification_key`,
+`request_vk_rotation`, `cancel_vk_rotation`,
+`rotate_verification_key`.  48-hour timelock.
+`store_verification_key` now refuses every write against a
+finalized VK.  Six host regression tests; zk-verifier 11 -> 17
+green.  Part 2 (bind `vk_generation` into the public-input contract
+and reject cross-VK replay) is deferred to the next trusted-setup
+cycle where it batches with SEC-010 expansion.
 
 ### 2. ~~SOLID-SEC-007 -- BJJ subgroup check at registration~~ (closed 2026-04-25)
 

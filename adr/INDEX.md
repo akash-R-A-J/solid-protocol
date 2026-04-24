@@ -2,7 +2,7 @@
 
 Living index. One line per ADR. See individual files for detail.
 
-Last updated: 2026-04-23
+Last updated: 2026-04-25
 
 ## Cryptography and proof system
 
@@ -49,6 +49,11 @@ Last updated: 2026-04-23
   cursor.
 - [ADR-0011](0011-batch-num-creds-four.md)
   (Accepted) -- Batch circuit fixed at NUM_CREDS=4, MAX_PREDICATES=4.
+- [ADR-0015](0015-vk-freeze-gate-and-rotation-timelock.md)
+  (Accepted; Part 1 on-chain landed 2026-04-25; Part 2 circuit-bound
+  `vk_generation` deferred to the next trusted-setup cycle) -- VK
+  freeze-gate + 48-hour timelocked rotation.  Closes SOLID-SEC-006
+  at the on-chain layer; extends ADR-0008.
 
 ## Governance
 
@@ -64,7 +69,11 @@ Last updated: 2026-04-23
 
 ## Proposed / pending
 
-None.  Phase 2 impl 3 (status-transition hooks, IssuerAccount
-revocation_nonce, backfill script, SDK updates, cross-language
-vector regen) consumes the ADR-0014 decision but does not itself
-need a new ADR.
+None.  Phase 3 impl 2 (ADR-0015 VK freeze-gate Part 1) landed
+2026-04-25.  Open Phase 3 items (SEC-010 cross-language vectors,
+SEC-041 content-addressed VK artifact, SEC-043 multisig gate on
+`IssuerTreeBinding.operator`, SEC-044 `request_withdrawal_atomic`)
+are scoped below ADR threshold and close against the registry
+directly.  SOLID-SEC-006 Part 2 (circuit-bound `vk_generation`)
+will live inside the same trusted-setup cycle as SEC-010 once its
+ADR is drafted.

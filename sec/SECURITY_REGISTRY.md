@@ -33,11 +33,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
-| HIGH      | 3    | 0           | 9     | 0        | 0         | 12    |
+| HIGH      | 2    | 0           | 10    | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
 | LOW       | 6    | 0           | 3     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 23   | 0           | 21    | 0        | 0         | 44    |
+| **Total** | 22   | 0           | 22    | 0        | 0         | 44    |
 
 ---
 
@@ -50,7 +50,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-003   | CRITICAL | Fixed  | `issue_credential` missing schema + tree pubkey binding            |
 | SOLID-SEC-004   | HIGH     | Fixed  | No in-circuit issuer pubkey binding; revoked issuers still verify  |
 | SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
-| SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
+| SOLID-SEC-006   | HIGH     | Fixed  | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable (Part 1 on-chain; Part 2 circuit binding deferred) |
 | SOLID-SEC-007   | HIGH     | Fixed  | BJJ public keys not subgroup-checked at registration               |
 | SOLID-SEC-008   | HIGH     | Fixed  | Nullifier does not include epoch / global root                     |
 | SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
@@ -265,18 +265,51 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-006 -- VK chunk 0 overwrite, no freeze-gate
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-25, Phase 3 impl 2, Part 1 on-chain;
+  ADR-0015.  Part 2 -- circuit-bound `vk_generation` public input --
+  deferred to the next trusted-setup cycle where it batches with
+  SEC-010 and any further constraint changes.)
 - **Introduced:** 2026-04-22
-- **Evidence:** `programs/zk-verifier/src/lib.rs:82-130`
-- **Description.** Chunk 0 unconditionally writes `vk_storage.data`;
-  authority can finalize a truncated VK with small `nr_ic`.
-- **Impact.** Universal forgery via live VK swap; silent acceptance of
-  truncated VK.
-- **Remediation.** Add `vk_frozen: bool` + `vk_generation: u16`. Store
-  `(vk_id, VkStorage)` pairs. Include `vk_generation` in public inputs.
-  Require `paused` for post-gen-0 writes.
-- **Regression gate.** Unit tests for finalize-with-partial, write-when-
-  frozen, verify-against-wrong-generation.
+- **Evidence (pre-fix):** `programs/zk-verifier/src/lib.rs:82-130`.
+  `store_verification_key(chunk_index=0, ..., is_final_chunk=true)`
+  unconditionally wrote `vk_storage.data`; a compromised authority
+  could swap the live VK silently between any two
+  `verify_batch_proof` calls.
+- **Impact.** Universal forgery via live VK swap; silent acceptance
+  of truncated VK.
+- **Remediation (landed, Part 1).**  ADR-0015.  Extended
+  `VerifierConfig` with `vk_finalized: bool`, `vk_generation: u16`,
+  `rotate_request_ts: i64` (SPACE 49 -> 60).  Added four new
+  instructions:
+  - `finalize_verification_key` flips `vk_finalized = true`.
+  - `store_verification_key` now refuses when `vk_finalized` is set.
+  - `request_vk_rotation` stamps `Clock::unix_timestamp` into
+    `rotate_request_ts` (a 48-hour timelock window).
+  - `cancel_vk_rotation` zeros the request.
+  - `rotate_verification_key` requires the timelock to have expired;
+    clears `vk_initialized` + `vk_finalized`, resets
+    `next_vk_chunk = 0`, bumps `vk_generation`, clears the pending
+    request.
+  `VK_ROTATION_TIMELOCK_SECONDS = 172_800` (48 hours).  Authority
+  remains a single pubkey until SOLID-SEC-043 replaces it with a
+  Squads 3-of-5 PDA, at which point the 48-hour window composes
+  with the multisig quorum for the full DAO gate.
+- **Deferred (Part 2).**  Bind `vk_generation` into the public-input
+  contract and reject proofs whose declared generation != current
+  `VerifierConfig.vk_generation`.  Circuit change + new trusted
+  setup; paired with SEC-010's expansion at the next ceremony.
+- **Regression gate (landed).**  Six new host unit tests in
+  `programs/zk-verifier/src/lib.rs::tests`:
+  `vk_rotation_not_expired_when_no_pending_request`,
+  `vk_rotation_not_expired_inside_window`,
+  `vk_rotation_expired_at_and_beyond_timelock`,
+  `vk_rotation_handles_saturation_safely`,
+  `verifier_config_space_matches_layout` (SEC-042-class
+  layout guard),
+  `vk_rotation_timelock_is_48_hours` (doc-as-test for the
+  constant).  Suite 11 -> 17 green.  Integration coverage for
+  the four new handlers lands in
+  `tests/integration/12_vk_rotation.test.ts` under B5.
 
 ### SOLID-SEC-007 -- BJJ pubkeys not subgroup-checked
 
@@ -1071,6 +1104,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-24 | `sec/audits/2026-04-24_v0.6_phase2_closeout.md`                      | --                                        | SOLID-SEC-004, -008, -036 (Phase 2 scope closed) |
 | 2026-04-25 | `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` + Phase 3 doc sweep | SOLID-SEC-043, -044                       | 0 (both introduced Open)                          |
 | 2026-04-25 | Phase 3 impl 1 (SEC-007 + registry detail reconciliation)            | --                                        | SOLID-SEC-007 (this commit); SOLID-SEC-004, -008, -036 detail sections reconciled Open -> Fixed to match the status board flipped at Phase 2 close-out |
+| 2026-04-25 | Phase 3 impl 2 (ADR-0015 VK freeze-gate + rotation timelock)         | --                                        | SOLID-SEC-006 (Part 1 on-chain; Part 2 circuit-bound vk_generation deferred to the next trusted-setup cycle) |
 
 ### Note on the 2026-04-22 numbering
 

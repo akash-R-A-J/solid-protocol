@@ -35,9 +35,11 @@ soundness or availability:
   against schema_registry's program ID; issuer_tree_binding is
   checked against issuer_registry's program ID (ADR-0014). Removing
   any of these owner-checks re-opens the forged-trust-root attack.
-- VerifierConfig layout includes next_vk_chunk (2 bytes) and
-  timestamp_skew_seconds (4 bytes) -- SPACE = 49. Any change to
-  VerifierConfig requires bumping the constant VerifierConfig::SPACE.
+- VerifierConfig layout post ADR-0015 (Phase 3 impl 2): adds
+  vk_finalized (1), vk_generation (2), rotate_request_ts (8) on top
+  of the Phase 2 baseline (next_vk_chunk 2, timestamp_skew_seconds
+  4). SPACE = 60. Any change to VerifierConfig requires bumping the
+  constant VerifierConfig::SPACE.
 - circuits/batch_credential_query.circom has NR_PUBLIC_INPUTS = 32
   post ADR-0014 (was 31 pre-2026-04-24) with a fixed index scheme:
   issuerTreeRoot is at [10]; the later slots (queryCredentialIndices
@@ -126,13 +128,11 @@ Phase 1 (remediation set) and Phase 2 (ADR-0014 compressed issuer tree
 plus 6-input nullifier) are closed. Phase 3 is open and drives the
 external-audit-ready close-out.
 
-- SOLID-SEC-006 VK freeze-gate (HIGH). Add vk_finalized + vk_generation
-  to VerifierConfig; gate store_verification_key on finalization; add
-  DAO-voted rotate_verification_key behind a 48-hour timelock. Bind
-  vk_generation into the public-input contract so cross-VK replay is
-  impossible.
-- SOLID-SEC-007 BJJ subgroup check (HIGH). is_in_subgroup at
-  register_issuer and every BJJ unmarshal in solid-core + ts-sdk/holder.
+- SOLID-SEC-006 Part 2 VK generation in public-input contract. Part
+  1 landed 2026-04-25 (ADR-0015; on-chain freeze-gate + 48h rotation
+  timelock). Part 2 binds vk_generation into the circuit's public
+  inputs so cross-VK replay is impossible; it requires a circuit
+  change and therefore batches with the next trusted-setup cycle.
 - SOLID-SEC-010 cross-language vectors (HIGH). Extend gen_vectors.rs and
   check_vectors.ts from 3/10 to 10/10 primitives.
 - SOLID-SEC-041 content-addressed VK artifact. Commit

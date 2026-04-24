@@ -786,11 +786,17 @@ Architectural (6 items -- longer term)
 Legend: `[x]` landed; `[~]` partially landed (scope split between
 original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
 
-Registry count (as of 2026-04-25, post Phase 3 impl 1): 44 findings;
-21 closed (Phase 1 + Phase 2 + SEC-007 landed).  Open HIGH:
-SOLID-SEC-006, -010, -012.  Open MEDIUM: SOLID-SEC-013..-019, -021,
--034, -043.  Open LOW: SOLID-SEC-022, -023, -024, -035, -041, -044.
-Open INFO: SOLID-SEC-025, -026, -037, -038.
+Registry count (as of 2026-04-25, post Phase 3 impl 2): 44
+findings; 22 closed (Phase 1 + Phase 2 + SEC-007 + SEC-006 Part 1
+landed).  Open HIGH: SOLID-SEC-010, -012.  Open MEDIUM:
+SOLID-SEC-013..-019, -021, -034, -043.  Open LOW: SOLID-SEC-022,
+-023, -024, -035, -041, -044.  Open INFO: SOLID-SEC-025, -026,
+-037, -038.
+
+Note: SOLID-SEC-006 Part 2 (circuit-bound `vk_generation`) is
+deferred behind the next trusted-setup cycle and is tracked in
+ADR-0015 "Proposed / pending" rather than re-opening the registry
+entry.
 
 New post-roadmap items added in 2026-04-25 sweep (not in the P0..P3
 structure; tracked by registry ID only):

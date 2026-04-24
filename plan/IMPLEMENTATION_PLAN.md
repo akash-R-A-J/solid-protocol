@@ -62,8 +62,9 @@ Cross-checked against code and
   slashed-lamport transfer; `approve_via_trust_anchor` emits event
   + seed-constrained.
 - VK chunk ordering with `next_vk_chunk` cursor (ADR-0008).
-- `VerifierConfig::SPACE = 49` matches struct (SEC-042 doc-drift
-  fix landed 2026-04-23).
+- `VerifierConfig::SPACE = 60` matches struct post ADR-0015
+  (SEC-042 drift closed at 49 in Phase 2; Phase 3 impl 2 grew the
+  struct by 11 bytes for the freeze-gate fields).
 - `paused` flag and `set_paused`.
 - 32 public-input contract (ADR-0012 revised by ADR-0014;
   `ISSUER_TREE_ROOT_INPUT_INDEX = 10`,
