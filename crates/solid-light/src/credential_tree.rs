@@ -32,11 +32,7 @@ pub struct CompressedCredential {
 impl CompressedCredential {
     pub const DISCRIMINATOR: [u8; 8] = *b"solidcrd";
 
-    pub fn new(
-        commitment: [u8; 32],
-        schema_hash: [u8; 32],
-        issuer: [u8; 32],
-    ) -> Self {
+    pub fn new(commitment: [u8; 32], schema_hash: [u8; 32], issuer: [u8; 32]) -> Self {
         Self {
             commitment,
             schema_hash,
@@ -70,7 +66,9 @@ pub struct CompressedNullifier {
 
 impl CompressedNullifier {
     pub const DISCRIMINATOR: [u8; 8] = *b"solidnul";
-    pub const fn size() -> usize { 8 + 32 + 8 }
+    pub const fn size() -> usize {
+        8 + 32 + 8
+    }
 }
 
 /// A compressed identity state representing a user's self-sovereign identity.
@@ -87,7 +85,9 @@ pub struct CompressedIdentity {
 
 impl CompressedIdentity {
     pub const DISCRIMINATOR: [u8; 8] = *b"solidid_";
-    pub const fn size() -> usize { 8 + 32 + 8 }
+    pub const fn size() -> usize {
+        8 + 32 + 8
+    }
 }
 
 /// A compressed issuer account representing a registered Trust Anchor.
@@ -99,12 +99,14 @@ pub struct CompressedIssuer {
     pub authority: [u8; 32],
     pub bjj_pub_key_x: [u8; 32],
     pub bjj_pub_key_y: [u8; 32],
-    pub tier: u8, // 0=Community, 1=Enterprise, 2=Regulated, 3=Government
-    pub status: u8, // 0=Pending, 1=Approved, 2=Revoked
+    pub tier: u8,              // 0=Community, 1=Enterprise, 2=Regulated, 3=Government
+    pub status: u8,            // 0=Pending, 1=Approved, 2=Revoked
     pub revocation_nonce: u64, // Used for issuer-level schema revocation (Phase 2.4)
 }
 
 impl CompressedIssuer {
     pub const DISCRIMINATOR: [u8; 8] = *b"solidiss";
-    pub const fn size() -> usize { 8 + 32 + 32 + 32 + 1 + 1 + 8 }
+    pub const fn size() -> usize {
+        8 + 32 + 32 + 32 + 1 + 1 + 8
+    }
 }

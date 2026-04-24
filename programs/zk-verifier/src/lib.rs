@@ -111,7 +111,10 @@ pub mod zk_verifier {
         config.vk_finalized = false;
         config.vk_generation = 0;
         config.rotate_request_ts = 0;
-        msg!("SolID ZK Verifier initialized. Authority: {}", config.authority);
+        msg!(
+            "SolID ZK Verifier initialized. Authority: {}",
+            config.authority
+        );
         Ok(())
     }
 
@@ -121,10 +124,7 @@ pub mod zk_verifier {
     /// The window caps at 1 hour. Longer windows defeat the freshness
     /// guarantee without a compelling reason; if a use case needs one, add a
     /// new ADR first (per `adr/README.md`).
-    pub fn set_timestamp_skew(
-        ctx: Context<AuthorityOnly>,
-        skew_seconds: u32,
-    ) -> Result<()> {
+    pub fn set_timestamp_skew(ctx: Context<AuthorityOnly>, skew_seconds: u32) -> Result<()> {
         require!(
             skew_seconds <= MAX_TIMESTAMP_SKEW_SECONDS,
             ErrorCode::TimestampSkewTooLarge
@@ -165,10 +165,7 @@ pub mod zk_verifier {
         // SOLID-SEC-006.  Refuse every write against a finalized VK.
         // The only legitimate way back to an open-for-writes state is
         // `request_vk_rotation` + timelock + `rotate_verification_key`.
-        require!(
-            !config.vk_finalized,
-            ErrorCode::VerificationKeyFinalized
-        );
+        require!(!config.vk_finalized, ErrorCode::VerificationKeyFinalized);
         require!(
             chunk_index == config.next_vk_chunk,
             ErrorCode::ChunkOutOfOrder
@@ -215,10 +212,7 @@ pub mod zk_verifier {
     /// calls are rejected via `VerificationKeyAlreadyFinalized`.
     pub fn finalize_verification_key(ctx: Context<AuthorityOnly>) -> Result<()> {
         let config = &mut ctx.accounts.verifier_config;
-        require!(
-            config.vk_initialized,
-            ErrorCode::VerificationKeyNotSet
-        );
+        require!(config.vk_initialized, ErrorCode::VerificationKeyNotSet);
         require!(
             !config.vk_finalized,
             ErrorCode::VerificationKeyAlreadyFinalized
@@ -242,10 +236,7 @@ pub mod zk_verifier {
     /// (`VerificationKeyNotFinalized`).
     pub fn request_vk_rotation(ctx: Context<AuthorityOnly>) -> Result<()> {
         let config = &mut ctx.accounts.verifier_config;
-        require!(
-            config.vk_finalized,
-            ErrorCode::VerificationKeyNotFinalized
-        );
+        require!(config.vk_finalized, ErrorCode::VerificationKeyNotFinalized);
         require!(
             config.rotate_request_ts == 0,
             ErrorCode::RotationAlreadyRequested
@@ -270,10 +261,7 @@ pub mod zk_verifier {
         let config = &mut ctx.accounts.verifier_config;
         let prior = config.rotate_request_ts;
         config.rotate_request_ts = 0;
-        msg!(
-            "VK rotation cancelled (prior request_ts={}).",
-            prior
-        );
+        msg!("VK rotation cancelled (prior request_ts={}).", prior);
         Ok(())
     }
 
@@ -290,14 +278,8 @@ pub mod zk_verifier {
     /// buffer atomically (same pattern as initial upload).
     pub fn rotate_verification_key(ctx: Context<AuthorityOnly>) -> Result<()> {
         let config = &mut ctx.accounts.verifier_config;
-        require!(
-            config.vk_finalized,
-            ErrorCode::VerificationKeyNotFinalized
-        );
-        require!(
-            config.rotate_request_ts != 0,
-            ErrorCode::NoPendingRotation
-        );
+        require!(config.vk_finalized, ErrorCode::VerificationKeyNotFinalized);
+        require!(config.rotate_request_ts != 0, ErrorCode::NoPendingRotation);
         let now = Clock::get()?.unix_timestamp;
         require!(
             vk_rotation_timelock_expired(config, now),
@@ -441,12 +423,8 @@ pub mod zk_verifier {
             &issuer_tree_root_input,
         )
         .map_err(|e| match e {
-            cpi_helpers::LightError::IssuerTreeRootMismatch => {
-                ErrorCode::IssuerTreeRootMismatch
-            }
-            cpi_helpers::LightError::IssuerTreeBindingFrozen => {
-                ErrorCode::IssuerTreeBindingFrozen
-            }
+            cpi_helpers::LightError::IssuerTreeRootMismatch => ErrorCode::IssuerTreeRootMismatch,
+            cpi_helpers::LightError::IssuerTreeBindingFrozen => ErrorCode::IssuerTreeBindingFrozen,
             _ => ErrorCode::InvalidIssuerTreeBinding,
         })?;
         drop(issuer_binding_data);
@@ -658,10 +636,9 @@ impl VkBuf {
 fn negate_g1_point(point: &[u8; 64]) -> std::result::Result<[u8; 64], ()> {
     // BN254 base-field prime (alt_bn128), big-endian.
     const P_BE: [u8; 32] = [
-        0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29,
-        0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
-        0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d,
-        0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+        0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58,
+        0x5d, 0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c,
+        0xfd, 0x47,
     ];
 
     // Out = (X || P - Y), computed as big-endian subtraction.
@@ -850,7 +827,10 @@ pub fn vk_rotation_timelock_expired(config: &VerifierConfig, now_unix_ts: i64) -
     if config.rotate_request_ts == 0 {
         return false;
     }
-    now_unix_ts >= config.rotate_request_ts.saturating_add(VK_ROTATION_TIMELOCK_SECONDS)
+    now_unix_ts
+        >= config
+            .rotate_request_ts
+            .saturating_add(VK_ROTATION_TIMELOCK_SECONDS)
 }
 
 #[account]
@@ -921,7 +901,9 @@ pub enum ErrorCode {
     NoPendingRotation,
     #[msg("VK rotation timelock has not yet expired (SOLID-SEC-006)")]
     RotationTimelockNotExpired,
-    #[msg("Clock returned a non-positive unix timestamp during VK rotation request (SOLID-SEC-006)")]
+    #[msg(
+        "Clock returned a non-positive unix timestamp during VK rotation request (SOLID-SEC-006)"
+    )]
     RotationClockInvalid,
 }
 
@@ -941,10 +923,10 @@ mod tests {
     fn synth_vk_bytes(nr_ic: usize) -> Vec<u8> {
         let mut v = Vec::with_capacity(4 + 64 + 128 * 3 + nr_ic * 64);
         v.extend_from_slice(&(nr_ic as u32).to_le_bytes());
-        v.extend_from_slice(&[1u8; 64]);   // alpha
-        v.extend_from_slice(&[2u8; 128]);  // beta
-        v.extend_from_slice(&[3u8; 128]);  // gamma
-        v.extend_from_slice(&[4u8; 128]);  // delta
+        v.extend_from_slice(&[1u8; 64]); // alpha
+        v.extend_from_slice(&[2u8; 128]); // beta
+        v.extend_from_slice(&[3u8; 128]); // gamma
+        v.extend_from_slice(&[4u8; 128]); // delta
         for i in 0..nr_ic {
             v.extend_from_slice(&[i as u8; 64]);
         }
@@ -1050,8 +1032,8 @@ mod tests {
     fn vk_rotation_not_expired_inside_window() {
         let mut config = blank_config();
         config.rotate_request_ts = 1_700_000_000; // arbitrary epoch
-        // Checking at request-time and at request + (timelock - 1)
-        // both must reject.  The handler will use Clock::unix_timestamp.
+                                                  // Checking at request-time and at request + (timelock - 1)
+                                                  // both must reject.  The handler will use Clock::unix_timestamp.
         assert!(!vk_rotation_timelock_expired(
             &config,
             config.rotate_request_ts

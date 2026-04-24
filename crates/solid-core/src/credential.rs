@@ -66,7 +66,11 @@ impl Credential {
         }
 
         // Verify issuer signature over commitment
-        crate::babyjubjub::verify(&self.issuer_pub_key, &self.commitment, &self.issuer_signature)
+        crate::babyjubjub::verify(
+            &self.issuer_pub_key,
+            &self.commitment,
+            &self.issuer_signature,
+        )
     }
 
     /// Get a specific field value from attestation data.
@@ -82,8 +86,7 @@ impl Credential {
 
     /// Deserialize from JSON.
     pub fn from_json(json: &str) -> crate::error::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| crate::SolidError::Serialization(e.to_string()))
+        serde_json::from_str(json).map_err(|e| crate::SolidError::Serialization(e.to_string()))
     }
 }
 

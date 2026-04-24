@@ -1,6 +1,6 @@
 use crate::babyjubjub::BJJPublicKey;
-use crate::poseidon;
 use crate::error::Result;
+use crate::poseidon;
 
 /// Phase 2.1: Identity State Commitment
 /// Represents the unified state of a SolID identity anchored in the global tree.

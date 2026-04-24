@@ -44,8 +44,7 @@ pub mod spl_noop_id {
 /// Anchor discriminator for `spl_account_compression::append`:
 /// `sha256("global:append")[..8]`.  Pinning here rather than recomputing on
 /// every call keeps the CPI allocation-free.
-pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] =
-    [0x95, 0x78, 0x12, 0xde, 0xec, 0xe1, 0x58, 0xcb];
+pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] = [0x95, 0x78, 0x12, 0xde, 0xec, 0xe1, 0x58, 0xcb];
 
 /// Anchor discriminator for `spl_account_compression::replace_leaf`:
 /// `sha256("global:replace_leaf")[..8]`.  Used by
@@ -227,7 +226,11 @@ pub mod issuer_registry {
         let config = &mut ctx.accounts.registry_config;
         config.total_issuers += 1;
 
-        msg!("Issuer registered: {}. Voting ends at {}", issuer.name, issuer.voting_ends_at);
+        msg!(
+            "Issuer registered: {}. Voting ends at {}",
+            issuer.name,
+            issuer.voting_ends_at
+        );
         Ok(())
     }
 
@@ -262,10 +265,7 @@ pub mod issuer_registry {
         // Reject late votes. finalize_voting already enforces the other side
         // (cannot finalize before voting_ends_at), so this check closes the
         // symmetric window.
-        require!(
-            now_ts < issuer.voting_ends_at,
-            ErrorCode::VotingPeriodEnded
-        );
+        require!(now_ts < issuer.voting_ends_at, ErrorCode::VotingPeriodEnded);
         require!(
             issuer.status == IssuerStatus::Pending,
             ErrorCode::IssuerNotPending
@@ -320,15 +320,23 @@ pub mod issuer_registry {
         let amount = issuer.staked_amount;
         issuer.staked_amount = 0;
 
-        **ctx.accounts.stake_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.issuer_authority.to_account_info().try_borrow_mut_lamports()? += amount;
+        **ctx
+            .accounts
+            .stake_vault
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .issuer_authority
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
         Ok(())
     }
 
     /// Stake DAO tokens to gain voting power.
     pub fn stake_tokens(ctx: Context<StakeTokens>, amount: u64) -> Result<()> {
         let staker_account = &mut ctx.accounts.staker_account;
-        
+
         // Transfer tokens to registry vault
         let cpi_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
@@ -343,7 +351,7 @@ pub mod issuer_registry {
         staker_account.voter = ctx.accounts.voter.key();
         staker_account.amount_staked += amount;
         staker_account.last_stake_slot = Clock::get()?.slot;
-        
+
         msg!("Staked {} tokens for voting power", amount);
         Ok(())
     }
@@ -351,9 +359,15 @@ pub mod issuer_registry {
     /// Unstake DAO tokens. Only allowed if no active votes.
     pub fn unstake_tokens(ctx: Context<UnstakeTokens>, amount: u64) -> Result<()> {
         let staker_account = &mut ctx.accounts.staker_account;
-        
-        require!(staker_account.active_votes_count == 0, ErrorCode::ActiveVotesExist);
-        require!(staker_account.amount_staked >= amount, ErrorCode::InsufficientStake);
+
+        require!(
+            staker_account.active_votes_count == 0,
+            ErrorCode::ActiveVotesExist
+        );
+        require!(
+            staker_account.amount_staked >= amount,
+            ErrorCode::InsufficientStake
+        );
 
         let registry_key = ctx.accounts.registry_config.key();
         let seeds = &[
@@ -376,7 +390,7 @@ pub mod issuer_registry {
         token::transfer(cpi_ctx, amount)?;
 
         staker_account.amount_staked -= amount;
-        
+
         msg!("Unstaked {} tokens", amount);
         Ok(())
     }
@@ -416,7 +430,10 @@ pub mod issuer_registry {
     /// negative (the ADR-0014 amendment) requires the leaf to bump.
     pub fn request_withdrawal(ctx: Context<RequestWithdrawal>) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
-        require!(issuer.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
 
         // SOLID-SEC-044.  Enrolled issuers route through
         // `request_withdrawal_atomic`; legacy path kept for
@@ -429,17 +446,20 @@ pub mod issuer_registry {
         issuer.status = IssuerStatus::Cooldown;
         issuer.cooldown_ends_at = now + 14 * 24 * 60 * 60;
 
-        msg!("Withdrawal requested. Cooldown ends at {}", issuer.cooldown_ends_at);
+        msg!(
+            "Withdrawal requested. Cooldown ends at {}",
+            issuer.cooldown_ends_at
+        );
         Ok(())
     }
 
     /// Finalize withdrawal of `amount` lamports after the cooldown expires.
-    pub fn withdraw_after_cooldown(
-        ctx: Context<WithdrawAfterCooldown>,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn withdraw_after_cooldown(ctx: Context<WithdrawAfterCooldown>, amount: u64) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
-        require!(issuer.status == IssuerStatus::Cooldown, ErrorCode::IssuerNotInCooldown);
+        require!(
+            issuer.status == IssuerStatus::Cooldown,
+            ErrorCode::IssuerNotInCooldown
+        );
         require!(
             Clock::get()?.unix_timestamp >= issuer.cooldown_ends_at,
             ErrorCode::CooldownNotEnded
@@ -454,8 +474,16 @@ pub mod issuer_registry {
             return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
         }
 
-        **ctx.accounts.stake_vault.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **ctx.accounts.issuer_authority.to_account_info().try_borrow_mut_lamports()? += amount;
+        **ctx
+            .accounts
+            .stake_vault
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .issuer_authority
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
 
         issuer.staked_amount = issuer.staked_amount.saturating_sub(amount);
         if issuer.staked_amount == 0 {
@@ -475,7 +503,10 @@ pub mod issuer_registry {
         let issuer = &mut ctx.accounts.issuer_account;
         let registry = &ctx.accounts.registry_config;
 
-        require!(issuer.status == IssuerStatus::Pending, ErrorCode::IssuerNotPending);
+        require!(
+            issuer.status == IssuerStatus::Pending,
+            ErrorCode::IssuerNotPending
+        );
         require!(
             Clock::get()?.unix_timestamp > issuer.voting_ends_at,
             ErrorCode::VotingPeriodNotEnded
@@ -516,11 +547,19 @@ pub mod issuer_registry {
                 timestamp: Clock::get()?.unix_timestamp,
             });
 
-            msg!("Issuer APPROVED: {} ({}% approval)", issuer.name, approval_pct / 100);
+            msg!(
+                "Issuer APPROVED: {} ({}% approval)",
+                issuer.name,
+                approval_pct / 100
+            );
         } else {
             issuer.status = IssuerStatus::Rejected;
-            msg!("Issuer REJECTED: {} ({}% approval, needed {}%)",
-                issuer.name, approval_pct / 100, registry.approval_threshold_bps / 100);
+            msg!(
+                "Issuer REJECTED: {} ({}% approval, needed {}%)",
+                issuer.name,
+                approval_pct / 100,
+                registry.approval_threshold_bps / 100
+            );
         }
         Ok(())
     }
@@ -536,7 +575,7 @@ pub mod issuer_registry {
         ctx: Context<SlashIssuer>,
         slash_amount: u64,
         reason_tag: SlashingReason,
-        memo: String
+        memo: String,
     ) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
 
@@ -600,7 +639,12 @@ pub mod issuer_registry {
             msg!("Issuer REVOKED due to insufficient stake after slash");
         }
 
-        msg!("Issuer slashed: {} lamports. Reason: {:?}. Memo: {}", slash_amount, reason_tag, memo);
+        msg!(
+            "Issuer slashed: {} lamports. Reason: {:?}. Memo: {}",
+            slash_amount,
+            reason_tag,
+            memo
+        );
         Ok(())
     }
 
@@ -643,10 +687,7 @@ pub mod issuer_registry {
         // slash would zero the stake AND the issuer is tree-enrolled,
         // refuse here so the revocation must go through
         // `revoke_issuer_atomic`.
-        let would_revoke = issuer
-            .staked_amount
-            .saturating_sub(slash_amount)
-            == 0;
+        let would_revoke = issuer.staked_amount.saturating_sub(slash_amount) == 0;
         if would_revoke && issuer.is_tree_enrolled {
             return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
         }
@@ -708,13 +749,15 @@ pub mod issuer_registry {
             anchor.tier == IssuerTier::Government || anchor.tier == IssuerTier::Regulated,
             ErrorCode::UnauthorizedTrustAnchor
         );
-        require!(anchor.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
-        require!(target.status == IssuerStatus::Pending, ErrorCode::IssuerNotPending);
-        require_keys_eq!(
-            target.authority,
-            target_authority,
-            ErrorCode::Unauthorized
+        require!(
+            anchor.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
         );
+        require!(
+            target.status == IssuerStatus::Pending,
+            ErrorCode::IssuerNotPending
+        );
+        require_keys_eq!(target.authority, target_authority, ErrorCode::Unauthorized);
 
         target.status = IssuerStatus::Approved;
         // ADR-0014: same status-epoch hand-off as finalize_voting; the
@@ -739,14 +782,21 @@ pub mod issuer_registry {
             timestamp: Clock::get()?.unix_timestamp,
         });
 
-        msg!("Issuer APPROVED via Trust Anchor {}: {}", anchor.name, target.name);
+        msg!(
+            "Issuer APPROVED via Trust Anchor {}: {}",
+            anchor.name,
+            target.name
+        );
         Ok(())
     }
 
     /// Check if an issuer is approved (called via CPI from ZK verifier).
     pub fn check_issuer_status(ctx: Context<CheckIssuerStatus>) -> Result<()> {
         let issuer = &ctx.accounts.issuer_account;
-        require!(issuer.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
         msg!("Issuer {} is APPROVED", issuer.name);
         Ok(())
     }
@@ -819,10 +869,7 @@ pub mod issuer_registry {
         let rent = Rent::get()?;
         let lamports = rent.minimum_balance(ISSUER_TREE_BINDING_SIZE);
 
-        let signer_seeds: &[&[u8]] = &[
-            ISSUER_TREE_BINDING_SEED,
-            &[ctx.bumps.issuer_tree_binding],
-        ];
+        let signer_seeds: &[&[u8]] = &[ISSUER_TREE_BINDING_SEED, &[ctx.bumps.issuer_tree_binding]];
         let signer_seeds_all: &[&[&[u8]]] = &[signer_seeds];
 
         invoke_signed(
@@ -929,8 +976,7 @@ pub mod issuer_registry {
         );
         let mut data = binding_info.try_borrow_mut_data()?;
         require!(
-            data.len() >= ISSUER_TREE_BINDING_SIZE
-                && data[0..8] == ISSUER_TREE_DISCRIMINATOR,
+            data.len() >= ISSUER_TREE_BINDING_SIZE && data[0..8] == ISSUER_TREE_DISCRIMINATOR,
             ErrorCode::InvalidIssuerTreeBinding
         );
         let stored_authority: [u8; 32] = data[81..113].try_into().unwrap();
@@ -1007,10 +1053,7 @@ pub mod issuer_registry {
             issuer.status == IssuerStatus::Approved,
             ErrorCode::IssuerNotApproved
         );
-        require!(
-            !issuer.is_tree_enrolled,
-            ErrorCode::IssuerAlreadyEnrolled
-        );
+        require!(!issuer.is_tree_enrolled, ErrorCode::IssuerAlreadyEnrolled);
 
         // Compute the leaf that `batch_credential_query.circom` STEP 0.75
         // would compute for this issuer.  The input ordering MUST match
@@ -1033,10 +1076,8 @@ pub mod issuer_registry {
             ErrorCode::InvalidNoopProgram
         );
 
-        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
-            &[ISSUER_TREE_AUTHORITY_SEED],
-            &crate::ID,
-        );
+        let (tree_authority_key, tree_authority_bump) =
+            Pubkey::find_program_address(&[ISSUER_TREE_AUTHORITY_SEED], &crate::ID);
         require_keys_eq!(
             ctx.accounts.issuer_tree_authority.key(),
             tree_authority_key,
@@ -1056,10 +1097,7 @@ pub mod issuer_registry {
             ],
             data: ix_data,
         };
-        let signer_seeds: &[&[u8]] = &[
-            ISSUER_TREE_AUTHORITY_SEED,
-            &[tree_authority_bump],
-        ];
+        let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         invoke_signed(
             &cpi_ix,
             &[
@@ -1133,8 +1171,7 @@ pub mod issuer_registry {
         let issuer = &mut ctx.accounts.issuer_account;
         require!(issuer.is_tree_enrolled, ErrorCode::IssuerNotEnrolled);
         require!(
-            issuer.status == IssuerStatus::Approved
-                || issuer.status == IssuerStatus::Cooldown,
+            issuer.status == IssuerStatus::Approved || issuer.status == IssuerStatus::Cooldown,
             ErrorCode::InvalidRevokeSourceStatus
         );
 
@@ -1174,10 +1211,8 @@ pub mod issuer_registry {
             ErrorCode::InvalidNoopProgram
         );
 
-        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
-            &[ISSUER_TREE_AUTHORITY_SEED],
-            &crate::ID,
-        );
+        let (tree_authority_key, tree_authority_bump) =
+            Pubkey::find_program_address(&[ISSUER_TREE_AUTHORITY_SEED], &crate::ID);
         require_keys_eq!(
             ctx.accounts.issuer_tree_authority.key(),
             tree_authority_key,
@@ -1210,10 +1245,7 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
-        let signer_seeds: &[&[u8]] = &[
-            ISSUER_TREE_AUTHORITY_SEED,
-            &[tree_authority_bump],
-        ];
+        let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
             ctx.accounts.issuer_tree_authority.to_account_info(),
@@ -1344,10 +1376,8 @@ pub mod issuer_registry {
             ErrorCode::InvalidNoopProgram
         );
 
-        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
-            &[ISSUER_TREE_AUTHORITY_SEED],
-            &crate::ID,
-        );
+        let (tree_authority_key, tree_authority_bump) =
+            Pubkey::find_program_address(&[ISSUER_TREE_AUTHORITY_SEED], &crate::ID);
         require_keys_eq!(
             ctx.accounts.issuer_tree_authority.key(),
             tree_authority_key,
@@ -1376,10 +1406,7 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
-        let signer_seeds: &[&[u8]] = &[
-            ISSUER_TREE_AUTHORITY_SEED,
-            &[tree_authority_bump],
-        ];
+        let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
             ctx.accounts.issuer_tree_authority.to_account_info(),
@@ -1490,10 +1517,8 @@ pub mod issuer_registry {
         }
 
         // Derive and verify the tree-authority PDA.
-        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
-            &[TREE_AUTHORITY_SEED, schema_hash.as_ref()],
-            &crate::ID,
-        );
+        let (tree_authority_key, tree_authority_bump) =
+            Pubkey::find_program_address(&[TREE_AUTHORITY_SEED, schema_hash.as_ref()], &crate::ID);
         require_keys_eq!(
             ctx.accounts.tree_authority.key(),
             tree_authority_key,
@@ -1512,7 +1537,11 @@ pub mod issuer_registry {
             spl_ac,
             ErrorCode::InvalidCompressionProgram
         );
-        require_keys_eq!(ctx.accounts.log_wrapper.key(), spl_noop, ErrorCode::InvalidNoopProgram);
+        require_keys_eq!(
+            ctx.accounts.log_wrapper.key(),
+            spl_noop,
+            ErrorCode::InvalidNoopProgram
+        );
 
         let cpi_ix = Instruction {
             program_id: spl_ac,
@@ -2095,10 +2124,10 @@ pub enum IssuerTier {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Debug)]
 pub enum SlashingReason {
-    InvalidIssuance,   // Programmable
-    DoubleIssuance,    // Programmable
-    RevokedMisuse,     // Social
-    IdentityDoxxing,   // Social
+    InvalidIssuance, // Programmable
+    DoubleIssuance,  // Programmable
+    RevokedMisuse,   // Social
+    IdentityDoxxing, // Social
     Other,
 }
 
@@ -2269,7 +2298,9 @@ pub enum ErrorCode {
     InvalidIssuerTreeAuthority,
     #[msg("Issuer is already enrolled in the issuer tree (ADR-0014)")]
     IssuerAlreadyEnrolled,
-    #[msg("Issuer is not yet enrolled in the issuer tree (ADR-0014); call append_issuer_leaf first")]
+    #[msg(
+        "Issuer is not yet enrolled in the issuer tree (ADR-0014); call append_issuer_leaf first"
+    )]
     IssuerNotEnrolled,
     #[msg("revoke_issuer_atomic requires the issuer to be in Approved or Cooldown status")]
     InvalidRevokeSourceStatus,
@@ -2316,16 +2347,11 @@ fn transfer_slashed_lamports<'info>(
     //
     // `to` can only grow, so no rent check is needed on the receiver.
     let min_rent = Rent::get()?.minimum_balance(from.data_len());
-    require!(
-        remaining >= min_rent,
-        ErrorCode::StakeVaultWouldGoBelow
-    );
+    require!(remaining >= min_rent, ErrorCode::StakeVaultWouldGoBelow);
 
     **from.try_borrow_mut_lamports()? = remaining;
     let to_balance = **to.try_borrow_lamports()?;
-    **to.try_borrow_mut_lamports()? = to_balance
-        .checked_add(amount)
-        .ok_or(ErrorCode::Overflow)?;
+    **to.try_borrow_mut_lamports()? = to_balance.checked_add(amount).ok_or(ErrorCode::Overflow)?;
     Ok(())
 }
 

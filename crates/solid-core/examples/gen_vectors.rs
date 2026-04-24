@@ -8,10 +8,8 @@
 
 use serde::Serialize;
 use solid_core::{
-    babyjubjub::BJJPublicKey,
-    commitment::compute_attestation_commitment,
-    nullifier::compute_nullifier,
-    poseidon,
+    babyjubjub::BJJPublicKey, commitment::compute_attestation_commitment,
+    nullifier::compute_nullifier, poseidon,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -54,7 +52,10 @@ fn main() -> anyhow::Result<()> {
     let holder_y = [8u8; 32];
     let salt = [42u8; 32];
 
-    let holder_pk = BJJPublicKey { x: holder_x, y: holder_y };
+    let holder_pk = BJJPublicKey {
+        x: holder_x,
+        y: holder_y,
+    };
     let commitment = compute_attestation_commitment(&data_fields, &schema_hash, &holder_pk, &salt)?;
 
     let master_key = [0x11u8; 32];

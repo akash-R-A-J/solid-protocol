@@ -78,7 +78,12 @@ pub struct Predicate {
 
 impl Predicate {
     pub fn new(credential_index: u8, field_index: u8, operator: Operator, value: u64) -> Self {
-        Self { credential_index, field_index, operator, value }
+        Self {
+            credential_index,
+            field_index,
+            operator,
+            value,
+        }
     }
 
     /// Evaluate this predicate against attestation data.
@@ -86,7 +91,8 @@ impl Predicate {
         if (self.field_index as usize) >= attestation_data.len() {
             return false;
         }
-        self.operator.evaluate(attestation_data[self.field_index as usize], self.value)
+        self.operator
+            .evaluate(attestation_data[self.field_index as usize], self.value)
     }
 }
 
@@ -152,8 +158,7 @@ impl CompoundQuery {
         if predicate.field_index as usize >= MAX_FIELDS {
             return Err(crate::SolidError::InvalidInput(format!(
                 "Field index must be < {}, got {}",
-                MAX_FIELDS,
-                predicate.field_index
+                MAX_FIELDS, predicate.field_index
             )));
         }
         self.predicates.push(predicate);
@@ -334,8 +339,10 @@ mod tests {
     fn test_compound_and() {
         let data = [21u64, 840, 1, 0, 0, 0, 0, 0]; // age=21, country=840
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap(); // age >= 21
-        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840)).unwrap(); // country == US
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21))
+            .unwrap(); // age >= 21
+        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840))
+            .unwrap(); // country == US
         assert!(q.evaluate(&data));
 
         let data_fail = [18u64, 840, 1, 0, 0, 0, 0, 0]; // age=18
@@ -345,8 +352,10 @@ mod tests {
     #[test]
     fn test_compound_or() {
         let mut q = CompoundQuery::new_or([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap();
-        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840)).unwrap();
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21))
+            .unwrap();
+        q.add_predicate(Predicate::new(0, 1, Operator::Eq, 840))
+            .unwrap();
 
         assert!(q.evaluate(&[18, 840, 0, 0, 0, 0, 0, 0])); // age<21 but country=US
         assert!(!q.evaluate(&[18, 100, 0, 0, 0, 0, 0, 0])); // both fail
@@ -356,15 +365,19 @@ mod tests {
     fn test_max_predicates_enforced() {
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
         for i in 0..4u8 {
-            q.add_predicate(Predicate::new(0, i, Operator::Eq, 1)).unwrap();
+            q.add_predicate(Predicate::new(0, i, Operator::Eq, 1))
+                .unwrap();
         }
-        assert!(q.add_predicate(Predicate::new(0, 4, Operator::Eq, 1)).is_err());
+        assert!(q
+            .add_predicate(Predicate::new(0, 4, Operator::Eq, 1))
+            .is_err());
     }
 
     #[test]
     fn test_circuit_inputs_padding() {
         let mut q = CompoundQuery::new_and([0u8; 32], [0u8; 32]);
-        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21)).unwrap();
+        q.add_predicate(Predicate::new(0, 0, Operator::Gte, 21))
+            .unwrap();
         let ci = q.to_circuit_inputs();
         assert_eq!(ci.num_predicates, 1);
         assert_eq!(ci.query_operators[0], Operator::Gte as u8);

@@ -52,10 +52,8 @@ pub const SCHEMA_REGISTRY_ID: Pubkey =
 /// so the program-ID literal above is usable in `const` contexts without the
 /// `pubkey!` proc-macro, which is not re-exported from `anchor_lang::prelude`.
 const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
-    184, 31, 191, 183, 14, 126, 178, 219,
-    191, 193, 249, 206, 232, 77, 185, 224,
-    56, 51, 91, 209, 33, 205, 175, 183,
-    155, 9, 46, 66, 147, 25, 1, 94,
+    184, 31, 191, 183, 14, 126, 178, 219, 191, 193, 249, 206, 232, 77, 185, 224, 56, 51, 91, 209,
+    33, 205, 175, 183, 155, 9, 46, 66, 147, 25, 1, 94,
 ];
 
 /// Hard-coded program ID for the `issuer-registry` program.
@@ -75,10 +73,8 @@ pub const ISSUER_REGISTRY_ID: Pubkey =
 /// drift test below is the local gate; `scripts/check_program_ids.py`
 /// is the repo-wide gate.
 const ISSUER_REGISTRY_ID_BYTES: [u8; 32] = [
-    169, 168,  18, 211, 249, 105,  70, 114,
-    159,  27,  28, 172,  73, 149,  87, 152,
-     51, 253,  20, 143, 121, 225, 183, 185,
-    137,  84,  62, 138, 230,  57, 221, 184,
+    169, 168, 18, 211, 249, 105, 70, 114, 159, 27, 28, 172, 73, 149, 87, 152, 51, 253, 20, 143,
+    121, 225, 183, 185, 137, 84, 62, 138, 230, 57, 221, 184,
 ];
 
 // ─── Program-ID consistency tests (SOLID-SEC-032) ──────────────────────────
@@ -194,8 +190,7 @@ pub fn build_insert_identity_data(owner: [u8; 32], revocation_nonce: u64) -> Res
     };
     let mut data = Vec::with_capacity(CompressedIdentity::size());
     data.extend_from_slice(&CompressedIdentity::DISCRIMINATOR);
-    borsh::to_writer(&mut data, &identity)
-        .map_err(|_| error!(LightError::SerializationFailed))?;
+    borsh::to_writer(&mut data, &identity).map_err(|_| error!(LightError::SerializationFailed))?;
     Ok(data)
 }
 
@@ -216,8 +211,7 @@ pub fn build_insert_issuer_data(
     };
     let mut data = Vec::with_capacity(CompressedIssuer::size());
     data.extend_from_slice(&CompressedIssuer::DISCRIMINATOR);
-    borsh::to_writer(&mut data, &issuer)
-        .map_err(|_| error!(LightError::SerializationFailed))?;
+    borsh::to_writer(&mut data, &issuer).map_err(|_| error!(LightError::SerializationFailed))?;
     Ok(data)
 }
 
@@ -373,18 +367,15 @@ pub fn verify_schema_tree_binding_for_issue(
     expected_schema: &[u8; 32],
     expected_tree: &Pubkey,
 ) -> std::result::Result<(), LightError> {
-    let schema = schema_tree_binding_schema_hash(data)
-        .ok_or(LightError::InvalidSchemaBinding)?;
+    let schema = schema_tree_binding_schema_hash(data).ok_or(LightError::InvalidSchemaBinding)?;
     if &schema != expected_schema {
         return Err(LightError::InvalidSchemaBinding);
     }
-    let tree = schema_tree_binding_tree_pubkey(data)
-        .ok_or(LightError::InvalidSchemaBinding)?;
+    let tree = schema_tree_binding_tree_pubkey(data).ok_or(LightError::InvalidSchemaBinding)?;
     if &tree != expected_tree {
         return Err(LightError::TreeBindingMismatch);
     }
-    let status = schema_tree_binding_status(data)
-        .ok_or(LightError::InvalidSchemaBinding)?;
+    let status = schema_tree_binding_status(data).ok_or(LightError::InvalidSchemaBinding)?;
     if status != STATUS_ACTIVE_BYTE {
         return Err(LightError::SchemaTreeBindingFrozen);
     }
@@ -476,13 +467,12 @@ pub fn verify_issuer_tree_binding_for_proof(
     data: &[u8],
     expected_root: &[u8; 32],
 ) -> std::result::Result<(), LightError> {
-    let root = issuer_tree_binding_current_root(data)
-        .ok_or(LightError::InvalidIssuerTreeBinding)?;
+    let root =
+        issuer_tree_binding_current_root(data).ok_or(LightError::InvalidIssuerTreeBinding)?;
     if &root != expected_root {
         return Err(LightError::IssuerTreeRootMismatch);
     }
-    let status = issuer_tree_binding_status(data)
-        .ok_or(LightError::InvalidIssuerTreeBinding)?;
+    let status = issuer_tree_binding_status(data).ok_or(LightError::InvalidIssuerTreeBinding)?;
     if status != STATUS_ACTIVE_BYTE {
         return Err(LightError::IssuerTreeBindingFrozen);
     }
@@ -519,7 +509,12 @@ pub enum LightError {
 mod tests {
     use super::*;
 
-    fn make_schema_account(schema: [u8; 32], tree_pk: [u8; 32], root: [u8; 32], status: u8) -> Vec<u8> {
+    fn make_schema_account(
+        schema: [u8; 32],
+        tree_pk: [u8; 32],
+        root: [u8; 32],
+        status: u8,
+    ) -> Vec<u8> {
         let mut v = Vec::with_capacity(113);
         v.extend_from_slice(&SCHEMA_TREE_DISCRIMINATOR);
         v.extend_from_slice(&schema);
@@ -690,11 +685,7 @@ mod tests {
     // guarantee. These tests prove the parser rejects every mismatch axis
     // the on-chain handler must not accept.
 
-    fn make_issuer_tree_binding(
-        tree_pk: [u8; 32],
-        root: [u8; 32],
-        status: u8,
-    ) -> Vec<u8> {
+    fn make_issuer_tree_binding(tree_pk: [u8; 32], root: [u8; 32], status: u8) -> Vec<u8> {
         let mut v = Vec::with_capacity(113);
         v.extend_from_slice(&ISSUER_TREE_DISCRIMINATOR);
         v.extend_from_slice(&tree_pk);

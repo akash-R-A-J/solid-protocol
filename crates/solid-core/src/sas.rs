@@ -4,7 +4,7 @@
 //! This module provides Rust types matching SAS on-chain structures
 //! for CPI integration from SolID programs.
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// SAS Schema — defines the structure of attestable data.
 #[derive(Debug, Clone, Serialize, Deserialize)]

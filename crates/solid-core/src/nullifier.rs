@@ -92,9 +92,14 @@ mod tests {
         let query = [2u8; 32];
         let root = itr();
 
-        let n1 = compute_nullifier(&kp.private_key, 0, &verifier, &query, &[1u8; 32], &root).unwrap();
-        let n2 = compute_nullifier(&kp.private_key, 0, &verifier, &query, &[2u8; 32], &root).unwrap();
-        assert_ne!(n1, n2, "Different verifier nonces must produce different nullifiers");
+        let n1 =
+            compute_nullifier(&kp.private_key, 0, &verifier, &query, &[1u8; 32], &root).unwrap();
+        let n2 =
+            compute_nullifier(&kp.private_key, 0, &verifier, &query, &[2u8; 32], &root).unwrap();
+        assert_ne!(
+            n1, n2,
+            "Different verifier nonces must produce different nullifiers"
+        );
     }
 
     #[test]
@@ -135,7 +140,8 @@ mod tests {
         let query = [2u8; 32];
         let nonce = [3u8; 32];
 
-        let n1 = compute_nullifier(&kp.private_key, 0, &verifier, &query, &nonce, &[0x99u8; 32]).unwrap();
+        let n1 = compute_nullifier(&kp.private_key, 0, &verifier, &query, &nonce, &[0x99u8; 32])
+            .unwrap();
         let mut alt = [0x99u8; 32];
         alt[0] = 0x98; // single-bit-ish change
         let n2 = compute_nullifier(&kp.private_key, 0, &verifier, &query, &nonce, &alt).unwrap();

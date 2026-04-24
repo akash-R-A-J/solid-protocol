@@ -9,5 +9,5 @@
 //! - CPI helpers for state root verification (proof checking)
 //! - CPI helpers for leaf nullification (revocation)
 
-pub mod credential_tree;
 pub mod cpi_helpers;
+pub mod credential_tree;

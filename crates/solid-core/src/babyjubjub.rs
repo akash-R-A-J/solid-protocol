@@ -210,7 +210,7 @@ pub fn derive_public_key(private_key: &[u8; 32]) -> Result<BJJPublicKey> {
 }
 
 /// Phase 1.1: Derive a deterministic sub-key from a master key and context.
-/// 
+///
 /// credentialKey = Poseidon(masterKey, schemaHash)
 /// nullifierKey  = Poseidon(masterKey, verifierAddress)
 pub fn derive_key(master_key: &[u8; 32], context: &[u8; 32]) -> Result<[u8; 32]> {
@@ -377,8 +377,7 @@ impl BJJIdentity {
 
     /// Decrypt and return the BJJ private key.
     pub fn unlock(&self, passphrase: &[u8]) -> Result<[u8; 32]> {
-        let encryption_key =
-            Self::derive_key(passphrase, &self.encrypted_private_key.salt)?;
+        let encryption_key = Self::derive_key(passphrase, &self.encrypted_private_key.salt)?;
         let cipher = Aes256Gcm::new_from_slice(&encryption_key)
             .map_err(|e| SolidError::Decryption(format!("Cipher init: {}", e)))?;
         let nonce = Nonce::from_slice(&self.encrypted_private_key.nonce);
@@ -403,8 +402,7 @@ impl BJJIdentity {
 
     /// Export as JSON string for cross-device transfer.
     pub fn export_json(&self) -> Result<String> {
-        serde_json::to_string_pretty(self)
-            .map_err(|e| SolidError::Serialization(e.to_string()))
+        serde_json::to_string_pretty(self).map_err(|e| SolidError::Serialization(e.to_string()))
     }
 
     /// Import from JSON string.
@@ -416,7 +414,8 @@ impl BJJIdentity {
     fn derive_key(passphrase: &[u8], salt: &[u8; 32]) -> Result<[u8; 32]> {
         let params = argon2::Params::new(65536, 3, 4, Some(32))
             .map_err(|e| SolidError::Encryption(format!("Argon2 params: {}", e)))?;
-        let argon2 = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
+        let argon2 =
+            argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
         let mut key = [0u8; 32];
         argon2
             .hash_password_into(passphrase, salt, &mut key)

@@ -164,14 +164,58 @@ pub fn basic_identity_v1() -> Result<SchemaDefinition> {
         1,
         SchemaCategory::Hospitality,
         vec![
-            FieldDef { name: "age".into(), field_type: FieldType::Uint64, range_queryable: true, description: "Age in years".into() },
-            FieldDef { name: "country_code".into(), field_type: FieldType::Uint64, range_queryable: false, description: "ISO 3166-1 numeric country code".into() },
-            FieldDef { name: "resident_region".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Region code".into() },
-            FieldDef { name: "id_type".into(), field_type: FieldType::Enum(vec!["Passport".into(), "DL".into(), "NationalID".into()]), range_queryable: false, description: "Identity document type".into() },
-            FieldDef { name: "verification_level".into(), field_type: FieldType::Uint64, range_queryable: true, description: "1=Self, 2=KYC, 3=InPerson".into() },
-            FieldDef { name: "issued_date".into(), field_type: FieldType::Timestamp, range_queryable: true, description: "Issuance timestamp".into() },
-            FieldDef { name: "nationality".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Nationality code".into() },
-            FieldDef { name: "_reserved".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Reserved".into() },
+            FieldDef {
+                name: "age".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "Age in years".into(),
+            },
+            FieldDef {
+                name: "country_code".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "ISO 3166-1 numeric country code".into(),
+            },
+            FieldDef {
+                name: "resident_region".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Region code".into(),
+            },
+            FieldDef {
+                name: "id_type".into(),
+                field_type: FieldType::Enum(vec![
+                    "Passport".into(),
+                    "DL".into(),
+                    "NationalID".into(),
+                ]),
+                range_queryable: false,
+                description: "Identity document type".into(),
+            },
+            FieldDef {
+                name: "verification_level".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "1=Self, 2=KYC, 3=InPerson".into(),
+            },
+            FieldDef {
+                name: "issued_date".into(),
+                field_type: FieldType::Timestamp,
+                range_queryable: true,
+                description: "Issuance timestamp".into(),
+            },
+            FieldDef {
+                name: "nationality".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Nationality code".into(),
+            },
+            FieldDef {
+                name: "_reserved".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Reserved".into(),
+            },
         ],
     )
 }
@@ -183,14 +227,54 @@ pub fn vaccination_v1() -> Result<SchemaDefinition> {
         1,
         SchemaCategory::Healthcare,
         vec![
-            FieldDef { name: "vaccine_type".into(), field_type: FieldType::Enum(vec!["COVID".into(), "Flu".into(), "Measles".into()]), range_queryable: false, description: "Vaccine type".into() },
-            FieldDef { name: "dose_number".into(), field_type: FieldType::Uint64, range_queryable: true, description: "Dose number".into() },
-            FieldDef { name: "date_administered".into(), field_type: FieldType::Timestamp, range_queryable: true, description: "Administration date".into() },
-            FieldDef { name: "issuer_authority".into(), field_type: FieldType::Uint64, range_queryable: false, description: "1=CDC, 2=WHO, 3=NHS".into() },
-            FieldDef { name: "batch_number".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Batch ID".into() },
-            FieldDef { name: "expiry_date".into(), field_type: FieldType::Timestamp, range_queryable: true, description: "Expiry (0 = none)".into() },
-            FieldDef { name: "country_code".into(), field_type: FieldType::Uint64, range_queryable: false, description: "ISO country code".into() },
-            FieldDef { name: "recipient_age".into(), field_type: FieldType::Uint64, range_queryable: true, description: "Age at vaccination".into() },
+            FieldDef {
+                name: "vaccine_type".into(),
+                field_type: FieldType::Enum(vec!["COVID".into(), "Flu".into(), "Measles".into()]),
+                range_queryable: false,
+                description: "Vaccine type".into(),
+            },
+            FieldDef {
+                name: "dose_number".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "Dose number".into(),
+            },
+            FieldDef {
+                name: "date_administered".into(),
+                field_type: FieldType::Timestamp,
+                range_queryable: true,
+                description: "Administration date".into(),
+            },
+            FieldDef {
+                name: "issuer_authority".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "1=CDC, 2=WHO, 3=NHS".into(),
+            },
+            FieldDef {
+                name: "batch_number".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Batch ID".into(),
+            },
+            FieldDef {
+                name: "expiry_date".into(),
+                field_type: FieldType::Timestamp,
+                range_queryable: true,
+                description: "Expiry (0 = none)".into(),
+            },
+            FieldDef {
+                name: "country_code".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "ISO country code".into(),
+            },
+            FieldDef {
+                name: "recipient_age".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "Age at vaccination".into(),
+            },
         ],
     )
 }
@@ -202,14 +286,54 @@ pub fn product_certification_v1() -> Result<SchemaDefinition> {
         1,
         SchemaCategory::SupplyChain,
         vec![
-            FieldDef { name: "product_category".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Product category".into() },
-            FieldDef { name: "certification_level".into(), field_type: FieldType::Uint64, range_queryable: true, description: "1=Basic, 2=Standard, 3=Premium".into() },
-            FieldDef { name: "audit_date".into(), field_type: FieldType::Timestamp, range_queryable: true, description: "Last audit date".into() },
-            FieldDef { name: "auditor_id".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Auditor identifier".into() },
-            FieldDef { name: "compliance_score".into(), field_type: FieldType::Uint64, range_queryable: true, description: "0-100 score".into() },
-            FieldDef { name: "region".into(), field_type: FieldType::Uint64, range_queryable: false, description: "Region code".into() },
-            FieldDef { name: "organic_flag".into(), field_type: FieldType::Boolean, range_queryable: false, description: "Organic certification".into() },
-            FieldDef { name: "valid_until".into(), field_type: FieldType::Timestamp, range_queryable: true, description: "Validity expiry".into() },
+            FieldDef {
+                name: "product_category".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Product category".into(),
+            },
+            FieldDef {
+                name: "certification_level".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "1=Basic, 2=Standard, 3=Premium".into(),
+            },
+            FieldDef {
+                name: "audit_date".into(),
+                field_type: FieldType::Timestamp,
+                range_queryable: true,
+                description: "Last audit date".into(),
+            },
+            FieldDef {
+                name: "auditor_id".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Auditor identifier".into(),
+            },
+            FieldDef {
+                name: "compliance_score".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: true,
+                description: "0-100 score".into(),
+            },
+            FieldDef {
+                name: "region".into(),
+                field_type: FieldType::Uint64,
+                range_queryable: false,
+                description: "Region code".into(),
+            },
+            FieldDef {
+                name: "organic_flag".into(),
+                field_type: FieldType::Boolean,
+                range_queryable: false,
+                description: "Organic certification".into(),
+            },
+            FieldDef {
+                name: "valid_until".into(),
+                field_type: FieldType::Timestamp,
+                range_queryable: true,
+                description: "Validity expiry".into(),
+            },
         ],
     )
 }
@@ -234,7 +358,8 @@ mod tests {
 
     #[test]
     fn test_schema_field_count_enforced() {
-        let result = SchemaDefinition::new("empty", 1, SchemaCategory::Custom("test".into()), vec![]);
+        let result =
+            SchemaDefinition::new("empty", 1, SchemaCategory::Custom("test".into()), vec![]);
         assert!(result.is_err());
     }
 
@@ -256,14 +381,13 @@ mod tests {
     fn test_compute_schema_hash_parts_matches_definition() {
         let s = basic_identity_v1().unwrap();
         let via_definition = s.compute_hash().unwrap();
-        let via_parts = compute_schema_hash_from_parts(&s.name, s.version, s.fields.len())
-            .unwrap();
+        let via_parts = compute_schema_hash_from_parts(&s.name, s.version, s.fields.len()).unwrap();
         assert_eq!(via_definition, via_parts);
 
         let s2 = vaccination_v1().unwrap();
         let via_definition2 = s2.compute_hash().unwrap();
-        let via_parts2 = compute_schema_hash_from_parts(&s2.name, s2.version, s2.fields.len())
-            .unwrap();
+        let via_parts2 =
+            compute_schema_hash_from_parts(&s2.name, s2.version, s2.fields.len()).unwrap();
         assert_eq!(via_definition2, via_parts2);
     }
 

@@ -116,16 +116,10 @@ pub mod schema_registry {
         // so the on-chain check cannot drift from the off-chain SDK. Any
         // change to the preimage layout must land in BOTH places in the same
         // PR (regression test: `solid_core::schema::tests::test_compute_schema_hash_parts_matches_definition`).
-        let computed_hash = solid_core::schema::compute_schema_hash_from_parts(
-            &name,
-            version,
-            field_names.len(),
-        )
-        .map_err(|_| error!(ErrorCode::PoseidonFailed))?;
-        require!(
-            computed_hash == schema_hash,
-            ErrorCode::InvalidSchemaHash
-        );
+        let computed_hash =
+            solid_core::schema::compute_schema_hash_from_parts(&name, version, field_names.len())
+                .map_err(|_| error!(ErrorCode::PoseidonFailed))?;
+        require!(computed_hash == schema_hash, ErrorCode::InvalidSchemaHash);
 
         let schema = &mut ctx.accounts.schema_account;
         schema.authority = ctx.accounts.authority.key();

@@ -128,7 +128,10 @@ mod tests {
         let fields = [10u64, 20u64, 30u64];
         let result_fields = hash_fields_to_bytes(&fields).unwrap();
 
-        let fr_inputs: Vec<[u8; 32]> = fields.iter().map(|&f| fr_to_bytes_le(&Fr::from(f))).collect();
+        let fr_inputs: Vec<[u8; 32]> = fields
+            .iter()
+            .map(|&f| fr_to_bytes_le(&Fr::from(f)))
+            .collect();
         let result_bytes = hash_bytes(&fr_inputs).unwrap();
 
         assert_eq!(result_fields, result_bytes);

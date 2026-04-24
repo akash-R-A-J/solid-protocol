@@ -54,13 +54,8 @@ pub fn compute_attestation_commitment(
     let holder_y_fr = poseidon::bytes_le_to_fr(&holder_pub_key.y);
     let salt_fr = poseidon::bytes_le_to_fr(salt);
 
-    let commitment = poseidon::hash_fr(&[
-        data_hash_fr,
-        schema_fr,
-        holder_x_fr,
-        holder_y_fr,
-        salt_fr,
-    ])?;
+    let commitment =
+        poseidon::hash_fr(&[data_hash_fr, schema_fr, holder_x_fr, holder_y_fr, salt_fr])?;
 
     Ok(poseidon::fr_to_bytes_le(&commitment))
 }
@@ -74,10 +69,16 @@ pub fn compute_commitment_from_data_hash(
     holder_pub_key: &BJJPublicKey,
     salt: &[u8; 32],
 ) -> Result<[u8; 32]> {
-    let inputs: Vec<Fr> = [data_hash, schema_hash, &holder_pub_key.x, &holder_pub_key.y, salt]
-        .iter()
-        .map(|b| poseidon::bytes_le_to_fr(b))
-        .collect();
+    let inputs: Vec<Fr> = [
+        data_hash,
+        schema_hash,
+        &holder_pub_key.x,
+        &holder_pub_key.y,
+        salt,
+    ]
+    .iter()
+    .map(|b| poseidon::bytes_le_to_fr(b))
+    .collect();
 
     let commitment = poseidon::hash_fr(&inputs)?;
     Ok(poseidon::fr_to_bytes_le(&commitment))
@@ -95,8 +96,10 @@ mod tests {
         let salt = [42u8; 32];
         let fields = [21u64, 840, 1, 0, 0, 0, 0, 0];
 
-        let c1 = compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
-        let c2 = compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
+        let c1 =
+            compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
+        let c2 =
+            compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
         assert_eq!(c1, c2);
     }
 
@@ -106,8 +109,10 @@ mod tests {
         let schema_hash = poseidon::hash_fields_to_bytes(&[1]).unwrap();
         let salt = [0u8; 32];
 
-        let c1 = compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &salt).unwrap();
-        let c2 = compute_attestation_commitment(&[22], &schema_hash, &kp.public_key, &salt).unwrap();
+        let c1 =
+            compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &salt).unwrap();
+        let c2 =
+            compute_attestation_commitment(&[22], &schema_hash, &kp.public_key, &salt).unwrap();
         assert_ne!(c1, c2);
     }
 
@@ -116,8 +121,10 @@ mod tests {
         let kp = babyjubjub::generate_keypair().unwrap();
         let schema_hash = poseidon::hash_fields_to_bytes(&[1]).unwrap();
 
-        let c1 = compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &[0u8; 32]).unwrap();
-        let c2 = compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &[1u8; 32]).unwrap();
+        let c1 = compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &[0u8; 32])
+            .unwrap();
+        let c2 = compute_attestation_commitment(&[21], &schema_hash, &kp.public_key, &[1u8; 32])
+            .unwrap();
         assert_ne!(c1, c2);
     }
 
@@ -128,8 +135,10 @@ mod tests {
         let schema_hash = poseidon::hash_fields_to_bytes(&[1]).unwrap();
         let salt = [0u8; 32];
 
-        let c1 = compute_attestation_commitment(&[21], &schema_hash, &kp1.public_key, &salt).unwrap();
-        let c2 = compute_attestation_commitment(&[21], &schema_hash, &kp2.public_key, &salt).unwrap();
+        let c1 =
+            compute_attestation_commitment(&[21], &schema_hash, &kp1.public_key, &salt).unwrap();
+        let c2 =
+            compute_attestation_commitment(&[21], &schema_hash, &kp2.public_key, &salt).unwrap();
         assert_ne!(c1, c2);
     }
 
@@ -140,9 +149,12 @@ mod tests {
         let salt = [2u8; 32];
         let fields = [10u64, 20, 30];
 
-        let direct = compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
+        let direct =
+            compute_attestation_commitment(&fields, &schema_hash, &kp.public_key, &salt).unwrap();
         let data_hash = hash_attestation_data(&fields).unwrap();
-        let via_hash = compute_commitment_from_data_hash(&data_hash, &schema_hash, &kp.public_key, &salt).unwrap();
+        let via_hash =
+            compute_commitment_from_data_hash(&data_hash, &schema_hash, &kp.public_key, &salt)
+                .unwrap();
 
         assert_eq!(direct, via_hash);
     }

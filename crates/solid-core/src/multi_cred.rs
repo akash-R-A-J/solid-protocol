@@ -126,9 +126,8 @@ impl BatchCredentialWitness {
     /// Pad the batch to `MAX_CREDENTIALS` with zero-schema placeholders owned by the master key.
     pub fn pad(&mut self) {
         while self.credentials.len() < crate::MAX_CREDENTIALS {
-            self.credentials.push(placeholder_credential(
-                self.master_identity_pub_key.clone(),
-            ));
+            self.credentials
+                .push(placeholder_credential(self.master_identity_pub_key.clone()));
             self.credential_proofs.push(CredentialMerkleProof::empty());
             self.global_proofs.push(GlobalInclusionProof::empty());
         }
@@ -140,7 +139,11 @@ impl BatchCredentialWitness {
     pub fn canonicalize(&mut self) -> Vec<usize> {
         let n = self.credentials.len();
         let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| self.credentials[a].schema_hash.cmp(&self.credentials[b].schema_hash));
+        order.sort_by(|&a, &b| {
+            self.credentials[a]
+                .schema_hash
+                .cmp(&self.credentials[b].schema_hash)
+        });
 
         let creds = std::mem::take(&mut self.credentials);
         let cproofs = std::mem::take(&mut self.credential_proofs);
@@ -171,7 +174,10 @@ impl BatchCredentialWitness {
 
         // Global identity
         s.insert("globalRoot".into(), vec![to_big(&self.query.global_root)]);
-        s.insert("masterIdentityKey".into(), vec![to_big(&self.master_identity_key)]);
+        s.insert(
+            "masterIdentityKey".into(),
+            vec![to_big(&self.master_identity_key)],
+        );
         s.insert(
             "revocationNonce".into(),
             vec![BigInt::from(self.revocation_nonce)],
@@ -315,7 +321,10 @@ fn placeholder_credential(master_pub: BJJPublicKey) -> Credential {
             r8_y: [0u8; 32],
             s: [0u8; 32],
         },
-        issuer_pub_key: BJJPublicKey { x: [0u8; 32], y: [0u8; 32] },
+        issuer_pub_key: BJJPublicKey {
+            x: [0u8; 32],
+            y: [0u8; 32],
+        },
         holder_pub_key: master_pub,
         salt: [0u8; 32],
         commitment: [0u8; 32],

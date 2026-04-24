@@ -50,8 +50,8 @@ pub fn poseidon_hash_shared(len: usize) -> Result<Vec<u8>, JsError> {
         })
         .collect();
 
-    let hash = solid_core::poseidon::hash_bytes(&chunks)
-        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    let hash =
+        solid_core::poseidon::hash_bytes(&chunks).map_err(|e| JsError::new(&format!("{}", e)))?;
     Ok(hash.to_vec())
 }
 
@@ -79,8 +79,8 @@ pub fn poseidon_hash_bytes(inputs: &[u8]) -> Result<Vec<u8>, JsError> {
             arr
         })
         .collect();
-    let hash = solid_core::poseidon::hash_bytes(&chunks)
-        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    let hash =
+        solid_core::poseidon::hash_bytes(&chunks).map_err(|e| JsError::new(&format!("{}", e)))?;
     Ok(hash.to_vec())
 }
 
@@ -89,8 +89,8 @@ pub fn poseidon_hash_bytes(inputs: &[u8]) -> Result<Vec<u8>, JsError> {
 /// Generate a new BabyJubJub keypair. Returns `{ privateKey, publicKeyX, publicKeyY }`.
 #[wasm_bindgen(js_name = "generateBJJKeypair")]
 pub fn generate_bjj_keypair() -> Result<JsValue, JsError> {
-    let kp = solid_core::babyjubjub::generate_keypair()
-        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    let kp =
+        solid_core::babyjubjub::generate_keypair().map_err(|e| JsError::new(&format!("{}", e)))?;
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -115,8 +115,8 @@ pub fn sign_message(private_key: &[u8], message: &[u8]) -> Result<JsValue, JsErr
     let sk = to_arr32(private_key)?;
     let msg = to_arr32(message)?;
 
-    let sig = solid_core::babyjubjub::sign(&sk, &msg)
-        .map_err(|e| JsError::new(&format!("{}", e)))?;
+    let sig =
+        solid_core::babyjubjub::sign(&sk, &msg).map_err(|e| JsError::new(&format!("{}", e)))?;
 
     Ok(serde_wasm_bindgen::to_value(&sig)?)
 }
@@ -250,10 +250,7 @@ pub fn derive_key(master_key: &[u8], context: &[u8]) -> Result<Vec<u8>, JsError>
 /// `Poseidon(masterPubKeyX, masterPubKeyY, revocationNonce)` used by the
 /// pre-remediation SDK (BUG-04).
 #[wasm_bindgen(js_name = "deriveCredentialKey")]
-pub fn derive_credential_key(
-    master_key: &[u8],
-    schema_hash: &[u8],
-) -> Result<JsValue, JsError> {
+pub fn derive_credential_key(master_key: &[u8], schema_hash: &[u8]) -> Result<JsValue, JsError> {
     let mk = to_arr32(master_key)?;
     let sh = to_arr32(schema_hash)?;
     let priv_bytes = solid_core::babyjubjub::derive_key(&mk, &sh)
@@ -304,10 +301,7 @@ pub fn compute_identity_state(
 /// shortcut so holders / issuers get immediate feedback instead of a
 /// confirmed-transaction rejection.
 #[wasm_bindgen(js_name = "isBjjInPrimeOrderSubgroup")]
-pub fn is_bjj_in_prime_order_subgroup(
-    pubkey_x: &[u8],
-    pubkey_y: &[u8],
-) -> Result<bool, JsError> {
+pub fn is_bjj_in_prime_order_subgroup(pubkey_x: &[u8], pubkey_y: &[u8]) -> Result<bool, JsError> {
     let pk = solid_core::babyjubjub::BJJPublicKey {
         x: to_arr32(pubkey_x)?,
         y: to_arr32(pubkey_y)?,
