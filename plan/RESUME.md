@@ -24,9 +24,10 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **24 open / 20 fixed / 44 total** (post Phase 3 doc
-sweep on 2026-04-25, which introduced SEC-043 and SEC-044).
-Severities: **CRITICAL 0 open**, HIGH 4 open, MEDIUM 10 open,
+Registry state: **23 open / 21 fixed / 44 total** (post Phase 3
+impl 1 on 2026-04-25: SEC-007 closed; Phase 3 doc sweep earlier the
+same day introduced SEC-043 and SEC-044).
+Severities: **CRITICAL 0 open**, HIGH 3 open, MEDIUM 10 open,
 LOW 6 open, INFO 4 open.
 
 ### Commits landed this Phase 2 session
@@ -54,9 +55,8 @@ python3 scripts/check_program_ids.py  -> consistent
 ### Open registry (by priority)
 
 ```
-HIGH (4 open)
+HIGH (3 open)
   SOLID-SEC-006  VK overwrite has no freeze-gate
-  SOLID-SEC-007  BJJ pubkeys not subgroup-checked
   SOLID-SEC-010  Cross-language vectors narrow (covers 3 of ~10 primitives)
   SOLID-SEC-012  Trusted setup single-party (mainnet blocker)
 
@@ -91,18 +91,17 @@ last chunk with `finalize=true`).  While true, `store_verification_key`
 must refuse.  A separate `rotate_verification_key` ix (DAO signer +
 48h timelock PDA) unfreezes for the rotation window.
 
-### 2. SOLID-SEC-007 -- BJJ subgroup check at registration
+### 2. ~~SOLID-SEC-007 -- BJJ subgroup check at registration~~ (closed 2026-04-25)
 
-**Root cause.** `register_issuer` accepts any `(bjj_x, bjj_y)` as
-the issuer's BJJ pubkey.  A non-subgroup point breaks unlinkability
-assumptions and lets an adversary control the small-subgroup
-component of ephemeral derivations.
-
-**Change set.** On-chain subgroup check in `register_issuer` via
-the `arkworks` BabyJubJub curve primitives (same dep solid-core
-already pulls in).  Reject with `InvalidBJJPubKey` if the supplied
-point is not of prime-order subgroup `r`.  Rust-only change; no
-circuit impact.
+Landed in Phase 3 impl 1.  `crates/solid-core/src/babyjubjub.rs`
+gained `is_in_prime_order_subgroup` + `require_in_prime_order_
+subgroup`, and `pubkey_to_affine` + `verify()` now use
+`EdwardsAffine::new_unchecked` with an explicit
+`is_in_correct_subgroup_assuming_on_curve()` check.
+`programs/issuer-registry::register_issuer` calls the new helper
+before touching state, returning `ErrorCode::InvalidBJJPubKey`.
+WASM side exposes `isBjjInPrimeOrderSubgroup`.  5 new Rust unit
+tests; solid-core 44 -> 49 host tests green.
 
 ### 3. SOLID-SEC-010 -- Extend cross-language vectors
 

@@ -122,14 +122,65 @@ fn affine_to_pubkey(point: &EdwardsAffine) -> BJJPublicKey {
 }
 
 /// Convert BJJPublicKey bytes to an affine point.
+///
+/// Rejects points that are (a) not on the curve, (b) the Edwards
+/// neutral element (0, 1) -- not a usable signing key, or (c) in a
+/// small-order (cofactor-8) subgroup.  (c) is the SOLID-SEC-007
+/// invariant.
+///
+/// `EdwardsAffine::new` has debug `assert!` statements on both the
+/// on-curve and subgroup invariants; we use `new_unchecked` and
+/// check explicitly so the error path is a structured `SolidError`
+/// rather than a panic.
 fn pubkey_to_affine(pk: &BJJPublicKey) -> std::result::Result<EdwardsAffine, SolidError> {
     let x = bytes_to_fq(&pk.x);
     let y = bytes_to_fq(&pk.y);
-    let point = EdwardsAffine::new(x, y);
+    let point = EdwardsAffine::new_unchecked(x, y);
     if !point.is_on_curve() || point.is_zero() {
         return Err(SolidError::PointNotOnCurve);
     }
+    if !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(SolidError::BJJNotInSubgroup);
+    }
     Ok(point)
+}
+
+/// Public predicate: does `pk` lie in the BJJ prime-order subgroup?
+/// Returns `false` for off-curve points, the identity, or any point
+/// with a non-trivial cofactor-8 component.  Delegates to
+/// `ark_ec`'s `is_in_correct_subgroup_assuming_on_curve`, which
+/// performs the standard `r * P == O` check (`r` is the scalar-
+/// field modulus and `P` decomposes uniquely into prime-order and
+/// cofactor components).  SOLID-SEC-007.
+pub fn is_in_prime_order_subgroup(pk: &BJJPublicKey) -> bool {
+    let x = bytes_to_fq(&pk.x);
+    let y = bytes_to_fq(&pk.y);
+    let point = EdwardsAffine::new_unchecked(x, y);
+    if !point.is_on_curve() || point.is_zero() {
+        return false;
+    }
+    point.is_in_correct_subgroup_assuming_on_curve()
+}
+
+/// Fail-closed form of `is_in_prime_order_subgroup`.  Use this at
+/// every on-chain or off-chain site that takes a BJJ public key as
+/// an untrusted input (issuer registration, signature verification,
+/// cross-device import).  SOLID-SEC-007.
+pub fn require_in_prime_order_subgroup(pk: &BJJPublicKey) -> Result<()> {
+    let x = bytes_to_fq(&pk.x);
+    let y = bytes_to_fq(&pk.y);
+    let point = EdwardsAffine::new_unchecked(x, y);
+    if !point.is_on_curve() {
+        return Err(SolidError::PointNotOnCurve);
+    }
+    if point.is_zero() {
+        // Identity is not a usable signing key.
+        return Err(SolidError::BJJNotInSubgroup);
+    }
+    if !point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(SolidError::BJJNotInSubgroup);
+    }
+    Ok(())
 }
 
 // ─── Key Generation ────────────────────────────────────────────────────────
@@ -223,12 +274,18 @@ pub fn verify(
 ) -> Result<bool> {
     let pk_point = pubkey_to_affine(public_key)?;
 
-    // Reconstruct R8 point
+    // Reconstruct R8 point.  Sign() derives R8 = r * Base8, which is
+    // always in the prime-order subgroup, so a signature whose R8 has
+    // a cofactor-8 component is malformed and we fail-closed
+    // (SOLID-SEC-007).
     let r8_x = bytes_to_fq(&signature.r8_x);
     let r8_y = bytes_to_fq(&signature.r8_y);
-    let r8_point = EdwardsAffine::new(r8_x, r8_y);
+    let r8_point = EdwardsAffine::new_unchecked(r8_x, r8_y);
     if !r8_point.is_on_curve() {
         return Err(SolidError::PointNotOnCurve);
+    }
+    if !r8_point.is_in_correct_subgroup_assuming_on_curve() {
+        return Err(SolidError::BJJNotInSubgroup);
     }
 
     // Reconstruct S scalar
@@ -463,5 +520,102 @@ mod tests {
         identity.bind_wallet(wallet); // duplicate
         assert_eq!(identity.metadata.wallet_bindings.len(), 1);
         assert_eq!(identity.metadata.wallet_bindings[0], wallet);
+    }
+
+    // ─── SOLID-SEC-007: BJJ subgroup check regression gate ─────────────────
+
+    /// Every honestly-generated keypair's public key is in the prime-
+    /// order subgroup, because `generate_keypair` derives it as
+    /// `sk * Base8` where Base8 is the cofactor-cleared generator.
+    #[test]
+    fn test_subgroup_accepts_honest_keypair() {
+        for _ in 0..8 {
+            let kp = generate_keypair().unwrap();
+            assert!(
+                is_in_prime_order_subgroup(&kp.public_key),
+                "honest keypair pubkey must lie in prime-order subgroup"
+            );
+            assert!(require_in_prime_order_subgroup(&kp.public_key).is_ok());
+        }
+    }
+
+    /// The Edwards neutral element `(0, 1)` is the identity.  It is
+    /// trivially in every subgroup but is not a usable signing key;
+    /// `require_in_prime_order_subgroup` rejects it fail-closed.
+    #[test]
+    fn test_subgroup_rejects_identity() {
+        let mut y_bytes = [0u8; 32];
+        y_bytes[0] = 1; // Fq::one() in little-endian
+        let identity_pk = BJJPublicKey {
+            x: [0u8; 32],
+            y: y_bytes,
+        };
+        assert!(matches!(
+            require_in_prime_order_subgroup(&identity_pk),
+            Err(SolidError::BJJNotInSubgroup)
+        ));
+    }
+
+    /// `(0, -1)` is a known order-2 point on BJJ (doubles to the
+    /// identity).  It sits entirely in the cofactor-8 subgroup and
+    /// must be rejected by the subgroup check.
+    #[test]
+    fn test_subgroup_rejects_order_two_point() {
+        let neg_one_fq = -Fq::from(1u64);
+        let neg_one_bytes = fq_to_bytes(&neg_one_fq);
+        let order_two_pk = BJJPublicKey {
+            x: [0u8; 32],
+            y: neg_one_bytes,
+        };
+        // First sanity: this point must be on curve (Edwards equation
+        // -x^2 + y^2 = 1 + d*x^2*y^2 with x=0, y=-1: LHS = 1, RHS = 1).
+        let x = bytes_to_fq(&order_two_pk.x);
+        let y = bytes_to_fq(&order_two_pk.y);
+        let point = EdwardsAffine::new_unchecked(x, y);
+        assert!(point.is_on_curve(), "(0, -1) must lie on BJJ");
+        // Doubling (0, -1) yields the identity.
+        let doubled = EdwardsProjective::from(point).double().into_affine();
+        assert!(doubled.is_zero(), "(0, -1) is 2-torsion");
+        // Core invariant: subgroup check must reject it.
+        assert!(!is_in_prime_order_subgroup(&order_two_pk));
+        assert!(matches!(
+            require_in_prime_order_subgroup(&order_two_pk),
+            Err(SolidError::BJJNotInSubgroup)
+        ));
+    }
+
+    /// Off-curve bytes must fail with `PointNotOnCurve`, not
+    /// `BJJNotInSubgroup` -- the distinction matters for debugging.
+    #[test]
+    fn test_subgroup_rejects_off_curve_point() {
+        let off_curve = BJJPublicKey {
+            x: [7u8; 32],
+            y: [11u8; 32],
+        };
+        assert!(!is_in_prime_order_subgroup(&off_curve));
+        assert!(matches!(
+            require_in_prime_order_subgroup(&off_curve),
+            Err(SolidError::PointNotOnCurve)
+        ));
+    }
+
+    /// `verify()` must reject a signature whose R8 component is a
+    /// small-order point, even if the algebra would otherwise
+    /// accept.  This is defence-in-depth; honest signing never
+    /// produces such R8 values.
+    #[test]
+    fn test_verify_rejects_small_order_r8() {
+        let kp = generate_keypair().unwrap();
+        let msg = poseidon::fr_to_bytes_le(&ark_bn254::Fr::from(42u64));
+        let sig = sign(&kp.private_key, &msg).unwrap();
+        // Replace the (honest) R8 with the order-2 point (0, -1).
+        let neg_one_fq = -Fq::from(1u64);
+        let mut malformed = sig.clone();
+        malformed.r8_x = [0u8; 32];
+        malformed.r8_y = fq_to_bytes(&neg_one_fq);
+        match verify(&kp.public_key, &msg, &malformed) {
+            Err(SolidError::BJJNotInSubgroup) => {}
+            Ok(_) | Err(_) => panic!("verify must reject small-order R8 with BJJNotInSubgroup"),
+        }
     }
 }

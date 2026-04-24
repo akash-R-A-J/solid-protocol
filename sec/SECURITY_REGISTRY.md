@@ -33,11 +33,11 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
-| HIGH      | 4    | 0           | 8     | 0        | 0         | 12    |
+| HIGH      | 3    | 0           | 9     | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
 | LOW       | 6    | 0           | 3     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 24   | 0           | 20    | 0        | 0         | 44    |
+| **Total** | 23   | 0           | 21    | 0        | 0         | 44    |
 
 ---
 
@@ -51,7 +51,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-004   | HIGH     | Fixed  | No in-circuit issuer pubkey binding; revoked issuers still verify  |
 | SOLID-SEC-005   | HIGH     | Fixed  | `currentTimestamp` public input not bound to `Clock`               |
 | SOLID-SEC-006   | HIGH     | Open   | VK overwrite at chunk 0 has no freeze-gate; truncated VK finalizable|
-| SOLID-SEC-007   | HIGH     | Open   | BJJ public keys not subgroup-checked at registration               |
+| SOLID-SEC-007   | HIGH     | Fixed  | BJJ public keys not subgroup-checked at registration               |
 | SOLID-SEC-008   | HIGH     | Fixed  | Nullifier does not include epoch / global root                     |
 | SOLID-SEC-009   | HIGH     | Fixed  | WASM bridge fractured across 3 locations                           |
 | SOLID-SEC-010   | HIGH     | Open   | Cross-language test vectors cover only 2 of 10 primitives          |
@@ -211,9 +211,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-004 -- No in-circuit issuer pubkey binding
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-24, Phase 2 close-out commit `2f56771`;
+  details in `sec/audits/2026-04-24_v0.6_phase2_closeout.md`)
 - **Introduced:** 2026-04-22
-- **Evidence:**
+- **Evidence (pre-fix):**
   `circuits/batch_credential_query.circom:81-82`;
   `programs/zk-verifier/src/lib.rs:148-297`;
   `programs/issuer-registry/src/lib.rs:577-582`;
@@ -280,35 +281,65 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-007 -- BJJ pubkeys not subgroup-checked
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-25, Phase 3 impl 1)
 - **Introduced:** 2026-04-22
-- **Evidence:** `crates/solid-core/src/babyjubjub.rs:111-114,125-133`
-- **Description.** `pubkey_to_affine` checks on-curve + non-zero but
-  not cofactor; `register_issuer` stores `bjj_pub_key_x/y` with no
-  subgroup check.
+- **Evidence (pre-fix):** `crates/solid-core/src/babyjubjub.rs:111-114,125-133`.
+  `pubkey_to_affine` checked on-curve + non-zero but not cofactor;
+  `register_issuer` stored `bjj_pub_key_x/y` with no subgroup check.
 - **Impact.** Small-order pubkey enables trivial signature forgery
   off-chain (circuit-level defenses may block in-circuit case).
-- **Remediation.** Reject points whose `mul_by_cofactor` is identity.
-- **Regression gate.** Rust unit tests with explicit small-order
-  points.
+- **Remediation (landed).** Three surfaces:
+  - `crates/solid-core/src/babyjubjub.rs`: `pubkey_to_affine` and
+    `verify()` both now use `EdwardsAffine::new_unchecked` and
+    call `is_in_correct_subgroup_assuming_on_curve()` before
+    accepting any BJJ point; two new public helpers
+    (`is_in_prime_order_subgroup`, `require_in_prime_order_subgroup`)
+    expose the check to callers.  New `SolidError::BJJNotInSubgroup`
+    variant in `error.rs`.
+  - `programs/issuer-registry/src/lib.rs`: `register_issuer` calls
+    `require_in_prime_order_subgroup` on the supplied
+    `bjj_pub_key_x/y` before touching any state; rejects with
+    `ErrorCode::InvalidBJJPubKey`.
+  - `wasm/src/lib.rs`: `isBjjInPrimeOrderSubgroup` exported for
+    client-side early validation in the TS SDK.
+- **Regression gate (landed).** Five unit tests in
+  `crates/solid-core/src/babyjubjub.rs`:
+  `test_subgroup_accepts_honest_keypair`,
+  `test_subgroup_rejects_identity`,
+  `test_subgroup_rejects_order_two_point` (uses the known
+  `(0, -1)` 2-torsion point),
+  `test_subgroup_rejects_off_curve_point`,
+  `test_verify_rejects_small_order_r8` (defence-in-depth for
+  signature R8 components).  Suite is 49/49 green at the closing
+  commit.
 
 ### SOLID-SEC-008 -- Nullifier lacks epoch binding
 
 - **Severity:** HIGH
-- **Status:** Open
+- **Status:** Fixed (2026-04-24, Phase 2 commit `df33ffe`;
+  details in `sec/audits/2026-04-24_v0.6_phase2_closeout.md`)
 - **Introduced:** 2026-04-22
-- **Evidence:**
-  `circuits/batch_credential_query.circom:286-292`;
-  `crates/solid-core/src/nullifier.rs:23-40`
-- **Description.** Nullifier = `Poseidon(masterKey, revocationNonce,
-  verifierAddress, queryContextHash, verifierNonce)`. No `globalRoot`
-  or epoch counter.
-- **Impact.** Defense-in-depth gap against root regression.
-- **Remediation.** Include monotonic `epoch_counter` stored in
-  `GlobalStateBinding`. Bundle with SOLID-SEC-001 / SOLID-SEC-004 /
-  SOLID-SEC-029.
-- **Regression gate.** Witness test: distinct-epoch inputs produce
-  distinct nullifiers.
+- **Evidence (pre-fix):**
+  `circuits/batch_credential_query.circom:286-292` (5-input
+  Poseidon without issuer-tree binding);
+  `crates/solid-core/src/nullifier.rs:23-40` (mirrored 5-input
+  formula).
+- **Description (pre-fix).** Nullifier = `Poseidon(masterKey,
+  revocationNonce, verifierAddress, queryContextHash,
+  verifierNonce)`. No `globalRoot` or epoch counter -> revoking an
+  issuer did not invalidate nullifiers of previously-issued proofs.
+- **Impact.** Defence-in-depth gap against root regression; after
+  ADR-0014 this was elevated to a load-bearing soundness concern
+  because an attacker who compromised an issuer could replay
+  pre-revocation proofs into post-revocation verifiers.
+- **Remediation (landed).** Added `issuerTreeRoot` as the 6th
+  Poseidon input (ADR-0006 revision / ADR-0014 STEP 5).  Bundled
+  with the SEC-004 circuit rev, new trusted-setup artifact, and
+  full Rust/WASM/TS propagation.
+- **Regression gate (landed).** `test_nullifier_changes_with_issuer_
+  tree_root` in `crates/solid-core/src/nullifier.rs` +
+  `circuits/test/templates/padding_slot.test.js` ensuring distinct-
+  root inputs produce distinct nullifiers.
 
 ### SOLID-SEC-009 -- WASM bridge fractured across 3 locations
 
@@ -819,14 +850,17 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-036 -- Stale nullifier module docstring
 
 - **Severity:** LOW
-- **Status:** Open
+- **Status:** Fixed (2026-04-24, Phase 2 commit `73871dc`; reference
+  in `sec/audits/2026-04-24_v0.6_phase2_closeout.md`)
 - **Introduced:** 2026-04-22 (corrected from master-audit NEW-SEC-07;
   renumbered from 035)
-- **Evidence:** `crates/solid-core/src/nullifier.rs:1-8`
-- **Description.** Module docstring describes the 3-argument
-  nullifier; implementation at `:23-40` is the correct 5-argument
-  hardened formula. Doc-only mismatch.
-- **Remediation.** Update the module doc.
+- **Evidence (pre-fix):** `crates/solid-core/src/nullifier.rs:1-8`.
+  Module docstring described the 3-argument nullifier; implementation
+  at `:23-40` was the 5-argument hardened formula.  Doc-only mismatch.
+- **Remediation (landed).** Full rewrite of the module docstring to
+  describe the 6-input Poseidon formula (post ADR-0014) and the
+  full evolution history (3-input -> 5-input -> 6-input) with
+  rationale in-source.
 
 ### SOLID-SEC-037 -- `WithdrawAfterCooldown` missing authority constraint
 
@@ -1036,6 +1070,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-23 | Phase 2 prelude (code review surfaced new items; in-session fix)     | SOLID-SEC-039, -040, -041, -042           | SOLID-SEC-039, -040, -042 (3 of 4 fixed same commit) |
 | 2026-04-24 | `sec/audits/2026-04-24_v0.6_phase2_closeout.md`                      | --                                        | SOLID-SEC-004, -008, -036 (Phase 2 scope closed) |
 | 2026-04-25 | `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` + Phase 3 doc sweep | SOLID-SEC-043, -044                       | 0 (both introduced Open)                          |
+| 2026-04-25 | Phase 3 impl 1 (SEC-007 + registry detail reconciliation)            | --                                        | SOLID-SEC-007 (this commit); SOLID-SEC-004, -008, -036 detail sections reconciled Open -> Fixed to match the status board flipped at Phase 2 close-out |
 
 ### Note on the 2026-04-22 numbering
 

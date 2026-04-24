@@ -33,6 +33,9 @@ pub enum SolidError {
     #[error("Point not on curve")]
     PointNotOnCurve,
 
+    #[error("Point is not in the BabyJubJub prime-order subgroup (cofactor-8 component rejected)")]
+    BJJNotInSubgroup,
+
     #[error("Signature verification failed")]
     VerificationFailed,
 }

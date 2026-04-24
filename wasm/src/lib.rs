@@ -296,6 +296,25 @@ pub fn compute_identity_state(
     Ok(commitment.to_vec())
 }
 
+/// SOLID-SEC-007: predicate check for BJJ subgroup membership, exposed to the
+/// TS SDK for early client-side validation before a `register_issuer` call is
+/// signed.  Returns `true` iff the point is on the curve, not the identity,
+/// and lies in the prime-order subgroup (no cofactor-8 torsion component).
+/// The on-chain program is the definitive enforcement point; this is a UX
+/// shortcut so holders / issuers get immediate feedback instead of a
+/// confirmed-transaction rejection.
+#[wasm_bindgen(js_name = "isBjjInPrimeOrderSubgroup")]
+pub fn is_bjj_in_prime_order_subgroup(
+    pubkey_x: &[u8],
+    pubkey_y: &[u8],
+) -> Result<bool, JsError> {
+    let pk = solid_core::babyjubjub::BJJPublicKey {
+        x: to_arr32(pubkey_x)?,
+        y: to_arr32(pubkey_y)?,
+    };
+    Ok(solid_core::babyjubjub::is_in_prime_order_subgroup(&pk))
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 fn to_arr32(slice: &[u8]) -> Result<[u8; 32], JsError> {

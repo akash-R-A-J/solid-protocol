@@ -786,11 +786,11 @@ Architectural (6 items -- longer term)
 Legend: `[x]` landed; `[~]` partially landed (scope split between
 original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
 
-Registry count (as of 2026-04-25): 44 findings; 20 closed (Phase 1 +
-Phase 2 landed).  Open HIGH: SOLID-SEC-006, -007, -010, -012.  Open
-MEDIUM: SOLID-SEC-013..-019, -021, -034, -043.  Open LOW:
-SOLID-SEC-022, -023, -024, -035, -041, -044.  Open INFO:
-SOLID-SEC-025, -026, -037, -038.
+Registry count (as of 2026-04-25, post Phase 3 impl 1): 44 findings;
+21 closed (Phase 1 + Phase 2 + SEC-007 landed).  Open HIGH:
+SOLID-SEC-006, -010, -012.  Open MEDIUM: SOLID-SEC-013..-019, -021,
+-034, -043.  Open LOW: SOLID-SEC-022, -023, -024, -035, -041, -044.
+Open INFO: SOLID-SEC-025, -026, -037, -038.
 
 New post-roadmap items added in 2026-04-25 sweep (not in the P0..P3
 structure; tracked by registry ID only):

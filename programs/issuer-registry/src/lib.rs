@@ -154,6 +154,23 @@ pub mod issuer_registry {
         require!(name.len() <= 64, ErrorCode::NameTooLong);
         require!(metadata_uri.len() <= 128, ErrorCode::MetadataTooLong);
 
+        // SOLID-SEC-007.  Reject BJJ public keys that are not in the
+        // prime-order subgroup (cofactor-8 torsion), off the curve,
+        // or the Edwards neutral element.  Without this gate an
+        // attacker who registers a small-order pubkey can forge
+        // signatures over a tiny subgroup; every downstream
+        // credential signed by that key verifies with compromised
+        // soundness.  `solid_core::babyjubjub::require_in_prime_
+        // order_subgroup` does a full `r * P == O` scalar
+        // multiplication.  This runs once per issuer registration;
+        // it is a setup-time cost, not a hot path.
+        let bjj_pub_key = solid_core::babyjubjub::BJJPublicKey {
+            x: bjj_pub_key_x,
+            y: bjj_pub_key_y,
+        };
+        solid_core::babyjubjub::require_in_prime_order_subgroup(&bjj_pub_key)
+            .map_err(|_| ErrorCode::InvalidBJJPubKey)?;
+
         // PHASE 5: TIERED STAKING (Risk 3 Mitigation)
         // Graduated skin-in-the-game based on authority level.
         let stake_multiplier: u64 = match tier {
@@ -2048,6 +2065,8 @@ pub enum ErrorCode {
     IssuerTreeLeafIndexTooLarge,
     #[msg("Poseidon hash failed during issuer-leaf computation")]
     PoseidonFailed,
+    #[msg("BJJ public key is not in the prime-order subgroup; cofactor-8 torsion rejected (SOLID-SEC-007)")]
+    InvalidBJJPubKey,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
