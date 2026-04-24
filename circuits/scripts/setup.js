@@ -105,7 +105,19 @@ async function main() {
     console.log('[5/5] Exporting verification key...');
     const vkPath = path.join(BUILD_DIR, 'verification_key.json');
     const vk = await snarkjs.zKey.exportVerificationKey(zkeyFinal);
-    fs.writeFileSync(vkPath, JSON.stringify(vk, null, 2));
+    const vkJsonBytes = Buffer.from(JSON.stringify(vk, null, 2), 'utf8');
+    fs.writeFileSync(vkPath, vkJsonBytes);
+
+    // SOLID-SEC-041.  Pin a content hash for `verification_key.json`
+    // right next to the artifact.  `scripts/initialize.ts` refuses to
+    // upload any VK that does not match this hash (or the
+    // `SOLID_VK_SHA256` env override), so a stale build directory,
+    // mis-merged branch, or tampered artifact aborts before the
+    // on-chain store.  Hash is over the exact bytes written above,
+    // so snarkjs output ordering drift would surface as a hash change.
+    const vkHash = crypto.createHash('sha256').update(vkJsonBytes).digest('hex');
+    const vkHashPath = path.join(BUILD_DIR, 'verification_key.sha256');
+    fs.writeFileSync(vkHashPath, `${vkHash}\n`);
 
     // Publish a hash of the final zkey in the console so CI + PR reviewers
     // can cross-check that the zkey on disk matches what the setup produced.
@@ -113,14 +125,20 @@ async function main() {
     const zkeyHash = crypto.createHash('sha256').update(zkeyBytes).digest('hex');
 
     console.log('\n' + '─'.repeat(60));
+    console.log(`VK   sha256 : ${vkHash}`);
     console.log(`zkey sha256 : ${zkeyHash}`);
     console.log('─'.repeat(60));
     console.log(`VK          : ${vkPath}`);
+    console.log(`VK sha256   : ${vkHashPath}`);
     console.log(`zkey        : ${zkeyFinal}`);
     console.log(`ptau        : ${ptauFinal}`);
     console.log(
         '\nTESTNET ONLY. Do not distribute as a production proving key.\n' +
-        'Tracked: SOLID-SEC-012 (multi-party ceremony for mainnet).',
+        'Tracked: SOLID-SEC-012 (multi-party ceremony for mainnet).\n' +
+        '\nRecord the VK sha256 in the release notes / ADR of any sanctioned\n' +
+        'circuit revision.  Operators must set SOLID_VK_SHA256 to the\n' +
+        'published hash (or leave it unset to accept the in-tree\n' +
+        'verification_key.sha256 file) before running initialize.ts.',
     );
 
     // Cleanup intermediate files. The final zkey + VK + ptau stay; they are

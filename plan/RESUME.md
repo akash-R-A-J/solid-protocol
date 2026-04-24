@@ -24,12 +24,12 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **22 open / 22 fixed / 44 total** (post Phase 3
-impl 2 on 2026-04-25: SEC-006 Part 1 + SEC-007 closed same day;
-Phase 3 doc sweep earlier the same day introduced SEC-043 and
-SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2 open, MEDIUM 10
-open, LOW 6 open, INFO 4 open.  First time the registry has crossed
-the 50 % Fixed mark.
+Registry state: **21 open / 23 fixed / 44 total** (post Phase 3
+impl 3 on 2026-04-25: SEC-006 Part 1 + SEC-007 + SEC-041 closed
+same day; Phase 3 doc sweep earlier the same day introduced SEC-043
+and SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2 open,
+MEDIUM 10 open, LOW 5 open, INFO 4 open.  Above the 50 % Fixed
+mark.
 
 ### Commits landed this Phase 2 session
 
@@ -120,13 +120,15 @@ Extend `crates/solid-core/examples/gen_vectors.rs` +
 `tests/vectors/check_vectors.ts`.  Straightforward; blocks external
 audit readiness.
 
-### 4. SOLID-SEC-041 -- Content-addressed VK artifact
+### 4. ~~SOLID-SEC-041 -- Content-addressed VK artifact~~ (closed 2026-04-25)
 
-Commit a `circuits/build/verification_key.sha256` OR require
-`SOLID_VK_SHA256` env var for `initialize.ts`.  Either works; the
-goal is to fail fast when an operator uploads an old VK against new
-circuit code.  One-commit change; pair with the SOLID-SEC-012
-multi-party-ceremony attestation work.
+Landed in Phase 3 impl 3.  `circuits/scripts/setup.js` now writes
+`verification_key.sha256` next to the VK artifact and prints the VK
+hash in the console summary.  `scripts/initialize.ts` enforces the
+pin via `SOLID_VK_SHA256` env var (authoritative for release) or
+the file (developer-loop convenience); refuses to upload when
+either (a) the pin is missing, or (b) the computed hash does not
+match the pin.
 
 ### 5. SOLID-SEC-012 -- Multi-party trusted setup
 

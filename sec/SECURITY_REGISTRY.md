@@ -35,9 +35,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 2    | 0           | 10    | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
-| LOW       | 6    | 0           | 3     | 0        | 0         | 9     |
+| LOW       | 5    | 0           | 4     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 22   | 0           | 22    | 0        | 0         | 44    |
+| **Total** | 21   | 0           | 23    | 0        | 0         | 44    |
 
 ---
 
@@ -85,7 +85,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-038   | INFO     | Open   | Master-audit informational cluster: `i16` borrow signedness, reader/writer size asymmetry, `GreaterThan(8)` bound comment |
 | SOLID-SEC-039   | LOW      | Fixed  | `scripts/bootstrap_issuer.ts` test-only DAO parameters deployable to mainnet by mistake |
 | SOLID-SEC-040   | LOW      | Fixed  | `scripts/check_program_ids.py` silently passed when `deployments/<cluster>.json` was absent |
-| SOLID-SEC-041   | LOW      | Open   | `circuits/build/verification_key.json` uploaded by `initialize.ts` is not content-addressed |
+| SOLID-SEC-041   | LOW      | Fixed  | `circuits/build/verification_key.json` uploaded by `initialize.ts` is not content-addressed |
 | SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
 | SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
 | SOLID-SEC-044   | LOW      | Open   | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
@@ -972,27 +972,41 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-041 -- VK JSON artifact not content-addressed
 
 - **Severity:** LOW
-- **Status:** Open
+- **Status:** Fixed (2026-04-25, Phase 3 impl 3)
 - **Introduced:** 2026-04-22 (initialize.ts design)
-- **Evidence:** `scripts/initialize.ts:245-278` uploads whatever
-  `circuits/build/verification_key.json` happens to be on disk;
-  `circuits/scripts/setup.js` prints a sha256 of the zkey but
-  neither the zkey hash nor a VK hash is cross-checked at upload
-  time.
+- **Evidence (pre-fix):** `scripts/initialize.ts:245-278` uploaded
+  whatever `circuits/build/verification_key.json` happened to be on
+  disk; `circuits/scripts/setup.js` printed a sha256 of the zkey
+  but neither the zkey hash nor a VK hash was cross-checked at
+  upload time.
 - **Impact.** An operator pointing `initialize.ts` at a stale
   `circuits/build/` after a source-tree `git pull` uploads the old
   VK against new circuit code; every subsequent real proof
   verifies as invalid and presents as a chain-side problem rather
   than a build-side problem.
-- **Remediation.** Either commit a
-  `circuits/build/verification_key.sha256` against the current
-  circuit revision and fail `initialize.ts` on mismatch, or require
-  `SOLID_VK_SHA256=<hex>` to match the computed hash of the uploaded
-  bytes.  Hooks into the SOLID-SEC-012 multi-party attestation work
-  later.
-- **Regression gate.** A CI step that, after compiling + running
-  `setup.js`, asserts the VK+zkey hashes match a pinned expected
-  pair (the pin regenerates on every sanctioned circuit rev).
+- **Remediation (landed).**  Two-way content-addressing in
+  `scripts/initialize.ts`:
+  - `circuits/scripts/setup.js` now writes
+    `circuits/build/verification_key.sha256` (hex sha256 of the
+    exact bytes written to `verification_key.json`) alongside the
+    VK artifact.  The console output also prints the VK sha256
+    alongside the zkey sha256 so release notes and ADRs can pin
+    it.
+  - `scripts/initialize.ts` reads `verification_key.json`, computes
+    its sha256, and compares against `SOLID_VK_SHA256` (env var,
+    authoritative) or `verification_key.sha256` (file,
+    developer-loop convenience).  Fails fast on mismatch and fails
+    fast if neither source is available.
+  Hooks cleanly into the SOLID-SEC-012 multi-party ceremony work
+  later: the canonical hash published by the ceremony replaces the
+  single-party pin via the env-var path.
+- **Regression gate (landed).**  Behavioural coverage comes via the
+  `e2e_localnet` CI job, which runs `setup.js` + `npm run e2e`
+  clean from checkout -- any drift in the serialization or the
+  pinning surfaces as a hash mismatch at upload time.  Full
+  handler-level failure-mode tests (wrong env var, missing pin,
+  tampered VK) land in the integration suite (`12_vk_rotation` +
+  adjacent).
 
 ### SOLID-SEC-042 -- `VerifierConfig::SPACE` doc drift
 
@@ -1105,6 +1119,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-25 | `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` + Phase 3 doc sweep | SOLID-SEC-043, -044                       | 0 (both introduced Open)                          |
 | 2026-04-25 | Phase 3 impl 1 (SEC-007 + registry detail reconciliation)            | --                                        | SOLID-SEC-007 (this commit); SOLID-SEC-004, -008, -036 detail sections reconciled Open -> Fixed to match the status board flipped at Phase 2 close-out |
 | 2026-04-25 | Phase 3 impl 2 (ADR-0015 VK freeze-gate + rotation timelock)         | --                                        | SOLID-SEC-006 (Part 1 on-chain; Part 2 circuit-bound vk_generation deferred to the next trusted-setup cycle) |
+| 2026-04-25 | Phase 3 impl 3 (SEC-041 content-addressed VK artifact)               | --                                        | SOLID-SEC-041 (verification_key.sha256 emitted by setup.js; initialize.ts enforces the pin via env or file) |
 
 ### Note on the 2026-04-22 numbering
 

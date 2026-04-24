@@ -19,6 +19,7 @@
 
 import { Connection, Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
+import * as crypto from 'crypto';
 import { initWasm, poseidonHashBytes, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -283,6 +284,7 @@ async function main() {
     PROGRAM_PUBKEYS.zkVerifier,
   );
   const vkJsonPath = 'circuits/build/verification_key.json';
+  const vkSha256Path = 'circuits/build/verification_key.sha256';
   if (!fs.existsSync(vkJsonPath)) {
     console.error(
       `   verification_key.json missing at ${vkJsonPath}. ` +
@@ -290,7 +292,53 @@ async function main() {
     );
     process.exit(1);
   }
-  const vkJson = JSON.parse(fs.readFileSync(vkJsonPath, 'utf-8'));
+
+  // SOLID-SEC-041.  Refuse to upload a VK whose sha256 does not match
+  // either the `SOLID_VK_SHA256` env var or the `verification_key.sha256`
+  // file written by `circuits/scripts/setup.js`.  Catches:
+  //   - stale `circuits/build/` after a `git pull` that rev'd the circuit
+  //   - someone dropping a foreign VK into the build dir
+  //   - operator running initialize.ts against a different branch than the
+  //     one whose trusted setup was sanctioned.
+  // The env var form is the authoritative path for published releases:
+  // the canonical hash lives in the release notes / ADR, and the operator
+  // sets `SOLID_VK_SHA256=<hex>` before running `npm run e2e`.  The file
+  // form is a developer-loop convenience.
+  const vkJsonBytes = fs.readFileSync(vkJsonPath);
+  const computedVkSha256 = crypto.createHash('sha256').update(vkJsonBytes).digest('hex');
+  const envPin = (process.env.SOLID_VK_SHA256 ?? '').trim().toLowerCase();
+  const filePin = fs.existsSync(vkSha256Path)
+    ? fs.readFileSync(vkSha256Path, 'utf-8').trim().toLowerCase()
+    : '';
+  const expected = envPin || filePin;
+  if (!expected) {
+    console.error(
+      `   verification_key.sha256 missing at ${vkSha256Path} and SOLID_VK_SHA256 ` +
+      `env var is unset. SOLID-SEC-041 requires one of the two: either re-run ` +
+      `"cd circuits && node scripts/setup.js" to regenerate the pinned hash, ` +
+      `or export the canonical hash published in the circuit-revision ADR as ` +
+      `SOLID_VK_SHA256=<hex>.`,
+    );
+    process.exit(1);
+  }
+  if (computedVkSha256 !== expected) {
+    console.error(
+      `   VK sha256 mismatch (SOLID-SEC-041 gate).\n` +
+      `     computed : ${computedVkSha256}\n` +
+      `     expected : ${expected}\n` +
+      `     source   : ${envPin ? 'SOLID_VK_SHA256 env var' : vkSha256Path}\n` +
+      `   Refusing to upload.  Either the verification_key.json on disk is ` +
+      `stale relative to the sanctioned circuit revision, or the pinned ` +
+      `hash is out of date.  Re-run the trusted setup or update the pin.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `   VK sha256 gate: ok (${computedVkSha256.slice(0, 12)}...; ` +
+    `pin source: ${envPin ? 'SOLID_VK_SHA256 env' : vkSha256Path})`,
+  );
+
+  const vkJson = JSON.parse(vkJsonBytes.toString('utf-8'));
   const icLen = vkJson.IC.length;
   const vkBytes = Buffer.concat([
     Buffer.from(Uint32Array.from([icLen]).buffer),
