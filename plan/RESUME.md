@@ -24,12 +24,11 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **21 open / 23 fixed / 44 total** (post Phase 3
-impl 3 on 2026-04-25: SEC-006 Part 1 + SEC-007 + SEC-041 closed
-same day; Phase 3 doc sweep earlier the same day introduced SEC-043
-and SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2 open,
-MEDIUM 10 open, LOW 5 open, INFO 4 open.  Above the 50 % Fixed
-mark.
+Registry state: **20 open / 24 fixed / 44 total** (post Phase 3
+impl 4 on 2026-04-25: SEC-006 Part 1 + SEC-007 + SEC-041 + SEC-044
+closed same day; Phase 3 doc sweep earlier the same day introduced
+SEC-043 and SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2
+open, MEDIUM 10 open, LOW 4 open, INFO 4 open.
 
 ### Commits landed this Phase 2 session
 
@@ -146,12 +145,15 @@ tree-mutating ix (`update_issuer_tree_root`, `append_issuer_leaf`,
 behind that authority. Amend ADR-0014. Bundled with the wider
 SEC-013 Squads migration.
 
-### 7. SOLID-SEC-044 -- request_withdrawal_atomic
+### 7. ~~SOLID-SEC-044 -- request_withdrawal_atomic~~ (closed 2026-04-25)
 
-Add `request_withdrawal_atomic` mirroring `revoke_issuer_atomic`:
-flip to Cooldown, bump `revocation_nonce`, CPI `replace_leaf` with
-the zero-leaf. Legacy `request_withdrawal` refuses when
-`enrolled_in_tree`. ADR-0014 amendment.
+Landed in Phase 3 impl 4.  `request_withdrawal_atomic` added to
+issuer-registry; clones the `revoke_issuer_atomic` CPI flow with
+`Cooldown` as the target status and the issuer's own keypair as
+signer.  Legacy `request_withdrawal` now rejects enrolled issuers
+with `IssuerTreeUpdateRequired`.  New `RevokeReason::
+CooldownRequested` variant on `IssuerLeafReplaced`.  ADR-0014 now
+carries the "Cooldown is verify-negative" amendment.
 
 ### 8. Governance cluster + LOW/INFO cleanup
 

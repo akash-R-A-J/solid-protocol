@@ -405,9 +405,25 @@ pub mod issuer_registry {
 
     /// Request to exit the registry. Moves status to Cooldown and starts the
     /// 14-day challenge window before the issuer can withdraw their stake.
+    ///
+    /// SOLID-SEC-044 gate.  Issuers enrolled in the ADR-0014 issuer
+    /// tree MUST use `request_withdrawal_atomic` instead.  The legacy
+    /// path would leave the on-chain status and the tree root in
+    /// disagreement: the status would say Cooldown, but the tree leaf
+    /// would still reflect the pre-Cooldown preimage, so every
+    /// credential the issuer ever issued would continue to verify
+    /// against the live tree root.  Treating Cooldown as verify-
+    /// negative (the ADR-0014 amendment) requires the leaf to bump.
     pub fn request_withdrawal(ctx: Context<RequestWithdrawal>) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
         require!(issuer.status == IssuerStatus::Approved, ErrorCode::IssuerNotApproved);
+
+        // SOLID-SEC-044.  Enrolled issuers route through
+        // `request_withdrawal_atomic`; legacy path kept for
+        // pre-tree-backfill issuers only.
+        if issuer.is_tree_enrolled {
+            return Err(error!(ErrorCode::IssuerTreeUpdateRequired));
+        }
 
         let now = Clock::get()?.unix_timestamp;
         issuer.status = IssuerStatus::Cooldown;
@@ -1228,6 +1244,171 @@ pub mod issuer_registry {
         Ok(())
     }
 
+    /// Atomic voluntary cooldown: Approved -> Cooldown + CPI
+    /// `replace_leaf` in one ix (SOLID-SEC-044, ADR-0014 amendment).
+    ///
+    /// ADR-0014 amendment (2026-04-25).  Phase 2 left the legacy
+    /// `request_withdrawal` handler in place, which flipped status
+    /// to Cooldown but left the issuer's leaf untouched.  That made
+    /// Cooldown effectively Approved-equivalent for proof
+    /// verification: a credential held by an issuer who was winding
+    /// down would keep verifying against the live tree root.  The
+    /// post-amendment stance is "Cooldown is verify-negative": any
+    /// proof touching a Cooldown issuer's credentials must fail the
+    /// in-circuit Merkle membership check.  This ix delivers that by
+    /// replacing the leaf preimage (status_epoch + revocation_nonce
+    /// both bump) in the same transaction as the status flip.
+    ///
+    /// Preconditions (mirrors `revoke_issuer_atomic` except for the
+    /// source status set):
+    ///   * Caller signs as `issuer_account.authority` (the issuer
+    ///     themselves -- NOT the DAO authority; withdrawal is
+    ///     voluntary).
+    ///   * Issuer is `is_tree_enrolled` and is currently in
+    ///     `Approved` status.  Cooldown -> Cooldown is a no-op this
+    ///     ix refuses (there is no valid state to transition to).
+    ///
+    /// Behaviour (identical CPI flow to `revoke_issuer_atomic`):
+    ///   1. Compute OLD leaf from pre-bump on-chain state.
+    ///   2. Bump `issuer.revocation_nonce += 1` and
+    ///      `issuer.status_epoch = Clock::slot`.
+    ///   3. Flip `issuer.status = IssuerStatus::Cooldown`; set
+    ///      `issuer.cooldown_ends_at = now + 14 days`.
+    ///   4. Compute NEW leaf from post-bump state.
+    ///   5. CPI `spl_account_compression::replace_leaf` (caller
+    ///      supplies proof nodes in `remaining_accounts`).
+    ///
+    /// The caller MUST also invoke `update_issuer_tree_root` in the
+    /// same tx so `IssuerTreeBinding.current_root` reflects the
+    /// post-replace root; otherwise the zk-verifier's gate reads the
+    /// old root and the cooldown is invisible to proof verification.
+    /// This is the same discipline the Phase 2 `revoke_issuer_
+    /// atomic` already requires.
+    pub fn request_withdrawal_atomic<'info>(
+        ctx: Context<'_, '_, '_, 'info, RequestWithdrawalAtomic<'info>>,
+        old_root: [u8; 32],
+    ) -> Result<()> {
+        let issuer = &mut ctx.accounts.issuer_account;
+
+        // Authority: the issuer, not the DAO.  Withdrawal is a
+        // voluntary exit; only the issuer can start it.
+        require_keys_eq!(
+            ctx.accounts.issuer_authority.key(),
+            issuer.authority,
+            ErrorCode::Unauthorized
+        );
+        require!(issuer.is_tree_enrolled, ErrorCode::IssuerNotEnrolled);
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
+
+        // (1) OLD leaf.
+        let old_leaf = compute_issuer_leaf_bytes(issuer)?;
+
+        // (2) Bump counters BEFORE computing the new leaf so the post-
+        // bump preimage differs from every pre-cooldown proof's
+        // expectations.
+        issuer.revocation_nonce = issuer
+            .revocation_nonce
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        issuer.status_epoch = Clock::get()?.slot;
+
+        // (3) Flip status + start the 14-day cooldown window.
+        issuer.status = IssuerStatus::Cooldown;
+        issuer.cooldown_ends_at = Clock::get()?.unix_timestamp + 14 * 24 * 60 * 60;
+
+        // (4) NEW leaf (reflects bumped state).
+        let new_leaf = compute_issuer_leaf_bytes(issuer)?;
+
+        let leaf_index = issuer.issuer_tree_leaf_index;
+        let leaf_index_u32: u32 = leaf_index
+            .try_into()
+            .map_err(|_| error!(ErrorCode::IssuerTreeLeafIndexTooLarge))?;
+
+        // (5) CPI replace_leaf.  Identical flow to
+        // `revoke_issuer_atomic`; SPL AC validates the proof in
+        // `remaining_accounts` against the supplied `old_root` and the
+        // live tree state.
+        let spl_ac: SolPubkey = spl_account_compression_id::ID;
+        let spl_noop: SolPubkey = spl_noop_id::ID;
+        require_keys_eq!(
+            ctx.accounts.compression_program.key(),
+            spl_ac,
+            ErrorCode::InvalidCompressionProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.log_wrapper.key(),
+            spl_noop,
+            ErrorCode::InvalidNoopProgram
+        );
+
+        let (tree_authority_key, tree_authority_bump) = Pubkey::find_program_address(
+            &[ISSUER_TREE_AUTHORITY_SEED],
+            &crate::ID,
+        );
+        require_keys_eq!(
+            ctx.accounts.issuer_tree_authority.key(),
+            tree_authority_key,
+            ErrorCode::InvalidIssuerTreeAuthority
+        );
+
+        let mut ix_data = Vec::with_capacity(8 + 32 + 32 + 32 + 4);
+        ix_data.extend_from_slice(&SPL_AC_REPLACE_LEAF_DISCRIMINATOR);
+        ix_data.extend_from_slice(&old_root);
+        ix_data.extend_from_slice(&old_leaf);
+        ix_data.extend_from_slice(&new_leaf);
+        ix_data.extend_from_slice(&leaf_index_u32.to_le_bytes());
+
+        let mut accounts = vec![
+            AccountMeta::new(ctx.accounts.merkle_tree.key(), false),
+            AccountMeta::new_readonly(tree_authority_key, true),
+            AccountMeta::new_readonly(spl_noop, false),
+        ];
+        for proof_node in ctx.remaining_accounts.iter() {
+            accounts.push(AccountMeta::new_readonly(proof_node.key(), false));
+        }
+
+        let cpi_ix = Instruction {
+            program_id: spl_ac,
+            accounts,
+            data: ix_data,
+        };
+
+        let signer_seeds: &[&[u8]] = &[
+            ISSUER_TREE_AUTHORITY_SEED,
+            &[tree_authority_bump],
+        ];
+        let mut invoke_accounts = vec![
+            ctx.accounts.merkle_tree.to_account_info(),
+            ctx.accounts.issuer_tree_authority.to_account_info(),
+            ctx.accounts.log_wrapper.to_account_info(),
+            ctx.accounts.compression_program.to_account_info(),
+        ];
+        for proof_node in ctx.remaining_accounts.iter() {
+            invoke_accounts.push(proof_node.clone());
+        }
+        invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
+
+        // Note: registry_config.active_issuers is NOT decremented
+        // here -- a Cooldown issuer is still "active" for bookkeeping
+        // purposes and the count moves on the Cooldown -> Revoked
+        // transition (withdraw_after_cooldown / revoke_issuer_atomic).
+
+        emit!(IssuerLeafReplaced {
+            issuer: issuer.authority,
+            old_leaf,
+            new_leaf,
+            leaf_index,
+            new_status_epoch: issuer.status_epoch,
+            new_revocation_nonce: issuer.revocation_nonce,
+            reason: RevokeReason::CooldownRequested,
+            merkle_tree: ctx.accounts.merkle_tree.key(),
+        });
+        Ok(())
+    }
+
     // ─── Credential issuance (R-2) ────────────────────────────────────────
 
     /// Publish a new credential commitment into the SPL Account-Compression
@@ -1810,6 +1991,39 @@ pub struct RequestWithdrawal<'info> {
     pub issuer_authority: Signer<'info>,
 }
 
+/// ADR-0014 amendment (SOLID-SEC-044).  Accounts for
+/// `request_withdrawal_atomic`.
+///
+/// Proof nodes are supplied as `remaining_accounts` (readonly),
+/// identical to `revoke_issuer_atomic`.
+#[derive(Accounts)]
+pub struct RequestWithdrawalAtomic<'info> {
+    #[account(
+        mut,
+        seeds = [b"issuer", issuer_authority.key().as_ref()],
+        bump
+    )]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    /// CHECK: Issuer-tree PDA that signs the SPL AC `replace_leaf` CPI.
+    #[account(seeds = [ISSUER_TREE_AUTHORITY_SEED], bump)]
+    pub issuer_tree_authority: UncheckedAccount<'info>,
+
+    /// CHECK: SPL AC concurrent merkle tree account; SPL AC validates
+    /// ownership + shape on CPI.
+    #[account(mut)]
+    pub merkle_tree: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_noop_id::ID`; validated in-handler.
+    pub log_wrapper: UncheckedAccount<'info>,
+
+    /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
+    pub compression_program: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub issuer_authority: Signer<'info>,
+}
+
 #[derive(Accounts)]
 pub struct WithdrawAfterCooldown<'info> {
     #[account(mut, seeds = [b"issuer", issuer_authority.key().as_ref()], bump)]
@@ -2186,4 +2400,11 @@ pub enum RevokeReason {
     Revoked,
     Slashed,
     FraudConfirmed,
+    /// SOLID-SEC-044.  Voluntary Approved -> Cooldown transition via
+    /// `request_withdrawal_atomic`.  The leaf is replaced so that pre-
+    /// cooldown proofs no longer verify; if the issuer later abandons
+    /// the cooldown and the operator restores the old preimage, the
+    /// revocation_nonce bump ensures the tree state still differs from
+    /// the pre-cooldown leaf.
+    CooldownRequested,
 }

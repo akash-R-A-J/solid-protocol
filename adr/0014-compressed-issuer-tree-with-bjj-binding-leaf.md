@@ -1,10 +1,17 @@
 # ADR 0014: Compressed issuer tree with BJJ-binding leaf
 
-- **Status:** Accepted (pending implementation; drives Phase 2 circuit rev)
-- **Date:** 2026-04-23 (Phase 2 kickoff)
-- **Deciders:** founding team; Phase 2 entry review
-- **Supersedes:** ADR-0012 (31-public-input contract) will be
-  revised to 32 when the issuer-tree root becomes a public input.
+- **Status:** Accepted.  Phase 2 circuit rev + atomic revoke landed
+  2026-04-24.  Phase 3 amendment (2026-04-25, SOLID-SEC-044):
+  Cooldown status is verify-negative; the voluntary
+  `request_withdrawal` path now has an atomic
+  `request_withdrawal_atomic` counterpart that replaces the leaf in
+  the same ix as the status flip.
+- **Date:** 2026-04-23 (Phase 2 kickoff); amended 2026-04-25 (Phase
+  3 impl 4, SOLID-SEC-044).
+- **Deciders:** founding team; Phase 2 entry review; Phase 3
+  amendment review.
+- **Supersedes:** ADR-0012 (31-public-input contract) revised to 32
+  when the issuer-tree root became a public input (landed).
 - **Affects:** `circuits/batch_credential_query.circom`,
   `circuits/compound_query.circom`,
   `circuits/lib/identity_anchor.circom` (sibling pattern),
@@ -288,12 +295,67 @@ rather than invent:
    PDAs and appends each Approved one's leaf.  One-shot; safe to
    re-run (idempotent via leaf lookup).
 
+## Phase 3 amendment (2026-04-25, SOLID-SEC-044): Cooldown is verify-negative
+
+The Phase 2 design treated `IssuerStatus::Cooldown` as Approved-
+equivalent for proof-verification purposes: the tree leaf was left
+unchanged on the `request_withdrawal` (`Approved -> Cooldown`)
+transition.  The v0.6 deep audit surfaced this as a semantic gap
+(section 4.2): an issuer winding down their participation could
+continue to vouch for credentials for the full 14-day cooldown
+window.  Phase 3 impl 4 closes the gap with this amendment.
+
+**Revised stance.**  Cooldown is verify-negative.  Any proof whose
+credential was signed by a Cooldown issuer must fail the in-circuit
+Merkle membership check against the live tree root.
+
+**Mechanics.**  A new instruction
+`request_withdrawal_atomic(old_root: [u8; 32])` mirrors
+`revoke_issuer_atomic` exactly except for the target status:
+
+1. OLD leaf = compute_issuer_leaf_bytes(issuer_pre_bump).
+2. Bump `revocation_nonce += 1`; `status_epoch = Clock::slot`.
+3. Flip `status = IssuerStatus::Cooldown`; set
+   `cooldown_ends_at = now + 14 days`.
+4. NEW leaf = compute_issuer_leaf_bytes(issuer_post_bump).
+5. CPI `spl_account_compression::replace_leaf` with
+   `(old_root, old_leaf, new_leaf, leaf_index)` and the caller-
+   supplied Merkle proof.
+6. Caller MUST invoke `update_issuer_tree_root` in the same tx.
+
+The handler is authorised by the issuer's own keypair (not the DAO
+authority); withdrawal is voluntary, unlike revocation.  Emits
+`IssuerLeafReplaced` with a new `RevokeReason::CooldownRequested`
+variant so indexers can distinguish voluntary exit from punitive
+revocation.
+
+The legacy `request_withdrawal` handler is now gated behind
+`!is_tree_enrolled`; tree-enrolled issuers receive
+`ErrorCode::IssuerTreeUpdateRequired`.  Pre-backfill issuers
+(enrolled_in_tree == false) keep the legacy path until the
+backfill script sweeps them into the tree.
+
+**Why the leaf replacement works.**  `compute_issuer_leaf_bytes`
+takes `status_epoch` and `revocation_nonce` into its preimage; both
+bump on every atomic transition.  A pre-cooldown proof carries a
+witness where the issuer's leaf preimage reflects the pre-bump
+values; after the replace, the tree root no longer contains that
+leaf, so the in-circuit `MerkleProof` constraint fails.  Identical
+argument to the `revoke_issuer_atomic` case.
+
+**`active_issuers` accounting.**  Not decremented here.  A Cooldown
+issuer is still "active" for registry bookkeeping (they still hold
+stake, can be slashed, can reverse their decision before cooldown
+ends).  The count moves on the Cooldown -> Revoked transition
+(`withdraw_after_cooldown` or `revoke_issuer_atomic`).
+
 ## References
 
 - SOLID-SEC-004 (this entry is its remediation design).
 - SOLID-SEC-008 (epoch-bound nullifier; bundled with this).
 - SOLID-SEC-012 (multi-party ceremony; tracks the trusted setup
   that this rev will also need to be redone under).
+- SOLID-SEC-044 (the Phase 3 amendment above).
 - ADR-0003 (SPL AC as credential-tree substrate; same substrate).
 - ADR-0009 (DAO voting + trust-anchor bypass; status transitions
   are triggered by these paths).

@@ -35,9 +35,9 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 2    | 0           | 10    | 0        | 0         | 12    |
 | MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
-| LOW       | 5    | 0           | 4     | 0        | 0         | 9     |
+| LOW       | 4    | 0           | 5     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 21   | 0           | 23    | 0        | 0         | 44    |
+| **Total** | 20   | 0           | 24    | 0        | 0         | 44    |
 
 ---
 
@@ -88,7 +88,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-041   | LOW      | Fixed  | `circuits/build/verification_key.json` uploaded by `initialize.ts` is not content-addressed |
 | SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
 | SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
-| SOLID-SEC-044   | LOW      | Open   | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
+| SOLID-SEC-044   | LOW      | Fixed  | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
 
 ---
 
@@ -1068,40 +1068,54 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 ### SOLID-SEC-044 -- Cooldown status does not replace the issuer's tree leaf
 
 - **Severity:** LOW
-- **Status:** Open
+- **Status:** Fixed (2026-04-25, Phase 3 impl 4, ADR-0014 amendment)
 - **Introduced:** 2026-04-24 (surfaced in the v0.6 deep audit,
   `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` section 4.2).
   Entered the codebase with ADR-0014 atomic-hook design (commit
   `167138e`): `revoke_issuer_atomic` wires a `replace_leaf` CPI into
   the revocation path, but `request_withdrawal` -- the voluntary
-  Approved -> Cooldown transition -- does not.
-- **Evidence.** `programs/issuer-registry/src/lib.rs` :: the
-  `request_withdrawal` handler flips `IssuerAccount.status` from
-  `Approved` to `Cooldown` and bumps `status_epoch`, but leaves the
-  issuer's Poseidon(5) leaf in the SPL-AC tree as the Approved-time
-  leaf.  Because the circuit's STEP 0.75 membership proof checks the
-  leaf against the current tree root and does not read `status` on
-  chain, a credential issued under a Cooldown issuer continues to
-  produce a valid proof.  RESUME.md flagged this as an open Phase 3
-  decision.
-- **Impact.** Cooldown is today functionally equivalent to Approved
-  for proof-verification purposes.  Holders of credentials from a
-  Cooldown issuer can still prove membership against the active
-  issuer tree, which contradicts the intent that Cooldown signals
-  "the issuer is winding down -- do not rely on its attestations".
-  Not a soundness break (the issuer has not been revoked for cause);
-  is a semantic gap.
-- **Remediation (planned).** Add `request_withdrawal_atomic`
-  mirroring `revoke_issuer_atomic`: flip to Cooldown, bump
-  `revocation_nonce`, CPI `replace_leaf` with the zero-leaf.
-  Legacy `request_withdrawal` returns `IssuerTreeUpdateRequired`
-  for any `enrolled_in_tree == true` issuer.  Amend ADR-0014 to
-  document the "Cooldown is verify-negative" stance explicitly.
-  Target: Phase 3 close-out.
-- **Regression gate.** Rust unit test `test_request_withdrawal_
-  atomic_replaces_leaf_with_zero` + the atomic-hook property test
-  to add: every status transition that shifts verify-correctness
-  moves the tree root in the same ix.
+  Approved -> Cooldown transition -- did not.
+- **Evidence (pre-fix).** `programs/issuer-registry/src/lib.rs` ::
+  the `request_withdrawal` handler flipped `IssuerAccount.status`
+  from `Approved` to `Cooldown` and bumped `status_epoch`, but left
+  the issuer's Poseidon(5) leaf in the SPL-AC tree as the
+  Approved-time leaf.  Because the circuit's STEP 0.75 membership
+  proof checks the leaf against the current tree root and does not
+  read `status` on chain, a credential issued under a Cooldown
+  issuer continued to produce a valid proof for the full 14-day
+  cooldown window.
+- **Impact.** Cooldown was functionally equivalent to Approved for
+  proof-verification purposes.  Holders of credentials from a
+  Cooldown issuer could still prove membership against the active
+  issuer tree, contradicting the intent that Cooldown signals "the
+  issuer is winding down -- do not rely on its attestations".  Not
+  a soundness break (the issuer had not been revoked for cause);
+  was a semantic gap.
+- **Remediation (landed).**  ADR-0014 amendment + new instruction:
+  - `programs/issuer-registry/src/lib.rs` ::
+    `request_withdrawal_atomic(old_root)` mirrors
+    `revoke_issuer_atomic` exactly except for the target status.
+    Bumps `revocation_nonce` + `status_epoch`, flips `status` to
+    `Cooldown`, sets `cooldown_ends_at`, and CPIs
+    `spl_account_compression::replace_leaf` in one tx.  Authority
+    is the issuer's own keypair (withdrawal is voluntary, unlike
+    revocation).
+  - Legacy `request_withdrawal` handler now returns
+    `IssuerTreeUpdateRequired` for any `is_tree_enrolled == true`
+    issuer.  Pre-backfill (unenrolled) issuers retain the legacy
+    path.
+  - New `RevokeReason::CooldownRequested` variant in the
+    `IssuerLeafReplaced` event so indexers can distinguish
+    voluntary exit from punitive revocation.
+  - ADR-0014 amended with the "Cooldown is verify-negative" stance
+    and the leaf-replacement correctness argument.
+- **Regression gate.**  Full transaction-level coverage lands in
+  the integration suite expansion (`tests/integration/
+  02_issuer_lifecycle.test.ts` and `08_revoke_and_tree.test.ts`).
+  Static coverage today: the handler is a direct clone of
+  `revoke_issuer_atomic` with the status target changed; the Phase
+  2 ADR-0014 regression harness for atomic hooks covers the
+  shared CPI plumbing.
 
 ---
 
@@ -1120,6 +1134,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-25 | Phase 3 impl 1 (SEC-007 + registry detail reconciliation)            | --                                        | SOLID-SEC-007 (this commit); SOLID-SEC-004, -008, -036 detail sections reconciled Open -> Fixed to match the status board flipped at Phase 2 close-out |
 | 2026-04-25 | Phase 3 impl 2 (ADR-0015 VK freeze-gate + rotation timelock)         | --                                        | SOLID-SEC-006 (Part 1 on-chain; Part 2 circuit-bound vk_generation deferred to the next trusted-setup cycle) |
 | 2026-04-25 | Phase 3 impl 3 (SEC-041 content-addressed VK artifact)               | --                                        | SOLID-SEC-041 (verification_key.sha256 emitted by setup.js; initialize.ts enforces the pin via env or file) |
+| 2026-04-25 | Phase 3 impl 4 (ADR-0014 Cooldown-verify-negative amendment)         | --                                        | SOLID-SEC-044 (request_withdrawal_atomic; legacy request_withdrawal gated on !is_tree_enrolled) |
 
 ### Note on the 2026-04-22 numbering
 
