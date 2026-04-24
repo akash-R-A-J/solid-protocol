@@ -1,13 +1,14 @@
 # SolID Protocol -- Improvement Roadmap
 
 > **Original document date:** 2026-04-21
-> **Last status reconciliation:** 2026-04-23 (Phase 1 Tier 1 pass)
+> **Last status reconciliation:** 2026-04-25 (Phase 3 kickoff doc sweep)
 > **Original source:** Independent system audit (2026-04-21, Antigravity)
 >
-> **Status as of 2026-04-23.** The sec/SECURITY_REGISTRY.md living tracker
-> is the canonical source of truth for every open and closed security
-> item. This document is preserved as the historical backlog and is kept
-> reconciled with the registry. When the two disagree, the registry wins.
+> **Status as of 2026-04-25.** Phase 1 and Phase 2 are closed. The
+> sec/SECURITY_REGISTRY.md living tracker is the canonical source of
+> truth for every open and closed security item. This document is
+> preserved as the historical backlog and is kept reconciled with the
+> registry. When the two disagree, the registry wins.
 >
 > - New findings since 2026-04-21: recorded in the registry as
 >   SOLID-SEC-NNN, not appended here.
@@ -555,7 +556,7 @@ static async prove(query: MultiCredentialQuery, identity: BJJKeypair): Promise<a
 
 **File:** `circuits/lib/nullifier_expiry.circom`, lines 8–19
 
-`NullifierComputer` is a 3-arg nullifier template (old design) that is never instantiated by any circuit. The batch circuit uses an inline 5-arg Poseidon. This dead template is confusing for auditors.
+`NullifierComputer` is a 3-arg nullifier template (old design) that is never instantiated by any circuit. The batch circuit uses an inline 6-arg Poseidon post-Phase-2 (ADR-0006 revised by ADR-0014; prior to Phase 2 it was 5-arg). This dead template is confusing for auditors.
 
 **What to fix:** Remove the `NullifierComputer` template, or add a comment clearly stating it is deprecated and kept for historical reference only.
 
@@ -757,7 +758,7 @@ P2 -- Fix Before Mainnet (14 items)
 [x] P2-7  Add GLOBAL_DEPTH parameter to batch circuit                      (in code)
 [ ] P2-8  Deploy governance token and replace placeholder pubkeys          (placeholders still present in config.ts:35-36)
 [x] P2-9  Add chunk sequence validation to store_verification_key          (in code; VK freeze-gate tracked as SOLID-SEC-006)
-[~] P2-10 Wire cross-language vector test into CI as required gate         (narrow: 2/10 primitives -- SOLID-SEC-010)
+[~] P2-10 Wire cross-language vector test into CI as required gate         (narrow: 3/10 primitives post-Phase-2 -- SOLID-SEC-010; expansion in Phase 3)
 [~] P2-11 Implement revocation (v1 design is ready)                        (circuit + on-chain done; holder + issuer SDK + events not done)
 [x] P2-12 Add issuer public key binding in ZK proof path                   (SOLID-SEC-004 FIXED 2026-04-24, Phase 2; ADR-0014)
 [ ] P2-13 Run trusted setup ceremony and publish circuit artifacts         (single-party; multi-party is SOLID-SEC-012)
@@ -785,8 +786,22 @@ Architectural (6 items -- longer term)
 Legend: `[x]` landed; `[~]` partially landed (scope split between
 original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
 
-Registry count (as of 2026-04-23): 38 findings; 0 closed (Phase 1 in
-progress -- this reconciliation itself closes SOLID-SEC-027).
+Registry count (as of 2026-04-25): 44 findings; 20 closed (Phase 1 +
+Phase 2 landed).  Open HIGH: SOLID-SEC-006, -007, -010, -012.  Open
+MEDIUM: SOLID-SEC-013..-019, -021, -034, -043.  Open LOW:
+SOLID-SEC-022, -023, -024, -035, -041, -044.  Open INFO:
+SOLID-SEC-025, -026, -037, -038.
+
+New post-roadmap items added in 2026-04-25 sweep (not in the P0..P3
+structure; tracked by registry ID only):
+
+- SOLID-SEC-043 (MEDIUM, Open).  `IssuerTreeBinding.operator` is a
+  single signer; gate behind Squads 3-of-5 before external audit.
+- SOLID-SEC-044 (LOW, Open).  Cooldown status does not replace the
+  issuer's tree leaf; add `request_withdrawal_atomic`.
+
+See the v0.6 deep audit's Section 7.1 for the current Phase 3 close-
+out priority ordering.
 
 ---
 

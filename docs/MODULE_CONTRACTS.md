@@ -71,11 +71,11 @@ a ZK identity protocol.
 | Issuer slashing + lamport transfer | WORKING | issuer-registry | -- |
 | WASM bridge for crypto primitives | WORKING (code) | wasm/ | SOLID-SEC-028 (path) |
 | Holder key derivation (per-schema BJJ) | WORKING | wasm/ + holder SDK | -- |
-| 5-arg hardened nullifier | WORKING | wasm/ + circuits | -- |
-| Cross-language vector gate | PARTIAL (2/10) | tests/vectors/ | SOLID-SEC-010 |
-| Timestamp expiry enforcement | WORKING (circuit) | circuits | SOLID-SEC-005 (clock) |
-| Timestamp bound to on-chain Clock | MISSING | zk-verifier | SOLID-SEC-005 |
-| E2E scripts runnable by stranger | BROKEN (3 bugs) | scripts/ | SOLID-SEC-011 |
+| 6-arg hardened nullifier (ADR-0006 rev) | WORKING | wasm/ + circuits | -- |
+| Cross-language vector gate | PARTIAL (3/10) | tests/vectors/ | SOLID-SEC-010 |
+| Timestamp expiry enforcement | WORKING (circuit) | circuits | -- |
+| Timestamp bound to on-chain Clock | WORKING | zk-verifier | SOLID-SEC-005 (Fixed) |
+| E2E scripts runnable by stranger | WORKING (`npm run e2e`) | scripts/ + ts-sdk | SOLID-SEC-011 (Fixed) |
 
 ### 1.2 Left to Implement (Specified, Not Wired)
 

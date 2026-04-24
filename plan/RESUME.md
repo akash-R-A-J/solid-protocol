@@ -4,7 +4,9 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-24 end-of-session (Phase 2 CLOSED)
+- **Last updated:** 2026-04-25 (Phase 3 doc sweep: SEC-043 and
+  SEC-044 registered; registry / README / CLAUDE.md / plan /
+  IMPROVEMENTS_ROADMAP reconciled against v0.6 audit)
 - **Current branch:** `main`
 - **Current phase:** Phase 2 closed; Phase 3 open
 - **Discipline in force:** root-cause only, no regressions, no doc
@@ -22,9 +24,10 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **22 open / 20 fixed / 42 total**.
-Severities: **CRITICAL 0 open**, HIGH 4 open, MEDIUM 9 open,
-LOW 5 open, INFO 4 open.
+Registry state: **24 open / 20 fixed / 44 total** (post Phase 3 doc
+sweep on 2026-04-25, which introduced SEC-043 and SEC-044).
+Severities: **CRITICAL 0 open**, HIGH 4 open, MEDIUM 10 open,
+LOW 6 open, INFO 4 open.
 
 ### Commits landed this Phase 2 session
 
@@ -57,10 +60,15 @@ HIGH (4 open)
   SOLID-SEC-010  Cross-language vectors narrow (covers 3 of ~10 primitives)
   SOLID-SEC-012  Trusted setup single-party (mainnet blocker)
 
-MEDIUM (9 open)
+MEDIUM (10 open)
   -013..-019, -021, -034  (governance + throughput + schema-hash
                             re-assertion + fraud-proof seed check)
-LOW (5 open)   -022..-024, -035, -041
+  -043                    (IssuerTreeBinding.operator single signer;
+                            gate behind Squads 3-of-5 before ext. audit)
+
+LOW (6 open)   -022..-024, -035, -041, -044
+               (-044: Cooldown does not replace issuer leaf)
+
 INFO (4 open)  -025, -026, -037, -038
 
 See sec/SECURITY_REGISTRY.md for the full detail + remediation plan
@@ -127,13 +135,29 @@ distributed contributors, each signing an attestation chain.
 Artifacts (zkey, ptau, VK) hosted on IPFS + Arweave.  Not
 one-sprint scope.
 
-### 6. Governance cluster + LOW/INFO cleanup
+### 6. SOLID-SEC-043 -- gate issuer_tree_operator behind multisig
+
+Replace the single-pubkey `IssuerTreeBinding.operator` with a PDA
+signer (Squads 3-of-5 or SolID DAO threshold PDA). All four
+tree-mutating ix (`update_issuer_tree_root`, `append_issuer_leaf`,
+`replace_issuer_leaf`, `revoke_issuer_atomic`) wrap existing logic
+behind that authority. Amend ADR-0014. Bundled with the wider
+SEC-013 Squads migration.
+
+### 7. SOLID-SEC-044 -- request_withdrawal_atomic
+
+Add `request_withdrawal_atomic` mirroring `revoke_issuer_atomic`:
+flip to Cooldown, bump `revocation_nonce`, CPI `replace_leaf` with
+the zero-leaf. Legacy `request_withdrawal` refuses when
+`enrolled_in_tree`. ADR-0014 amendment.
+
+### 8. Governance cluster + LOW/INFO cleanup
 
 SOLID-SEC-013..019, -034.  Squads 3-of-5 multisig, per-issuer stake
 vaults, propose/accept authority transfer, etc.  Work separable
 into small commits; good "warm-up" work while -012 is in flight.
 
-### 7. External audit
+### 9. External audit
 
 After the items above close, schedule the external audit.  Per
 Section 0 non-negotiable #5, mainnet slips one sprint after audit
@@ -164,13 +188,11 @@ head -3 Cargo.lock                        # must be version = 3
    only?  Ties into the SEC-013 Squads migration.  Decide in the
    ADR for SEC-006.
 
-2. **Cooldown status semantics.**  Phase 2 treats
-   `IssuerStatus::Cooldown` as Approved-equivalent for
-   proof-verification purposes (tree leaf doesn't change on
-   Approved -> Cooldown).  Phase 3 decision: should cooldown
-   immediately disable proof verification (stronger guarantee)?
-   If yes, `request_withdrawal` also needs to become atomic with a
-   tree leaf replace.
+2. **Cooldown status semantics.**  Now tracked as SOLID-SEC-044
+   (LOW, Open) in the registry.  Default Phase 3 stance: Cooldown
+   disables proof verification; `request_withdrawal_atomic` mirrors
+   `revoke_issuer_atomic` with a `replace_leaf` CPI.  Final ADR-0014
+   amendment lands with the SEC-044 fix.
 
 3. **`scripts/e2e_localnet` CI gate.**  Landed as scaffolding in
    `4fba821`.  Should it be a hard gate on every push (current),

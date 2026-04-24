@@ -13,9 +13,11 @@ and (c) composes with the BabyJubJub / Poseidon choices in ADR-0002.
 
 Solana exposes native alt_bn128 pairing, scalar multiplication, and
 addition as syscalls. A single pairing check is approximately 165K
-CU; the full Groth16 verify for a 31-public-input circuit comes in
-around 280-320K CU, comfortably under the 400K default and well
-under the 1.4M max.
+CU; the full Groth16 verify for the 31-public-input circuit (v0.5)
+came in around 280-320K CU, comfortably under the 400K default and
+well under the 1.4M max. ADR-0014 raised the contract to 32 public
+inputs in Phase 2; the additional pairing-input scalar multiply is
+amortized within the same budget envelope.
 
 The alternatives are: Plonk (BN254 or KZG), STARKs, Halo2. None has
 first-class Solana syscall support today. A non-native verifier

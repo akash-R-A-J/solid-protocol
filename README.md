@@ -10,11 +10,24 @@ Compression for credential state, Groth16 plus alt_bn128 syscalls for on-chain
 proof verification, and BabyJubJub with Poseidon for the issuance signature
 scheme.
 
-v0.3 (April 2026). This version lands the full 2026-04 remediation set:
-program, circuit, and SDK fixes that unblock end-to-end testing on localnet.
-The on-chain verifier remains backend-agnostic: all cryptographic contracts
-(commitment layout, nullifier derivation, circuit public-input ordering) are
-preserved.
+v0.6 (April 2026, post-Phase-2).  Builds on the v0.3 remediation set
+(Phase 1) with ADR-0014's compressed issuer tree and 6-input nullifier
+(Phase 2).  Every active proof now proves Merkle membership of a
+BJJ-bound Approved-issuer leaf, and revocation is atomic (status flip
+plus `replace_leaf` CPI in one instruction).  Public-input contract
+is 32 inputs with named indices in zk-verifier (`ISSUER_TREE_ROOT_
+INPUT_INDEX = 10`, `VERIFIER_ADDRESS_INPUT_INDEX = 29`,
+`VERIFIER_NONCE_INPUT_INDEX = 30`, `CURRENT_TIMESTAMP_INPUT_INDEX =
+31`).  Canonical post-fix assessment lives at
+`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`.
+
+Open Phase 3 residuals at the time of this release: SOLID-SEC-006
+(VK freeze-gate), SEC-007 (BJJ subgroup check), SEC-010 (cross-
+language vectors 3/10), SEC-012 (multi-party trusted setup, mainnet
+blocker), SEC-041 (content-addressed VK artifact), SEC-043
+(`IssuerTreeBinding.operator` single signer), SEC-044 (Cooldown does
+not replace the issuer leaf).  See
+`sec/SECURITY_REGISTRY.md` for the full backlog.
 
 ## Architecture
 
@@ -79,8 +92,11 @@ anchor build
 # Circuits: compile then run the trusted setup
 cd circuits && node scripts/setup.js && cd ..
 
-# WASM bridge for the TS SDK
-wasm-pack build crates/solid-core --target nodejs \
+# WASM bridge for the TS SDK.
+# The canonical bridge lives in the top-level wasm/ crate, not in
+# crates/solid-core (which stays BPF-compatible per SOLID-SEC-028 /
+# ADR-0002).
+wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
 
 # TypeScript SDK
@@ -107,17 +123,29 @@ If check_program_ids.py fails, follow
 
 ### End-to-end run (localnet)
 
+Preferred path is the Phase 2 close-out script, which is idempotent and
+re-run-safe:
+
 ```
-solana-test-validator &
+solana-test-validator --reset &
 anchor deploy --provider.cluster localnet
-ts-node scripts/initialize.ts
-ts-node scripts/issue.ts
-ts-node scripts/prove.ts
+cd ts-sdk && npm run e2e
 ```
 
-The scripts share state through scripts/e2e_state.json. initialize.ts takes
-SOLID_TREE_PUBKEY and SOLID_GOVERNANCE_MINT from the environment if you want
-to pin them to pre-existing accounts.
+`npm run e2e` invokes, in order: `initialize.ts` (registry + schema +
+VK; skips issuer-tree binding when no tree yet), `backfill_issuer_
+tree.ts` (SPL AC tree + `IssuerTreeBinding` PDA + enroll approved
+issuers), `bootstrap_issuer.ts` (register + DAO-approve +
+`append_issuer_leaf` + `update_issuer_tree_root`), `issue.ts` (CPI
+`issue_credential` + snapshot issuer preimage), `prove.ts` (seed
+local replicas + generate proof + `verify_batch_proof` + replay
+reject).  Every step guards against re-entry into already-approved
+or already-enrolled states.
+
+Shared state lives under `$XDG_RUNTIME_DIR/solid-e2e/` (or
+`$TMPDIR/solid-e2e-$uid/`) with 0700 directories and 0600 files
+(SOLID-SEC-020).  `initialize.ts` still honours `SOLID_TREE_PUBKEY`
+and `SOLID_GOVERNANCE_MINT` for pinning pre-existing accounts.
 
 ## Packages
 
@@ -149,7 +177,9 @@ to pin them to pre-existing accounts.
 - [Revocation Design (v1 and v1.1 SMT)](docs/REVOCATION_DESIGN.md)
 - [Deployment and Testing](docs/DEPLOYMENT_AND_TESTING.md)
 - [Program-ID Reconciliation Runbook](docs/PROGRAM_ID_RECONCILIATION.md)
-- [Post-Remediation Audit (April 2026)](docs/POST_REMEDIATION_AUDIT.md)
+- [Post-Remediation Audit -- Phase 1 (April 2026)](docs/POST_REMEDIATION_AUDIT.md) -- historical; superseded by the v0.6 deep audit
+- [v0.6 Deep Comprehensive Audit -- post-Phase-2 (2026-04-24)](sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md) -- canonical state-of-protocol
+- [Security Registry](sec/SECURITY_REGISTRY.md)
 
 ## How it works
 

@@ -3,7 +3,7 @@
 Canonical, living tracker for every security finding across every audit.
 One file. No fragmentation. Nothing deleted.
 
-- Protocol version under review: v0.4 (April 2026, second audit pass)
+- Protocol version under review: v0.6 (April 2026, post-Phase-2 close)
 - Last audits folded in (chronological):
   - 2026-04-22 senior-engineer comprehensive audit
     (`sec/audits/2026-04-22_v0.3_comprehensive_audit.md`)
@@ -13,11 +13,16 @@ One file. No fragmentation. Nothing deleted.
     (`sec/audits/2026-04-22_v0.3_master_audit.md`)
   - 2026-04-22 v0.4 comprehensive audit + build plan
     (`sec/audits/2026-04-22_v0.4_comprehensive_audit_and_build_plan.md`)
-- Last registry update: 2026-04-22 (merges master-audit findings into
-  SOLID-SEC-031..038 after v0.4 had already allocated
-  SOLID-SEC-028..030; duplicates collapsed into canonical IDs)
-- Next audit target: after Phase 1 close-out
-  (see `plan/IMPLEMENTATION_PLAN.md`)
+  - 2026-04-23 v0.5 deep comprehensive audit
+    (`sec/audits/2026-04-23_v0.5_deep_comprehensive_audit.md`)
+  - 2026-04-24 v0.6 deep comprehensive audit
+    (`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`)
+- Last registry update: 2026-04-24 (Phase 3 doc sweep: introduces
+  SOLID-SEC-043 and SOLID-SEC-044 from the v0.6 audit; refreshes
+  summary counts)
+- Next audit target: after Phase 3 close-out
+  (see `plan/IMPLEMENTATION_PLAN.md` -- SEC-006, -007, -010, -041,
+  -043, -044 close-out + integration suite 02..11)
 
 See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
@@ -29,10 +34,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 4    | 0           | 8     | 0        | 0         | 12    |
-| MEDIUM    | 9    | 0           | 4     | 0        | 0         | 13    |
-| LOW       | 5    | 0           | 3     | 0        | 0         | 8     |
+| MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
+| LOW       | 6    | 0           | 3     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 22   | 0           | 20    | 0        | 0         | 42    |
+| **Total** | 24   | 0           | 20    | 0        | 0         | 44    |
 
 ---
 
@@ -82,6 +87,8 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-040   | LOW      | Fixed  | `scripts/check_program_ids.py` silently passed when `deployments/<cluster>.json` was absent |
 | SOLID-SEC-041   | LOW      | Open   | `circuits/build/verification_key.json` uploaded by `initialize.ts` is not content-addressed |
 | SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
+| SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
+| SOLID-SEC-044   | LOW      | Open   | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
 
 ---
 
@@ -941,6 +948,80 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
   a CI linter for "cite source-of-truth line number for every
   numerical SPACE claim" is a possible Phase 3 hygiene item.
 
+### SOLID-SEC-043 -- `IssuerTreeBinding.operator` is a single signer
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-24 (surfaced in the v0.6 deep audit,
+  `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` section 4.1).
+  The risk entered the codebase with ADR-0014's
+  `IssuerTreeBinding` PDA (Phase 2, commit `58afb93`) but no registry
+  entry tracked it until this sweep.
+- **Evidence.** `programs/issuer-registry/src/lib.rs` declares
+  `IssuerTreeBinding.operator: Pubkey` as a single key.  Every
+  tree-mutating instruction (`update_issuer_tree_root`,
+  `append_issuer_leaf`, `replace_issuer_leaf`, `revoke_issuer_atomic`)
+  checks `signer.key() == binding.operator`.  A compromise of that
+  single keypair lets an attacker install an arbitrary tree root and
+  forge issuer-tree membership for any Poseidon(5) leaf preimage they
+  choose, which propagates into every subsequent proof's 6-input
+  nullifier and integrity check.
+- **Impact.** On a single-key compromise the attacker can:
+  (a) insert a leaf for an attacker-controlled BJJ keypair against
+  any authority, (b) shift the root in a way that invalidates
+  pre-compromise nullifiers and forces a chain-wide replay window,
+  (c) race real atomic revocations with a stale-root write.  Same
+  centralization class Polygon ID has on its state-transition
+  operator; still unacceptable at external audit.
+- **Remediation (planned).** Replace `operator: Pubkey` with a
+  `operator_authority: Pubkey` that is required to be a PDA signer
+  of either a Squads 3-of-5 multisig or the SolID DAO threshold
+  PDA.  All four tree-mutating ix wrap the existing logic behind
+  that authority.  ADR amendment on 0014.  Target: Phase 3
+  close-out, before external audit.
+- **Regression gate.** Unit test that drives `update_issuer_tree_root`
+  with a non-multisig signer and asserts rejection; integration
+  test in the suite's `02_issuer_lifecycle` that exercises the
+  multisig happy path.
+
+### SOLID-SEC-044 -- Cooldown status does not replace the issuer's tree leaf
+
+- **Severity:** LOW
+- **Status:** Open
+- **Introduced:** 2026-04-24 (surfaced in the v0.6 deep audit,
+  `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` section 4.2).
+  Entered the codebase with ADR-0014 atomic-hook design (commit
+  `167138e`): `revoke_issuer_atomic` wires a `replace_leaf` CPI into
+  the revocation path, but `request_withdrawal` -- the voluntary
+  Approved -> Cooldown transition -- does not.
+- **Evidence.** `programs/issuer-registry/src/lib.rs` :: the
+  `request_withdrawal` handler flips `IssuerAccount.status` from
+  `Approved` to `Cooldown` and bumps `status_epoch`, but leaves the
+  issuer's Poseidon(5) leaf in the SPL-AC tree as the Approved-time
+  leaf.  Because the circuit's STEP 0.75 membership proof checks the
+  leaf against the current tree root and does not read `status` on
+  chain, a credential issued under a Cooldown issuer continues to
+  produce a valid proof.  RESUME.md flagged this as an open Phase 3
+  decision.
+- **Impact.** Cooldown is today functionally equivalent to Approved
+  for proof-verification purposes.  Holders of credentials from a
+  Cooldown issuer can still prove membership against the active
+  issuer tree, which contradicts the intent that Cooldown signals
+  "the issuer is winding down -- do not rely on its attestations".
+  Not a soundness break (the issuer has not been revoked for cause);
+  is a semantic gap.
+- **Remediation (planned).** Add `request_withdrawal_atomic`
+  mirroring `revoke_issuer_atomic`: flip to Cooldown, bump
+  `revocation_nonce`, CPI `replace_leaf` with the zero-leaf.
+  Legacy `request_withdrawal` returns `IssuerTreeUpdateRequired`
+  for any `enrolled_in_tree == true` issuer.  Amend ADR-0014 to
+  document the "Cooldown is verify-negative" stance explicitly.
+  Target: Phase 3 close-out.
+- **Regression gate.** Rust unit test `test_request_withdrawal_
+  atomic_replaces_leaf_with_zero` + the atomic-hook property test
+  to add: every status transition that shifts verify-correctness
+  moves the tree root in the same ix.
+
 ---
 
 ## History
@@ -954,6 +1035,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-23 | `sec/audits/2026-04-23_v0.5_phase1_closeout.md`                      | --                                        | SOLID-SEC-001, -002, -003, -005, -009, -011, -020, -027, -028, -029, -030, -031, -032, -033 (14 Phase 1 items) |
 | 2026-04-23 | Phase 2 prelude (code review surfaced new items; in-session fix)     | SOLID-SEC-039, -040, -041, -042           | SOLID-SEC-039, -040, -042 (3 of 4 fixed same commit) |
 | 2026-04-24 | `sec/audits/2026-04-24_v0.6_phase2_closeout.md`                      | --                                        | SOLID-SEC-004, -008, -036 (Phase 2 scope closed) |
+| 2026-04-25 | `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md` + Phase 3 doc sweep | SOLID-SEC-043, -044                       | 0 (both introduced Open)                          |
 
 ### Note on the 2026-04-22 numbering
 

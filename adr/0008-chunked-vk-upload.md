@@ -8,9 +8,10 @@
 
 ## Context
 
-A Groth16 verifying key for the 31-public-input batch circuit is
-roughly 2.5KB. Solana's per-transaction data limit is 1232 bytes
-after the header, so the VK cannot be uploaded atomically.
+A Groth16 verifying key for the batch circuit (31 public inputs in
+v0.5, 32 after ADR-0014 in v0.6; VK size grew by one G1 entry to
+roughly 2.55KB) exceeds Solana's per-transaction data limit of 1232
+bytes after the header, so the VK cannot be uploaded atomically.
 
 The chunk upload scheme must (a) allow uploading chunks in multiple
 transactions, (b) block out-of-order chunk writes, (c) prevent a
@@ -40,8 +41,13 @@ pub struct VerifierConfig {
 - Increments `next_vk_chunk` monotonically.
 - Flips `vk_initialized = true` when `is_final_chunk`.
 
-`VerifierConfig::SPACE = 45` pins the layout; any change must bump
-the constant. The constraint is called out in `CLAUDE.md:26-29`.
+`VerifierConfig::SPACE = 49` pins the layout (the doc-drift gap
+that had this as 45 was closed in SEC-042; `next_vk_chunk` is a
+u16 and `timestamp_skew_seconds` is a u32 from SEC-005); any change
+must bump the constant. The constraint is called out in CLAUDE.md
+under "Hard invariants". SEC-006 is expected to grow the struct
+further (`vk_finalized` + `vk_generation`); the `SPACE` constant
+moves with it.
 
 ## Consequences
 

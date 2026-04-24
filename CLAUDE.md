@@ -10,9 +10,11 @@ EdDSA with Poseidon for issuance signatures, and SPL Account Compression for
 credential trees. Three Anchor programs (zk-verifier, issuer-registry,
 schema-registry) plus a TypeScript SDK plus Circom circuits.
 
-Current release is v0.3 (April 2026, post-remediation). See
-docs/POST_REMEDIATION_AUDIT.md for the canonical state-of-the-protocol
-assessment.
+Current release is v0.6 (April 2026, post-Phase-2). The canonical
+state-of-the-protocol document is
+sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md. The older
+docs/POST_REMEDIATION_AUDIT.md is the Phase 1 post-fix record and is
+flagged historical at the top of that file.
 
 ## Hard invariants
 
@@ -112,25 +114,41 @@ wants the pinned rust-toolchain.
 - Do not use emoji or unicode box-drawing characters in any doc under docs/
   or in the root README. Plain ASCII markdown only.
 - Use file:line references when pointing to code.
-- docs/POST_REMEDIATION_AUDIT.md is the canonical post-fix audit. Prior audit
-  docs under docs/SOLID_*.md are marked historical.
+- sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md is the canonical
+  post-fix audit. Older docs/POST_REMEDIATION_AUDIT.md is flagged historical
+  (Phase 1 era); prior audit docs under docs/SOLID_*.md are also historical.
 - Update docs/IMPROVEMENTS_ROADMAP.md when closing or adding a P0 / P1 / P2
   item, so CI and audits share the same backlog.
 
-## Open work (M2 and M3 scope)
+## Open work (Phase 3 scope)
 
+Phase 1 (remediation set) and Phase 2 (ADR-0014 compressed issuer tree
+plus 6-input nullifier) are closed. Phase 3 is open and drives the
+external-audit-ready close-out.
+
+- SOLID-SEC-006 VK freeze-gate (HIGH). Add vk_finalized + vk_generation
+  to VerifierConfig; gate store_verification_key on finalization; add
+  DAO-voted rotate_verification_key behind a 48-hour timelock. Bind
+  vk_generation into the public-input contract so cross-VK replay is
+  impossible.
+- SOLID-SEC-007 BJJ subgroup check (HIGH). is_in_subgroup at
+  register_issuer and every BJJ unmarshal in solid-core + ts-sdk/holder.
+- SOLID-SEC-010 cross-language vectors (HIGH). Extend gen_vectors.rs and
+  check_vectors.ts from 3/10 to 10/10 primitives.
+- SOLID-SEC-041 content-addressed VK artifact. Commit
+  circuits/build/verification_key.sha256; fail initialize.ts on mismatch.
+- SOLID-SEC-043 issuer_tree_operator single signer (MEDIUM). Gate
+  behind Squads 3-of-5 or DAO threshold PDA before external audit.
+- SOLID-SEC-044 Cooldown does not replace issuer leaf (LOW). Add
+  request_withdrawal_atomic mirroring revoke_issuer_atomic.
+- Integration test suite 02..11. Ten scenarios specified in
+  tests/integration/README.md, none implemented.
 - Revocation v1 operator workflow. Circuit and on-chain support are in
-  place. Needs holder SDK helper, issuer SDK helper, and indexer event
-  contract. See docs/REVOCATION_DESIGN.md.
-- In-circuit issuer pubkey binding. Design choice pending between
-  verify_batch_proof CPI-ing into issuer_registry::check_issuer_status or
-  adding a compressed issuer tree with Merkle-membership proof in the
-  circuit. Either requires a circuit change plus a new trusted setup.
-- Integration test suite expansion. tests/integration/README.md lists 11
-  scenarios; one is implemented.
-- Multi-party trusted setup ceremony to replace circuits/scripts/setup.js
-  before mainnet.
-- External audit of the post-remediation codebase.
+  place. Still needs holder SDK helper, issuer SDK helper, and indexer
+  event contract. See docs/REVOCATION_DESIGN.md.
+- SOLID-SEC-012 multi-party trusted-setup ceremony to replace
+  circuits/scripts/setup.js. Mainnet blocker.
+- External audit of the post-Phase-2 codebase.
 
 ## Working-style notes
 

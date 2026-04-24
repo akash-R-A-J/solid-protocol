@@ -43,11 +43,12 @@ mature, externally-audited mainnet at the end of Phase 3.
 
 ---
 
-## 1. Current state snapshot (as of 2026-04-22)
+## 1. Current state snapshot (as of 2026-04-25, post-Phase-2)
 
 ### Done and verified in code
 
-From `docs/POST_REMEDIATION_AUDIT.md` cross-checked against code:
+Cross-checked against code and
+`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`:
 
 - RegistryConfig space 112 bytes; matches struct.
 - Owner-check on `global_tree` and `schema_tree_N` against
@@ -61,28 +62,49 @@ From `docs/POST_REMEDIATION_AUDIT.md` cross-checked against code:
   slashed-lamport transfer; `approve_via_trust_anchor` emits event
   + seed-constrained.
 - VK chunk ordering with `next_vk_chunk` cursor (ADR-0008).
-- `VerifierConfig::SPACE = 45` matches struct.
+- `VerifierConfig::SPACE = 49` matches struct (SEC-042 doc-drift
+  fix landed 2026-04-23).
 - `paused` flag and `set_paused`.
-- 31 public-input contract (ADR-0012).
+- 32 public-input contract (ADR-0012 revised by ADR-0014;
+  `ISSUER_TREE_ROOT_INPUT_INDEX = 10`,
+  `VERIFIER_ADDRESS_INPUT_INDEX = 29`,
+  `VERIFIER_NONCE_INPUT_INDEX = 30`,
+  `CURRENT_TIMESTAMP_INPUT_INDEX = 31`).
 - Per-schema derived credential keys at circuit level (ADR-0005).
 - Canonical schema ascending ordering.
 - Atomic nullifier replay via `init` (ADR-0007).
-- Hardened 5-input nullifier (ADR-0006).
+- Hardened 6-input nullifier (ADR-0006 revised by ADR-0014;
+  Poseidon(masterKey, revocationNonce, verifierAddress,
+  queryContextHash, verifierNonce, issuerTreeRoot)).
+- Compressed issuer tree with BJJ-binding leaf (ADR-0014); atomic
+  `revoke_issuer_atomic`; legacy paths refuse when
+  `enrolled_in_tree`.
 - Monotonic root updates.
-- Program-ID agreement CI-enforced.
-- 58 Rust unit tests passing for primitives + VK parser.
-- Cross-language vectors CI gate (narrow -- see SOLID-SEC-010).
+- Program-ID agreement CI-enforced (`scripts/check_program_ids.py`
+  now also validates `deployments/<cluster>.json`; SEC-040 fix).
+- 80 host tests passing across solid-core (44), solid-light (25),
+  zk-verifier (11) at commit `f09b093`.
+- Cross-language vectors CI gate (narrow: 3/10 primitives post-
+  Phase-2 -- see SOLID-SEC-010).
+- Circuit witness tests CI job (`circuit_witness_tests`) landed in
+  Phase 2 with property tests for SEC-001 range checks and SEC-029
+  padding-slot integrity.
+- `e2e_localnet` CI job runs the full `npm run e2e` pipeline on
+  every push.
 - Dedicated `sec/`, `adr/`, `plan/` directories (ADR-0013).
 
 ### Shipped incomplete
 
-- Revocation v1: circuit done, on-chain done; holder SDK helper,
-  issuer SDK helper, `RevocationEvent` emission all missing.
+- Revocation v1: circuit done, on-chain done (atomic via
+  `revoke_issuer_atomic` + issuer-tree `replace_leaf`); holder SDK
+  helper, issuer SDK helper, `RevocationEvent` wiring still missing
+  (not a soundness gap; adoption gap).
 - Integration tests: 1 of 11.
 - `ts-sdk/packages/sdk/src/config.ts:35-36` placeholders.
 - No schema-registry events for mutable state transitions.
 - No indexer / `HeliusDasAdapter`.
-- `docs/IMPROVEMENTS_ROADMAP.md` stale.
+- `docs/IMPROVEMENTS_ROADMAP.md` reconciled at each phase close
+  (last sweep 2026-04-25).
 
 ### Blocked
 
