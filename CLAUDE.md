@@ -10,11 +10,12 @@ EdDSA with Poseidon for issuance signatures, and SPL Account Compression for
 credential trees. Three Anchor programs (zk-verifier, issuer-registry,
 schema-registry) plus a TypeScript SDK plus Circom circuits.
 
-Current release is v0.6 (April 2026, post-Phase-2). The canonical
-state-of-the-protocol document is
-sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md. The older
-docs/POST_REMEDIATION_AUDIT.md is the Phase 1 post-fix record and is
-flagged historical at the top of that file.
+Current release is v0.6.1 (April 2026, post-Phase-3-impl-4). The
+canonical state-of-the-protocol document is
+sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md. The
+previous v0.6 audit is superseded but kept in place for history.
+The older docs/POST_REMEDIATION_AUDIT.md is the Phase 1 post-fix
+record and is flagged historical at the top of that file.
 
 ## Hard invariants
 
@@ -116,9 +117,10 @@ wants the pinned rust-toolchain.
 - Do not use emoji or unicode box-drawing characters in any doc under docs/
   or in the root README. Plain ASCII markdown only.
 - Use file:line references when pointing to code.
-- sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md is the canonical
-  post-fix audit. Older docs/POST_REMEDIATION_AUDIT.md is flagged historical
-  (Phase 1 era); prior audit docs under docs/SOLID_*.md are also historical.
+- sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md is the canonical
+  post-fix audit. The 2026-04-24 v0.6 audit is superseded; older
+  docs/POST_REMEDIATION_AUDIT.md is flagged historical (Phase 1 era); prior
+  audit docs under docs/SOLID_*.md are also historical.
 - Update docs/IMPROVEMENTS_ROADMAP.md when closing or adding a P0 / P1 / P2
   item, so CI and audits share the same backlog.
 
@@ -133,6 +135,17 @@ external-audit-ready close-out.
   timelock). Part 2 binds vk_generation into the circuit's public
   inputs so cross-VK replay is impossible; it requires a circuit
   change and therefore batches with the next trusted-setup cycle.
+- SOLID-SEC-045 (MEDIUM). Atomic handlers (revoke_issuer_atomic,
+  request_withdrawal_atomic) do not update
+  IssuerTreeBinding.current_root in the same ix. Pre-transition
+  proofs remain replayable until update_issuer_tree_root is called
+  separately. Fix: write the new root directly into the binding
+  PDA inside the atomic ix. Surfaced in the v0.6.1 audit NEW-01.
+- SOLID-SEC-046 (MEDIUM). No CU-budget regression gate on
+  verify_batch_proof. Future circuit changes can push the ix over
+  Solana's per-tx CU ceiling without failing CI. Fix: add a CI job
+  that measures CU against a baseline tracked in docs/CU_BUDGET.md.
+  Surfaced in the v0.6.1 audit NEW-02.
 - SOLID-SEC-010 cross-language vectors (HIGH). Extend gen_vectors.rs and
   check_vectors.ts from 3/10 to 10/10 primitives.
 - SOLID-SEC-041 content-addressed VK artifact. Commit

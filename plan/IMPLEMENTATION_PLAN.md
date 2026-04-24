@@ -4,11 +4,16 @@ Living plan. Single source of truth for scope, phasing, and
 acceptance. Every item references `SOLID-SEC-NNN` in
 `sec/SECURITY_REGISTRY.md` and/or `ADR-NNNN` in `adr/`.
 
-- Protocol version in scope: v0.6 (Phase 2 closed) -> v1.0 mainnet
-- Last revision: 2026-04-24 (Phase 2 close-out; SEC-004, SEC-008,
-  SEC-036 flipped Fixed; snapshot at
-  `sec/audits/2026-04-24_v0.6_phase2_closeout.md`)
-- Next revision trigger: Phase 3 close-out
+- Protocol version in scope: v0.6.1 (Phase 3 impl 1-4 closed) ->
+  v1.0 mainnet
+- Last revision: 2026-04-25 (Phase 3 impl 1-4: SEC-007 + SEC-006
+  Part 1 + SEC-041 + SEC-044 all flipped Fixed; v0.6.1 audit
+  dropped in, registering SEC-045 and SEC-046 as MEDIUM;
+  canonical state-of-protocol snapshot at
+  `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`)
+- Next revision trigger: P0 close-out per v0.6.1 Section 6.1
+  (SEC-045, SEC-046, SEC-010, integration suite 02..11, module
+  split, devnet deploy)
 
 ---
 
@@ -48,7 +53,8 @@ mature, externally-audited mainnet at the end of Phase 3.
 ### Done and verified in code
 
 Cross-checked against code and
-`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`:
+`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`
+(supersedes the v0.6 audit):
 
 - RegistryConfig space 112 bytes; matches struct.
 - Owner-check on `global_tree` and `schema_tree_N` against

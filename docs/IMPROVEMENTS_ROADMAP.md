@@ -786,12 +786,25 @@ Architectural (6 items -- longer term)
 Legend: `[x]` landed; `[~]` partially landed (scope split between
 original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
 
-Registry count (as of 2026-04-25, post Phase 3 impl 4): 44
-findings; 24 closed (Phase 1 + Phase 2 + SEC-007 + SEC-006 Part 1
-+ SEC-041 + SEC-044 landed).  Open HIGH: SOLID-SEC-010, -012.
-Open MEDIUM: SOLID-SEC-013..-019, -021, -034, -043.  Open LOW:
+Registry count (as of 2026-04-25, post v0.6.1 audit): 46 findings;
+24 closed (Phase 1 + Phase 2 + SEC-007 + SEC-006 Part 1 + SEC-041
++ SEC-044 landed).  Open HIGH: SOLID-SEC-010, -012.  Open MEDIUM:
+SOLID-SEC-013..-019, -021, -034, -043, -045, -046.  Open LOW:
 SOLID-SEC-022, -023, -024, -035.  Open INFO: SOLID-SEC-025, -026,
 -037, -038.
+
+New post-roadmap items added in the 2026-04-25 v0.6.1 audit (both
+MEDIUM, both Open; P0 per v0.6.1 Section 6.1):
+
+- SOLID-SEC-045.  `revoke_issuer_atomic` and
+  `request_withdrawal_atomic` do not update
+  `IssuerTreeBinding.current_root` in the same ix; pre-transition
+  proofs remain replayable against the stale binding until
+  `update_issuer_tree_root` is called separately.  Half-day fix:
+  write the new root into the binding inside the atomic handler.
+- SOLID-SEC-046.  No CU-budget regression gate on
+  `verify_batch_proof`.  Half-day fix: CI job + baseline in
+  `docs/CU_BUDGET.md`.
 
 Note: SOLID-SEC-006 Part 2 (circuit-bound `vk_generation`) is
 deferred behind the next trusted-setup cycle and is tracked in

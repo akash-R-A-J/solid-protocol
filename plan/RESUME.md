@@ -4,9 +4,12 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-25 (Phase 3 doc sweep: SEC-043 and
-  SEC-044 registered; registry / README / CLAUDE.md / plan /
-  IMPROVEMENTS_ROADMAP reconciled against v0.6 audit)
+- **Last updated:** 2026-04-25 end-of-session (Phase 3 impl 1-4
+  landed: SEC-007, SEC-006 Part 1, SEC-041, SEC-044 all closed.
+  v0.6.1 deep audit dropped in, registering SEC-045 + SEC-046
+  as MEDIUM.  E2E runbook `docs/DEPLOYMENT_AND_TESTING.md`
+  rewritten as the canonical install / build / deploy / run /
+  verify / probe doc.)
 - **Current branch:** `main`
 - **Current phase:** Phase 2 closed; Phase 3 open
 - **Discipline in force:** root-cause only, no regressions, no doc
@@ -24,11 +27,12 @@ migration across every package, backfill script, E2E pipeline
 green through `npm run e2e`.  Snapshot:
 `sec/audits/2026-04-24_v0.6_phase2_closeout.md`.
 
-Registry state: **20 open / 24 fixed / 44 total** (post Phase 3
-impl 4 on 2026-04-25: SEC-006 Part 1 + SEC-007 + SEC-041 + SEC-044
-closed same day; Phase 3 doc sweep earlier the same day introduced
-SEC-043 and SEC-044).  Severities: **CRITICAL 0 open**, HIGH 2
-open, MEDIUM 10 open, LOW 4 open, INFO 4 open.
+Registry state: **22 open / 24 fixed / 46 total** (post v0.6.1
+audit on 2026-04-25: SEC-006 Part 1 + SEC-007 + SEC-041 + SEC-044
+closed earlier that day; the v0.6.1 external review then opened
+SEC-045 and SEC-046 as MEDIUM; SEC-043 and SEC-044 were registered
+in the morning Phase 3 doc sweep).  Severities: **CRITICAL 0
+open**, HIGH 2 open, MEDIUM 12 open, LOW 4 open, INFO 4 open.
 
 ### Commits landed this Phase 2 session
 
@@ -59,14 +63,20 @@ HIGH (2 open)
   SOLID-SEC-010  Cross-language vectors narrow (covers 3 of ~10 primitives)
   SOLID-SEC-012  Trusted setup single-party (mainnet blocker)
 
-MEDIUM (10 open)
+MEDIUM (12 open)
   -013..-019, -021, -034  (governance + throughput + schema-hash
                             re-assertion + fraud-proof seed check)
   -043                    (IssuerTreeBinding.operator single signer;
                             gate behind Squads 3-of-5 before ext. audit)
+  -045                    (atomic handlers don't update
+                            IssuerTreeBinding.current_root in-ix;
+                            v0.6.1 NEW-01; half-day P0)
+  -046                    (no CU-budget regression gate on
+                            verify_batch_proof; v0.6.1 NEW-02;
+                            half-day P0)
 
-LOW (6 open)   -022..-024, -035, -041, -044
-               (-044: Cooldown does not replace issuer leaf)
+LOW (4 open)   -022, -023, -024, -035
+               (SEC-041 and -044 closed 2026-04-25 Phase 3 impl 3/4)
 
 INFO (4 open)  -025, -026, -037, -038
 
@@ -102,6 +112,63 @@ subgroup`, and `pubkey_to_affine` + `verify()` now use
 before touching state, returning `ErrorCode::InvalidBJJPubKey`.
 WASM side exposes `isBjjInPrimeOrderSubgroup`.  5 new Rust unit
 tests; solid-core 44 -> 49 host tests green.
+
+### 2a. SOLID-SEC-045 -- atomic handlers update `IssuerTreeBinding` in-ix
+
+v0.6.1 NEW-01.  MEDIUM, P0 per v0.6.1 Section 6.1.  Half-day.
+
+**Root cause.**  `revoke_issuer_atomic` and
+`request_withdrawal_atomic` CPI `replace_leaf` into the SPL AC
+tree (new root lands immediately) but leave
+`IssuerTreeBinding.current_root` untouched.  The handlers document
+"caller MUST invoke `update_issuer_tree_root` in the same tx",
+which is enforcement-by-convention rather than
+enforcement-by-code.  Until a follow-up `update_issuer_tree_root`
+lands, a cached pre-transition proof still verifies against the
+stale binding.  SEC-008's epoch-bound nullifier prevents
+regenerating the same proof, but does not stop replay of a
+pre-captured one.
+
+**Change set.**  Promote `issuer_tree_binding` from
+`UncheckedAccount` to a writable account in `RevokeIssuerAtomic`
+and `RequestWithdrawalAtomic` contexts.  After `invoke_signed`
+succeeds, derive the new root on-chain from the proof nodes in
+`remaining_accounts` (or re-read from SPL AC changelog) and write
+it plus `Clock::slot` into the binding's `current_root` +
+`last_updated_slot` fields in the same ix.  Owner-check the
+binding against `crate::ID`.  Update ADR-0014 amendment prose to
+reflect the full atomicity claim.
+
+**Regression gate.**  `tests/integration/07b_revoke_atomic_
+binding_update.test.ts` plus mirror for `request_withdrawal_
+atomic`.  Invoke atomic handler, then immediately attempt
+`verify_batch_proof` with a pre-transition proof; expect
+`IssuerTreeRootMismatch`, not success.
+
+### 2b. SOLID-SEC-046 -- CU-budget regression gate on `verify_batch_proof`
+
+v0.6.1 NEW-02.  MEDIUM, P0 per v0.6.1 Section 6.1.  Half-day.
+
+**Root cause.**  No CI job measures `verify_batch_proof`'s CU
+utilisation.  The compile-time stack-slice assertion at
+`programs/zk-verifier/src/lib.rs:84-87` catches stack growth
+only.  SEC-006 Part 2 (`vk_generation` public input) and SEC-010
+primitives will bump CU at the next trusted-setup cycle; without
+a baseline gate a future circuit change can push over the per-tx
+CU ceiling silently.
+
+**Change set.**  Add `.github/workflows/`
+`verify_batch_proof_cu_baseline` CI job:
+  1. Start localnet + run E2E through `issue.ts`.
+  2. Construct `verify_batch_proof` tx with
+     `ComputeBudgetProgram::set_compute_unit_limit(1_400_000)`.
+  3. Parse "consumed X of Y compute units" from the tx log.
+  4. Assert `X <= BASELINE * 1.10` (10% tolerance).
+  5. Re-record baseline in `docs/CU_BUDGET.md` on sanctioned bumps.
+
+**Regression gate.**  The CI job itself, plus the first-run
+baseline recorded in `docs/CU_BUDGET.md`.  Trigger a conscious
+budget-review on every sanctioned constraint addition.
 
 ### 3. SOLID-SEC-010 -- Extend cross-language vectors
 

@@ -26,13 +26,17 @@ subgroup check), SEC-006 Part 1 (VK freeze-gate + 48-hour rotation
 timelock, ADR-0015), SEC-041 (content-addressed VK artifact via
 `SOLID_VK_SHA256` gate), and SEC-044 (Cooldown-is-verify-negative
 amendment to ADR-0014: atomic `request_withdrawal_atomic`) have
-landed; 24 of 44 registry findings are now closed.  Open
-residuals: SEC-010 (cross-language vectors 3/10), SEC-012 (multi-
-party trusted setup, mainnet blocker), SEC-043
-(`IssuerTreeBinding.operator` single signer), plus 10 MEDIUMs, 4
-LOWs, 4 INFOs.  SEC-006 Part 2 (circuit-bound `vk_generation`) is
-deferred behind the next trusted-setup cycle.  See
-`sec/SECURITY_REGISTRY.md` for the full backlog.
+landed; 24 of 46 registry findings are now closed (the v0.6.1
+audit on 2026-04-25 opened two new MEDIUMs, SEC-045 and SEC-046).
+Open residuals: SEC-010 (cross-language vectors 3/10), SEC-012
+(multi-party trusted setup, mainnet blocker), SEC-043
+(`IssuerTreeBinding.operator` single signer), SEC-045 (atomic
+handlers don't update `IssuerTreeBinding.current_root` in-ix),
+SEC-046 (no CU-budget regression gate on `verify_batch_proof`),
+plus 9 other MEDIUMs, 4 LOWs, 4 INFOs.  SEC-006 Part 2
+(circuit-bound `vk_generation`) is deferred behind the next
+trusted-setup cycle.  See `sec/SECURITY_REGISTRY.md` for the full
+backlog.
 
 ## Architecture
 
@@ -183,7 +187,8 @@ and `SOLID_GOVERNANCE_MINT` for pinning pre-existing accounts.
 - [Deployment, E2E Testing, and Verification](docs/DEPLOYMENT_AND_TESTING.md) -- canonical runbook: install toolchain, build, deploy, run, verify correctness, probe security invariants
 - [Program-ID Reconciliation Runbook](docs/PROGRAM_ID_RECONCILIATION.md)
 - [Post-Remediation Audit -- Phase 1 (April 2026)](docs/POST_REMEDIATION_AUDIT.md) -- historical; superseded by the v0.6 deep audit
-- [v0.6 Deep Comprehensive Audit -- post-Phase-2 (2026-04-24)](sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md) -- canonical state-of-protocol
+- [v0.6.1 Deep Comprehensive Audit -- post-Phase-3-impl-4 (2026-04-25)](sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md) -- **canonical state-of-protocol**
+- [v0.6 Deep Comprehensive Audit -- post-Phase-2 (2026-04-24)](sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md) -- superseded by v0.6.1
 - [Security Registry](sec/SECURITY_REGISTRY.md)
 
 ## How it works

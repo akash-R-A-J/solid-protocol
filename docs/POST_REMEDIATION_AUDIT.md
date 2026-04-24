@@ -3,19 +3,22 @@
 > **STATUS: HISTORICAL.**  This document captures the Phase 1 post-
 > remediation state (2026-04-22) and is kept as the canonical record
 > of that pass.  The current canonical state-of-protocol document is
-> `sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`, which
+> `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`, which
 > supersedes every numerical claim below except where the registry
 > still cites this file by line number.  Do not treat numbers from
 > this document (test counts, registry totals, open-item lists, etc.)
-> as current; cross-check against the v0.6 audit or
+> as current; cross-check against the v0.6.1 audit or
 > `sec/SECURITY_REGISTRY.md`.
 >
 > Specifically: since this document was authored, Phase 2 landed
 > ADR-0014 (compressed issuer tree with BJJ-binding leaf), the
 > nullifier grew from 5 inputs to 6, the public-input contract grew
 > from 31 to 32 entries, `VerifierConfig::SPACE` was corrected from
-> 45 to 49, and two new residuals (SEC-043, SEC-044) were registered.
-> See the v0.6 audit for the post-Phase-2 assessment.
+> 45 to 49 (and then to 60 post-SEC-006 Part 1), and Phase 3 impl 1-4
+> closed SEC-006 Part 1 / SEC-007 / SEC-041 / SEC-044.  The v0.6.1
+> audit on 2026-04-25 registered two additional MEDIUMs (SEC-045
+> atomic-binding-update and SEC-046 CU-budget regression).  See the
+> v0.6.1 audit for the post-Phase-3-impl-4 assessment.
 
 Audit date: 2026-04-22
 Scope: every source file in the repository after the April 2026 remediation

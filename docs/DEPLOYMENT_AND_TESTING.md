@@ -768,14 +768,15 @@ from the fresh validator, and downstream steps pick up from it.
 ## 12. Mainnet checklist
 
 Do not deploy to mainnet-beta until every item below is satisfied.
-Each bullet maps to a registry finding or the v0.6 audit's Phase 3
-close-out list.
+Each bullet maps to a registry finding or the v0.6.1 audit's
+Section 6 recommendations (P0 / P1 / P2 ordering).
 
 - All open HIGH and MEDIUM items in `sec/SECURITY_REGISTRY.md` are
   Fixed. At HEAD that means SOLID-SEC-010 (cross-language vectors
   expansion), SOLID-SEC-012 (multi-party ceremony), SOLID-SEC-013
-  through -019, -021, -034, -043. See also the v0.6 audit
-  section 7.1.
+  through -019, -021, -034, -043, -045 (atomic binding update),
+  -046 (CU-budget regression gate). See also the v0.6.1 audit
+  Section 6.1 for P0 ordering.
 - SOLID-SEC-006 Part 2 (circuit-bound `vk_generation`) has landed
   alongside the multi-party ceremony.
 - Multi-party trusted setup ceremony completed. Published
@@ -805,6 +806,6 @@ close-out list.
 ---
 
 *For the canonical state-of-protocol assessment, read
-`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`.
+`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`.
 For the registry, `sec/SECURITY_REGISTRY.md`. For the implementation
 plan, `plan/IMPLEMENTATION_PLAN.md`.*

@@ -3,7 +3,7 @@
 Canonical, living tracker for every security finding across every audit.
 One file. No fragmentation. Nothing deleted.
 
-- Protocol version under review: v0.6 (April 2026, post-Phase-2 close)
+- Protocol version under review: v0.6.1 (April 2026, post-Phase-3-impl-4)
 - Last audits folded in (chronological):
   - 2026-04-22 senior-engineer comprehensive audit
     (`sec/audits/2026-04-22_v0.3_comprehensive_audit.md`)
@@ -17,12 +17,14 @@ One file. No fragmentation. Nothing deleted.
     (`sec/audits/2026-04-23_v0.5_deep_comprehensive_audit.md`)
   - 2026-04-24 v0.6 deep comprehensive audit
     (`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`)
-- Last registry update: 2026-04-24 (Phase 3 doc sweep: introduces
-  SOLID-SEC-043 and SOLID-SEC-044 from the v0.6 audit; refreshes
+  - 2026-04-25 v0.6.1 deep comprehensive audit
+    (`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`)
+    -- **canonical post-Phase-3-impl-4 state-of-protocol**
+- Last registry update: 2026-04-25 (folds the v0.6.1 audit: opens
+  SOLID-SEC-045 and SOLID-SEC-046 from Section 5.4; refreshes
   summary counts)
-- Next audit target: after Phase 3 close-out
-  (see `plan/IMPLEMENTATION_PLAN.md` -- SEC-006, -007, -010, -041,
-  -043, -044 close-out + integration suite 02..11)
+- Next audit target: after P0 close-out (NEW-01/45, NEW-02/46,
+  SEC-010, integration suite 02..11) per v0.6.1 Section 6.1
 
 See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
@@ -34,10 +36,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
 | HIGH      | 2    | 0           | 10    | 0        | 0         | 12    |
-| MEDIUM    | 10   | 0           | 4     | 0        | 0         | 14    |
+| MEDIUM    | 12   | 0           | 4     | 0        | 0         | 16    |
 | LOW       | 4    | 0           | 5     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 20   | 0           | 24    | 0        | 0         | 44    |
+| **Total** | 22   | 0           | 24    | 0        | 0         | 46    |
 
 ---
 
@@ -89,6 +91,8 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
 | SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
 | SOLID-SEC-044   | LOW      | Fixed  | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
+| SOLID-SEC-045   | MEDIUM   | Open   | `revoke_issuer_atomic` / `request_withdrawal_atomic` do not update `IssuerTreeBinding.current_root` in the same ix |
+| SOLID-SEC-046   | MEDIUM   | Open   | No CU-budget regression gate on `verify_batch_proof` |
 
 ---
 
@@ -1117,6 +1121,111 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
   2 ADR-0014 regression harness for atomic hooks covers the
   shared CPI plumbing.
 
+### SOLID-SEC-045 -- Atomic handlers do not update `IssuerTreeBinding.current_root` in-ix
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-24 (Phase 2 design of
+  `revoke_issuer_atomic`, extended by the Phase 3 impl 4 clone to
+  `request_withdrawal_atomic`).  Surfaced in the v0.6.1 deep audit
+  (`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`
+  Section 5.4, finding NEW-01).
+- **Evidence (current code):** `programs/issuer-registry/src/lib.rs`
+  at `revoke_issuer_atomic:~1156-1160` and `request_withdrawal_
+  atomic:~1313-1316` both explicitly document that the caller MUST
+  invoke `update_issuer_tree_root` in the same transaction.  The
+  handler does not enforce this.  The SPL AC `replace_leaf` CPI
+  atomically moves the tree root; the `IssuerTreeBinding`
+  singleton PDA is a separate account and stays at the pre-replace
+  root until someone explicitly calls `update_issuer_tree_root`.
+- **Impact.**  If a caller -- DAO operator, a compromised key, or a
+  buggy SDK -- omits the paired `update_issuer_tree_root`, the
+  SPL AC tree has the new (post-revoke or post-cooldown) root but
+  `IssuerTreeBinding.current_root` still points at the old root.
+  `verify_batch_proof` reads `IssuerTreeBinding.current_root` and
+  cross-checks against `public_inputs[ISSUER_TREE_ROOT_INPUT_
+  INDEX]`, so a proof generated against the pre-transition root
+  continues to verify until the binding is updated.  The nullifier
+  universe already shifted (SEC-008 fix binds `issuerTreeRoot` into
+  the nullifier preimage), so the holder cannot regenerate the same
+  proof, but a cached pre-transition proof is still replayable
+  against the stale binding until the operator catches up.  The
+  revocation / cooldown is therefore not atomic in practice despite
+  the handler name.
+- **Remediation (planned).**  Two-step:
+  1. Change `issuer_tree_binding` from `UncheckedAccount` to a
+     writable account in the `RevokeIssuerAtomic` and
+     `RequestWithdrawalAtomic` contexts.  Re-derive the PDA with
+     `seeds = [b"issuer-tree-binding"]` to preserve owner-check
+     semantics.
+  2. After the `invoke_signed(replace_leaf, ...)` succeeds,
+     compute the new root on-chain from `(old_root, old_leaf,
+     new_leaf, path)` -- the caller already supplies the path in
+     `remaining_accounts` -- or re-read the SPL AC changelog, and
+     write the new root + `Clock::slot` directly into
+     `IssuerTreeBinding.current_root` + `last_updated_slot` in the
+     same ix.  The binding PDA signer seeds are
+     `(crate::ID, [b"issuer-tree-binding"])`; no extra CPI needed.
+  3. Strengthen the doc comment in both handlers from "caller
+     MUST" to "this ix replaces `IssuerTreeBinding.current_root`
+     atomically".  Legacy `update_issuer_tree_root` stays as an
+     escape hatch for the pre-ADR-0014 flow and the backfill
+     path.
+- **Regression gate.**  `tests/integration/07b_revoke_atomic_
+  binding_update.test.ts`: invoke `revoke_issuer_atomic` and
+  attempt `verify_batch_proof` with a pre-revocation proof in
+  the same slot; expect `IssuerTreeRootMismatch`, not success.
+  Add the mirror test for `request_withdrawal_atomic`.
+- **Why this was not caught earlier.**  The v0.5 audit and
+  ADR-0014 deliberately split replace_leaf from the binding
+  update to keep the CPI ix CU-cheap.  The caller-discipline was
+  documented but not graded against the "compromised operator or
+  buggy SDK omits the second tx" threat model.  The atomicity
+  argument is strictly stronger if the binding update lives in
+  the same ix.
+
+### SOLID-SEC-046 -- No CU-budget regression gate on `verify_batch_proof`
+
+- **Severity:** MEDIUM
+- **Status:** Open
+- **Introduced:** 2026-04-22 (zk-verifier initial design; never had
+  a CU budget gate).  Surfaced in the v0.6.1 deep audit Section
+  5.4, finding NEW-02.
+- **Evidence.**  No CI job or runtime measurement of
+  `verify_batch_proof`'s CU utilisation.  The compile-time
+  assertion `assert!(sz < 3072, "VkBuf exceeds safe BPF stack
+  slice")` at `programs/zk-verifier/src/lib.rs:84-87` catches
+  stack growth, but does not measure CU.  CU can drift invisibly
+  -- a circuit-side constraint that bumps IC point count, a
+  public-input addition (SEC-006 Part 2 will do exactly this),
+  or a future Solana runtime change in `alt_bn128` syscall costs.
+- **Impact.**  Future constraint additions or circuit revisions
+  could push `verify_batch_proof` over Solana's per-tx CU ceiling
+  (1.4M default; 200K cap on individual pairing via
+  `alt_bn128_pairing` before ComputeBudgetProgram::set_limits).
+  Failure mode at runtime is
+  `Error: Program failed to complete: exceeded maximum number of
+  instructions allowed` -- recoverable, but a loud mainnet
+  regression rather than a quiet CI catch.  SOLID-SEC-006 Part 2
+  is the next near-term trigger; SEC-010 vector expansion and any
+  Phase 4 predicate addition also trigger.
+- **Remediation (planned).**  Add a CI job
+  `verify_batch_proof_cu_baseline` that:
+  1. Brings up a fresh `solana-test-validator`.
+  2. Runs the full E2E pipeline up through `issue.ts`.
+  3. Constructs a single `verify_batch_proof` transaction with
+     an explicit `ComputeBudgetProgram::set_compute_unit_limit`.
+  4. Inspects the transaction log for `consumed X of Y compute
+     units`, parses `X`, and asserts `X <= RECORDED_BASELINE *
+     1.10` (10 percent over-budget tolerance).
+  5. Re-records the baseline in `docs/CU_BUDGET.md` on sanctioned
+     bumps.
+- **Regression gate.**  The CI job itself (it is its own gate).
+  Initial baseline lands with the first run.  Pair with a
+  `docs/CU_BUDGET.md` that enumerates the budget, the expected
+  growth from SEC-006 Part 2 and SEC-010, and the triggering
+  constants (`NR_PUBLIC_INPUTS`, VK IC count).
+
 ---
 
 ## History
@@ -1135,6 +1244,7 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-25 | Phase 3 impl 2 (ADR-0015 VK freeze-gate + rotation timelock)         | --                                        | SOLID-SEC-006 (Part 1 on-chain; Part 2 circuit-bound vk_generation deferred to the next trusted-setup cycle) |
 | 2026-04-25 | Phase 3 impl 3 (SEC-041 content-addressed VK artifact)               | --                                        | SOLID-SEC-041 (verification_key.sha256 emitted by setup.js; initialize.ts enforces the pin via env or file) |
 | 2026-04-25 | Phase 3 impl 4 (ADR-0014 Cooldown-verify-negative amendment)         | --                                        | SOLID-SEC-044 (request_withdrawal_atomic; legacy request_withdrawal gated on !is_tree_enrolled) |
+| 2026-04-25 | `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md` (post Phase-3-impl-4 snapshot) | SOLID-SEC-045, -046               | 0 (both introduced Open)                          |
 
 ### Note on the 2026-04-22 numbering
 
