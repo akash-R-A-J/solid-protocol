@@ -15,9 +15,9 @@ export const TREE_DEPTH = 20;
 /** Canonical SolID program IDs. Kept as base58 strings so JS doesn't
  *  need the Solana web3 package just to import types. */
 export const PROGRAM_IDS = {
-  zkVerifier: 'BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2',
-  issuerRegistry: 'CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR',
-  schemaRegistry: 'DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT',
+  zkVerifier: 'DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb',
+  issuerRegistry: '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
+  schemaRegistry: '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
 } as const;
 
 /** Operator encoding matches `crates/solid-core/src/query.rs#Operator`. */
@@ -90,25 +90,81 @@ export function poseidonHash(fields: bigint[]): Uint8Array {
 
 export function poseidonHashBytes(inputs: Uint8Array[]): Uint8Array {
   ensureInit();
-  const totalLen = inputs.length * 32;
-  
-  // SEC-18: High-Performance Zero-Copy Path (Phase 3)
-  // We write directly into the shared WASM buffer to avoid overhead.
-  wasmModule.resizeSharedBuffer(totalLen);
-  const ptr = wasmModule.getSharedBufferPointer();
-  const memory = wasmModule.memory.buffer; // The underlying WebAssembly.Memory
-  
-  const bufferView = new Uint8Array(memory, ptr, totalLen);
-  inputs.forEach((inp, i) => bufferView.set(inp, i * 32));
-  
-  return new Uint8Array(wasmModule.poseidonHashShared(totalLen));
+
+  // Concatenate the chunks into a single flat buffer; wasm-bindgen marshals
+  // the slice into wasm linear memory in a single copy via passArray8ToWasm0.
+  //
+  // A previous implementation tried to write directly into a Rust-side
+  // `static SHARED_BUFFER` via `wasm.memory.buffer`. That path was removed
+  // because (a) `--target nodejs` does not re-export `memory` on the module
+  // exports, so it crashed in node, (b) the captured pointer could dangle if
+  // an unrelated wasm allocation reallocated the static `Vec<u8>` between
+  // `resizeSharedBuffer()` and `poseidonHashShared()`, and (c) at our
+  // payload sizes (≤ 4 × 32 B) the marshaling cost is sub-microsecond, so
+  // the "zero-copy" path saved nothing while doubling API surface.
+  // See ADR-0002 / SOLID-SEC-009.
+  const flat = new Uint8Array(inputs.length * 32);
+  inputs.forEach((inp, i) => {
+    if (inp.length !== 32) {
+      throw new Error(
+        `poseidonHashBytes: each input must be 32 bytes, input[${i}] is ${inp.length}`,
+      );
+    }
+    flat.set(inp, i * 32);
+  });
+  return new Uint8Array(wasmModule.poseidonHashBytes(flat));
 }
 
 // ─── BabyJubJub ────────────────────────────────────────────────────────────
 
+// The WASM bridge serialises BJJ keypairs with `#[serde(rename_all =
+// "camelCase")]`, so the raw object keys are `privateKey / publicKeyX /
+// publicKeyY`.  The SDK's public contract (BJJKeypair) is snake_case
+// (`private_key / public_key_x / public_key_y`) and every TS consumer
+// (scripts/, holder, e2e_state.json) has been written against that
+// shape since v0.1.  Rather than break that contract, this helper
+// re-keys the WASM output once so callers always see snake_case.
+// SOLID-SEC-010 cross-language vector coverage will eventually freeze
+// the wire shape, after which we can collapse the rename.
+function snakeCaseBjj(raw: any): BJJKeypair {
+  return {
+    private_key: raw.privateKey ?? raw.private_key,
+    public_key_x: raw.publicKeyX ?? raw.public_key_x,
+    public_key_y: raw.publicKeyY ?? raw.public_key_y,
+  };
+}
+
 export function generateKeypair(): BJJKeypair {
   ensureInit();
-  return wasmModule.generateBJJKeypair();
+  return snakeCaseBjj(wasmModule.generateBJJKeypair());
+}
+
+/**
+ * SOLID-SEC-007 / SEC-048 client-side predicate.
+ *
+ * Returns true iff (`publicKeyX`, `publicKeyY`) is on the BabyJubJub
+ * curve, is not the Edwards neutral element, and lies in the
+ * prime-order subgroup (cofactor-8 torsion absent).  The full cost is
+ * a host-side `r * P == O` scalar mul (~ms on x86), and this is the
+ * canonical pre-submit gate every off-chain `register_issuer` caller
+ * MUST run.
+ *
+ * Background: the on-chain `register_issuer` instruction in
+ * `programs/issuer-registry/src/lib.rs` historically called the
+ * matching Rust helper, but on BPF the `r * P == O` scalar mul costs
+ * > 1.4M CU (the per-tx ceiling) and could not land.  As of
+ * 2026-04-25 the on-chain check is gated behind a `sec007-skip-onchain`
+ * Cargo feature on issuer-registry to unblock e2e; the off-chain
+ * check (this function) is the load-bearing enforcement point until
+ * SEC-048 is closed (see docs/E2E_BLOCKERS.md B9 and
+ * sec/SECURITY_REGISTRY.md SEC-048).
+ */
+export function isInPrimeOrderSubgroup(
+  publicKeyX: Uint8Array,
+  publicKeyY: Uint8Array,
+): boolean {
+  ensureInit();
+  return wasmModule.isBjjInPrimeOrderSubgroup(publicKeyX, publicKeyY);
 }
 
 export function sign(privateKey: Uint8Array, message: Uint8Array): EdDSASignature {
@@ -271,7 +327,7 @@ export function deriveCredentialKey(
   schemaHash: Uint8Array,
 ): BJJKeypair {
   ensureInit();
-  return wasmModule.deriveCredentialKey(masterKey, schemaHash);
+  return snakeCaseBjj(wasmModule.deriveCredentialKey(masterKey, schemaHash));
 }
 
 export function computeIdentityState(pubKeyX: Uint8Array, pubKeyY: Uint8Array, revocationNonce: bigint): Uint8Array {

@@ -46,7 +46,7 @@ const query = new QueryBuilder()
 // Send via your app's communication channel (WebSocket, HTTP, QR code, etc.)
 const verificationRequest = {
   query,
-  verifierProgramId: 'BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2', // zk-verifier
+  verifierProgramId: 'DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb', // zk-verifier
   callbackUrl: 'https://your-app.com/api/verify-callback',
 };
 

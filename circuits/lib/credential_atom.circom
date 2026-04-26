@@ -2,6 +2,7 @@ pragma circom 2.1.0;
 
 include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/eddsaposeidon.circom";
+include "../node_modules/circomlib/circuits/comparators.circom";
 include "./merkle_inclusion.circom";
 
 /// Phase 3.1: CredentialAtom
@@ -80,11 +81,3 @@ template CredentialAtom(NUM_FIELDS, TREE_DEPTH) {
     }
 }
 
-template IsZero() {
-    signal input in;
-    signal output out;
-    signal inv;
-    inv <-- in != 0 ? 1 / in : 0;
-    out <== -in * inv + 1;
-    in * out === 0;
-}

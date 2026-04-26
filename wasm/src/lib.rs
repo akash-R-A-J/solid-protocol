@@ -6,9 +6,7 @@
 //! the holder, issuer, and verifier SDKs produce bytes bit-compatible with the
 //! Rust crates and the Circom circuits.
 
-use once_cell::sync::Lazy;
 use serde::Serialize;
-use std::sync::Mutex;
 use wasm_bindgen::prelude::*;
 
 /// Initialize panic hook for better error messages in browser console.
@@ -17,45 +15,22 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-// ─── Phase 3: WASM Memory Bridge (Zero-Copy) ──────────────────────────────
-// A static buffer that JS can write to directly via `WebAssembly.Memory`.
-// Prevents high-frequency copying overhead for bulk hashing operations.
-static SHARED_BUFFER: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(vec![0u8; 1024 * 64])); // 64 KB initial
-
-#[wasm_bindgen(js_name = "getSharedBufferPointer")]
-pub fn get_shared_buffer_pointer() -> *const u8 {
-    let buffer = SHARED_BUFFER.lock().unwrap();
-    buffer.as_ptr()
-}
-
-#[wasm_bindgen(js_name = "resizeSharedBuffer")]
-pub fn resize_shared_buffer(new_size: usize) {
-    let mut buffer = SHARED_BUFFER.lock().unwrap();
-    buffer.resize(new_size, 0);
-}
-
-#[wasm_bindgen(js_name = "poseidonHashShared")]
-pub fn poseidon_hash_shared(len: usize) -> Result<Vec<u8>, JsError> {
-    let buffer = SHARED_BUFFER.lock().unwrap();
-    if len > buffer.len() || len % 32 != 0 {
-        return Err(JsError::new("Invalid shared buffer length or alignment"));
-    }
-
-    let chunks: Vec<[u8; 32]> = buffer[..len]
-        .chunks_exact(32)
-        .map(|c| {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(c);
-            arr
-        })
-        .collect();
-
-    let hash =
-        solid_core::poseidon::hash_bytes(&chunks).map_err(|e| JsError::new(&format!("{}", e)))?;
-    Ok(hash.to_vec())
-}
-
 // ─── Poseidon Hash ─────────────────────────────────────────────────────────
+//
+// Note: an earlier revision exposed a `static SHARED_BUFFER: Mutex<Vec<u8>>`
+// plus `getSharedBufferPointer`/`resizeSharedBuffer`/`poseidonHashShared`
+// for a "zero-copy" hashing path. It was removed because:
+//   (a) `--target nodejs` (our CI build) does not re-export wasm linear
+//       memory on the module's JS exports, so the JS-side write into the
+//       shared buffer crashed in Node;
+//   (b) the captured pointer became a dangling reference if any other wasm
+//       allocation reallocated the `Vec<u8>` between getPtr and hashShared;
+//   (c) at our payload sizes (≤ 4 × 32 B) wasm-bindgen's automatic
+//       `passArray8ToWasm0` is sub-microsecond and cannot be beaten by the
+//       extra Mutex lock + double FFI hop the "shared" path required.
+// `poseidonHashBytes` below is the single source of truth and matches
+// `solid_core::poseidon::hash_bytes` byte-for-byte across the BPF, host,
+// and WASM targets (SOLID-SEC-010).
 
 /// Compute Poseidon hash of u64 field values. Returns 32-byte LE hash.
 #[wasm_bindgen(js_name = "poseidonHash")]

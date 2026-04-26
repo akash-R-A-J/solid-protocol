@@ -45,6 +45,7 @@ import {
   createAllocTreeIx,
   createInitEmptyMerkleTreeIx,
   getConcurrentMerkleTreeAccountSize,
+  ValidDepthSizePair,
 } from '@solana/spl-account-compression';
 import BN from 'bn.js';
 
@@ -52,12 +53,12 @@ import BN from 'bn.js';
 
 /** `issuer-registry` program ID — MUST match Anchor.toml. */
 export const ISSUER_REGISTRY_PROGRAM_ID = new PublicKey(
-  'CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR',
+  '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
 );
 
 /** `schema-registry` program ID — MUST match Anchor.toml. */
 export const SCHEMA_REGISTRY_PROGRAM_ID = new PublicKey(
-  'DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT',
+  '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
 );
 
 export { SPL_ACCOUNT_COMPRESSION_PROGRAM_ID, SPL_NOOP_PROGRAM_ID };
@@ -199,18 +200,28 @@ export async function createCredentialTree(
   const treeKeypair = Keypair.generate();
   const { pda: treeAuthority } = deriveTreeAuthority(schemaHash);
 
+  // SPL Account Compression 0.2.x types `(maxDepth, maxBufferSize)` as a
+  // discriminated union of literal-numeric tuples (`ValidDepthSizePair`).
+  // `TreeParams` accepts dynamic numbers (necessary for runtime configuration),
+  // so we widen via cast here. The runtime check inside `createAllocTreeIx`
+  // still enforces validity against `ALL_DEPTH_SIZE_PAIRS`.
+  const depthSizePair = {
+    maxDepth: params.maxDepth,
+    maxBufferSize: params.maxBufferSize,
+  } as ValidDepthSizePair;
+
   const allocIx = await createAllocTreeIx(
     connection,
     treeKeypair.publicKey,
     payer,
-    { maxDepth: params.maxDepth, maxBufferSize: params.maxBufferSize },
+    depthSizePair,
     params.canopyDepth ?? 0,
   );
 
   const initIx = createInitEmptyMerkleTreeIx(
     treeKeypair.publicKey,
     treeAuthority,
-    { maxDepth: params.maxDepth, maxBufferSize: params.maxBufferSize },
+    depthSizePair,
   );
 
   return { treeKeypair, ixs: [allocIx, initIx], treeAuthority };
@@ -230,10 +241,10 @@ export async function getCurrentTreeRoot(
   treeAddress: PublicKey,
 ): Promise<Uint8Array> {
   const tree = await ConcurrentMerkleTreeAccount.fromAccountAddress(connection, treeAddress);
-  const root = tree.getCurrentRoot();
-  // `getCurrentRoot` returns a `PublicKey` in the SPL AC library's convention
-  // (it wraps a 32-byte node); unwrap to a raw Uint8Array.
-  return new Uint8Array(root.toBuffer());
+  // `getCurrentRoot` returns a `Buffer` in SPL AC 0.2.x (a 32-byte node).
+  // Convert to a raw Uint8Array (Buffer is a Uint8Array subclass; copy here
+  // to detach from the underlying account-data slice).
+  return new Uint8Array(tree.getCurrentRoot());
 }
 
 /** Async version of `getCurrentTreeRoot` that also returns sequence metadata. */
@@ -251,7 +262,7 @@ export async function getTreeState(
 }> {
   const tree = await ConcurrentMerkleTreeAccount.fromAccountAddress(connection, treeAddress);
   return {
-    root: new Uint8Array(tree.getCurrentRoot().toBuffer()),
+    root: new Uint8Array(tree.getCurrentRoot()),
     sequenceNumber: new BN(tree.getCurrentSeq().toString()),
     activeIndex: new BN(tree.tree.activeIndex.toString()),
     bufferSize: new BN(tree.tree.bufferSize.toString()),
@@ -352,6 +363,45 @@ export class LocalReplicaAdapter implements MerkleProofAdapter {
     this.leafIndex.set(key, idx);
     this.leaves.push(Uint8Array.from(commitment));
     return idx;
+  }
+
+  /**
+   * Compute the current Merkle root of the replicated tree.
+   *
+   * This is the natural counterpart to {@link appendLeaf}: callers that
+   * have just appended N leaves and need to hand the resulting root to a
+   * program (for example `issuer_registry::update_issuer_tree_root` after
+   * enrolling an approved issuer) want the root *as observed locally*,
+   * not via a per-leaf proof round-trip.
+   *
+   * Implementation uses the same lazy sparse-tree walk that {@link fetch}
+   * uses, so the returned hash is byte-identical to the `root` field a
+   * `fetch()` call would produce. O(depth) work, O(depth) memory.
+   */
+  getRoot(): Uint8Array {
+    const zero = new Uint8Array(32);
+    const leafCount = this.leaves.length;
+    if (this.zeroLevels.length === 0) {
+      this.zeroLevels.push(zero);
+      for (let h = 1; h <= this.depth; h++) {
+        const below = this.zeroLevels[h - 1];
+        this.zeroLevels.push(this.hashPair(below, below));
+      }
+    }
+    const subtreeRoot = (start: number, height: number): Uint8Array => {
+      if (height === 0) {
+        return start < leafCount ? this.leaves[start] : zero;
+      }
+      const span = 1 << height;
+      if (start >= leafCount) {
+        return this.zeroLevels[height];
+      }
+      const mid = start + (span >> 1);
+      const left = subtreeRoot(start, height - 1);
+      const right = subtreeRoot(mid, height - 1);
+      return this.hashPair(left, right);
+    };
+    return subtreeRoot(0, this.depth);
   }
 
   async fetch(_treeAddress: PublicKey, leafCommitment: Uint8Array): Promise<MerkleProof> {

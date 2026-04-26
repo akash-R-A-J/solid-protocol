@@ -1,0 +1,17 @@
+# Cargo configuration for the SolID workspace.
+#
+# `incompatible-rust-versions = "fallback"` tells cargo's resolver to pick
+# the latest version of each transitive whose own `rust-version` is <= our
+# workspace's `rust-version` (declared in workspace.package; matches the
+# Solana 1.18.x platform-tools rustc 1.75). Without this, cargo's default
+# resolver picks the newest crates.io publish, which today routinely
+# requires edition2024 (rustc 1.85+) in transitives like block-buffer
+# 0.12.0, base64ct 1.8.x, blake3 1.8.x — none of which compile under
+# the BPF target's pinned platform-tools.
+#
+# Available since cargo 1.84. cargo < 1.84 silently ignores this config.
+# Generate the lockfile with cargo >= 1.84 (we use 1.85.0); subsequent
+# `cargo build` / `anchor build` invocations on cargo 1.79 just consume
+# the resulting lockfile.
+[resolver]
+incompatible-rust-versions = "fallback"

@@ -19,7 +19,7 @@ use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solid_light::cpi_helpers;
 use solid_light::cpi_helpers::{ISSUER_REGISTRY_ID, SCHEMA_REGISTRY_ID};
 
-declare_id!("BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2");
+declare_id!("DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb");
 
 // ─── Circuit Constants ─────────────────────────────────────────────────────
 // batch_credential_query public inputs (32 total; ADR-0014 revision of
@@ -77,13 +77,22 @@ pub const MAX_TIMESTAMP_SKEW_SECONDS: u32 = 3_600;
 /// timelock composes with the multisig quorum for full DAO gating.
 pub const VK_ROTATION_TIMELOCK_SECONDS: i64 = 48 * 60 * 60;
 
-// Compile-time assertion: the stack-owned VK buffer must fit comfortably
-// inside Solana's per-frame BPF stack budget (4 KB).
-//   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma) + 128 (delta)
-//         + 32 * 64 (ic) = 2 504 bytes.  Well below 4 096.
+// Compile-time assertion: the stack-resident `VkBuf` shell must stay
+// well under Solana's 4 KB per-frame BPF stack budget.  The IC table
+// (`Vec<[u8; 64]>`) lives on the heap, so only fixed-size scalars
+// contribute to the stack-resident size.
+//
+//   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma)
+//         + 128 (delta) + 24 (Vec) ≈ 480 bytes.  Comfortably below
+//         the 1 KB ceiling we want to leave for verify_batch_proof's
+//         other locals (Anchor's deserialized argument struct alone
+//         is ~1 312 bytes; the previous `[[u8; 64]; MAX_IC]` field
+//         pushed the inlined `__global::verify_batch_proof` frame
+//         past the 4 KB BPF limit by ~456 bytes).  See ADR-0014 +
+//         the SOLID-SEC-XXX entry for the regression history.
 const _: () = {
     let sz = core::mem::size_of::<VkBuf>();
-    assert!(sz < 3072, "VkBuf exceeds safe BPF stack slice");
+    assert!(sz < 1024, "VkBuf shell exceeds 1 KB stack budget");
 };
 
 #[program]
@@ -140,7 +149,9 @@ pub mod zk_verifier {
     ///   1. Chunks must arrive in order (`chunk_index == config.next_vk_chunk`).
     ///      Without this a confused operator could scramble the VK and the
     ///      parser would silently accept a corrupt key.
-    ///   2. The cumulative VK size is capped at the allocated 10_240 bytes.
+    ///   2. The cumulative VK size is capped at the allocated 10_228 bytes
+    ///      (`8 + 4 + 10228 = 10240` total account size, the Solana
+    ///      `MAX_PERMITTED_DATA_INCREASE` per-CPI cap).
     ///      Without the cap the Vec's realloc would fail at serialize-time
     ///      with an opaque error on the final chunk.
     ///   3. SOLID-SEC-006: the VK is immutable once `vk_finalized` is
@@ -171,7 +182,14 @@ pub mod zk_verifier {
             ErrorCode::ChunkOutOfOrder
         );
 
-        const VK_MAX_BYTES: usize = 10_240;
+        // SOLID-SEC-006 / e2e fix: keep `8 + 4 + VK_MAX_BYTES` <=
+        // Solana's `MAX_PERMITTED_DATA_INCREASE = 10240`, the per-CPI
+        // cap on `system_instruction::create_account` size.  The
+        // canonical VK is currently ~2.6KB so 10228 leaves ~3.9x
+        // headroom; if a future circuit grows the VK past this, the
+        // remediation is a multi-PDA chunked storage account, not a
+        // bigger `VkStorage`.
+        const VK_MAX_BYTES: usize = 10_228;
         let incoming_len = chunk_data.len();
 
         if chunk_index == 0 {
@@ -326,17 +344,52 @@ pub mod zk_verifier {
     ///    (SEC-20).
     /// 4. Runs Groth16 verification via alt_bn128 syscalls.
     /// 5. Allocates a PDA keyed by the nullifier — atomically fails on replay.
+    ///
+    /// `#[inline(never)]` is load-bearing.  Without it, this body gets folded
+    /// into Anchor's `__global::verify_batch_proof` wrapper, merging stack
+    /// frames with the wrapper's deserialized-arg struct and the
+    /// `VerifyBatchProof` accounts struct.  Forcing a real call boundary
+    /// keeps user-fn locals isolated from the wrapper's frame.
+    ///
+    /// `public_inputs` is `Vec<[u8; 32]>` (heap-resident) rather than
+    /// `[[u8; 32]; NR_PUBLIC_INPUTS]` (1 024 bytes inline) by design.
+    /// Anchor's `__global` wrapper deserializes the args struct, then
+    /// passes args by value into this fn -- on BPF the arg copy lives in
+    /// the wrapper's outgoing-args stack slots, doubling the array's
+    /// stack footprint.  At `NR_PUBLIC_INPUTS = 32` that pushed the
+    /// wrapper 456 bytes past the 4 KB per-frame BPF budget.  A `Vec`
+    /// is a 24-byte fat pointer regardless of length, so the wrapper
+    /// only holds one cheap copy and the underlying 1 024-byte buffer
+    /// stays on the heap.  Length is validated equal to
+    /// `NR_PUBLIC_INPUTS` before any indexed access; conversion to the
+    /// `&[[u8; 32]; NR_PUBLIC_INPUTS]` shape that `Groth16Verifier`
+    /// expects is a single zero-cost `TryInto` on the slice.  See
+    /// `ts-sdk/packages/verifier/src/index.ts` for the matching wire
+    /// encoding (4-byte LE length prefix before the 32x32-byte payload).
+    #[inline(never)]
     pub fn verify_batch_proof(
         ctx: Context<VerifyBatchProof>,
         proof_a: [u8; 64],
         proof_b: [u8; 128],
         proof_c: [u8; 64],
-        public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS],
+        public_inputs: Vec<[u8; 32]>,
         nullifier: [u8; 32],
     ) -> Result<()> {
         let config = &ctx.accounts.verifier_config;
         require!(!config.paused, ErrorCode::Paused);
         require!(config.vk_initialized, ErrorCode::VerificationKeyNotSet);
+
+        // (0) Public-input arity gate.  Every downstream slot index in this
+        // handler is a compile-time constant against `NR_PUBLIC_INPUTS`
+        // (e.g. `VERIFIER_ADDRESS_INPUT_INDEX`, `CURRENT_TIMESTAMP_INPUT_INDEX`,
+        // and the schema/merkle range `[2..10]`).  A Vec gives a malicious
+        // caller the freedom to send the wrong length and crash the program
+        // on the first out-of-bounds access; converting to a fixed-size
+        // reference here turns that into a typed error.
+        let public_inputs: &[[u8; 32]; NR_PUBLIC_INPUTS] = public_inputs
+            .as_slice()
+            .try_into()
+            .map_err(|_| ErrorCode::InvalidProofFormat)?;
 
         // (1) Nullifier binding: the output signal (public_inputs[0]) must equal
         // the `nullifier` the caller is about to register as a PDA seed.
@@ -481,27 +534,33 @@ pub mod zk_verifier {
 
         // (5) Groth16 verification.
         //
-        // Parse the VK into a STACK-OWNED buffer.  `VkBuf` is ~2.5 KB and fits
-        // inside Solana's 4 KB per-frame BPF stack.  The `Groth16Verifyingkey`
-        // we hand to `groth16-solana` borrows from this buffer; its lifetime
-        // ends when this function returns.  No heap allocation, no `Box::leak`.
-        let vk_buf = VkBuf::parse(&ctx.accounts.vk_storage.data)
-            .map_err(|_| ErrorCode::InvalidProofFormat)?;
-        let vk = vk_buf.as_verifying_key();
-        let proof_a_neg = negate_g1_point(&proof_a).map_err(|_| ErrorCode::InvalidProofFormat)?;
-
-        let mut verifier = Groth16Verifier::<NR_PUBLIC_INPUTS>::new(
-            &proof_a_neg,
+        // Delegate to a separate, NEVER-INLINED helper.  The BPF target
+        // is a flat 4 KB per-frame stack and `lto=fat` aggressively
+        // inlines the user handler into Anchor's `__global::*` wrapper.
+        // After the merge, the wrapper holds Anchor's deserialized
+        // argument struct (`proof_a` 64 + `proof_b` 128 + `proof_c` 64
+        // + `public_inputs` 32×32 = 1024 + `nullifier` 32 = 1 312 bytes)
+        // AND a second moved copy of the same 1 312 bytes when those
+        // args are passed by value into the user fn — plus `vk_buf`
+        // (~480 bytes after the IC table moved to the heap), the
+        // by-value `Groth16Verifyingkey` returned by `as_verifying_key`
+        // (~480 bytes), `proof_a_neg` (64 bytes), and the
+        // `Groth16Verifier` (~120 bytes).  That tipped
+        // `__global::verify_batch_proof` 456 bytes past the 4 KB BPF
+        // budget.
+        //
+        // Confining the heavy Groth16 locals to a `#[inline(never)]`
+        // helper keeps them in their own stack frame, well isolated
+        // from the wrapper's argument-deserialization frame.  This is
+        // the durable fix: it does not depend on LTO's inlining
+        // heuristics and survives compiler upgrades.
+        verify_groth16_proof(
+            &ctx.accounts.vk_storage.data,
+            &proof_a,
             &proof_b,
             &proof_c,
-            &public_inputs,
-            &vk,
-        )
-        .map_err(|_| ErrorCode::InvalidProofFormat)?;
-
-        verifier
-            .verify()
-            .map_err(|_| ErrorCode::ProofVerificationFailed)?;
+            public_inputs,
+        )?;
 
         // (6) Allocate nullifier PDA — atomic replay-safety.
         // The PDA is initialized by Anchor via the `init` constraint on
@@ -549,7 +608,6 @@ pub mod zk_verifier {
 ///   [u8; 128]   delta_g2
 ///   [u8; 64]    ic[0..nr_ic]
 /// ```
-#[repr(C)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct VkBuf {
     nr_ic: usize,
@@ -557,7 +615,15 @@ pub struct VkBuf {
     beta: [u8; 128],
     gamma: [u8; 128],
     delta: [u8; 128],
-    ic: [[u8; 64]; MAX_IC],
+    /// IC table on the heap.  Length is exactly `nr_ic` after `parse`,
+    /// bounded by `MAX_IC`.  Heap residency is intentional: a fixed
+    /// `[[u8; 64]; MAX_IC]` field made the inlined
+    /// `__global::verify_batch_proof` BPF frame overflow the 4 KB
+    /// per-frame stack budget by ~456 bytes (the parent frame already
+    /// holds Anchor's ~1 312-byte deserialized argument struct).
+    /// `Vec` keeps the borrow lifetime tied to `self`, so
+    /// `as_verifying_key` is still safe with no `Box::leak`.
+    ic: Vec<[u8; 64]>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -568,7 +634,9 @@ pub enum VkParseError {
 }
 
 impl VkBuf {
-    /// Parse the on-chain VK byte buffer into a stack-owned `VkBuf`.
+    /// Parse the on-chain VK byte buffer into a `VkBuf` whose IC table
+    /// lives on the heap.  The fixed-size scalars (alpha/beta/gamma/delta)
+    /// stay inline in the returned struct.
     ///
     /// Bounds-checked at every cursor advance; malformed input returns a typed
     /// error rather than panicking.  `nr_ic` is capped at `MAX_IC` to prevent
@@ -588,30 +656,39 @@ impl VkBuf {
             return Err(VkParseError::TruncatedIc);
         }
 
-        let mut buf = VkBuf {
-            nr_ic,
-            alpha: [0u8; 64],
-            beta: [0u8; 128],
-            gamma: [0u8; 128],
-            delta: [0u8; 128],
-            ic: [[0u8; 64]; MAX_IC],
-        };
+        let mut alpha = [0u8; 64];
+        let mut beta = [0u8; 128];
+        let mut gamma = [0u8; 128];
+        let mut delta = [0u8; 128];
 
         let mut cursor = 4;
-        buf.alpha.copy_from_slice(&bytes[cursor..cursor + 64]);
+        alpha.copy_from_slice(&bytes[cursor..cursor + 64]);
         cursor += 64;
-        buf.beta.copy_from_slice(&bytes[cursor..cursor + 128]);
+        beta.copy_from_slice(&bytes[cursor..cursor + 128]);
         cursor += 128;
-        buf.gamma.copy_from_slice(&bytes[cursor..cursor + 128]);
+        gamma.copy_from_slice(&bytes[cursor..cursor + 128]);
         cursor += 128;
-        buf.delta.copy_from_slice(&bytes[cursor..cursor + 128]);
+        delta.copy_from_slice(&bytes[cursor..cursor + 128]);
         cursor += 128;
 
-        for slot in buf.ic.iter_mut().take(nr_ic) {
+        // Allocate the IC table directly on the heap with exact capacity.
+        // No intermediate `[[u8; 64]; MAX_IC]` ever lives on the stack.
+        let mut ic: Vec<[u8; 64]> = Vec::with_capacity(nr_ic);
+        for _ in 0..nr_ic {
+            let mut slot = [0u8; 64];
             slot.copy_from_slice(&bytes[cursor..cursor + 64]);
             cursor += 64;
+            ic.push(slot);
         }
-        Ok(buf)
+
+        Ok(VkBuf {
+            nr_ic,
+            alpha,
+            beta,
+            gamma,
+            delta,
+            ic,
+        })
     }
 
     /// Produce a `Groth16Verifyingkey` that borrows from this buffer.  The
@@ -629,6 +706,48 @@ impl VkBuf {
             vk_ic: &self.ic[..self.nr_ic],
         }
     }
+}
+
+/// Run Groth16 verification in an isolated, never-inlined stack frame.
+///
+/// All heavy locals — the parsed `VkBuf` shell, the by-value
+/// `Groth16Verifyingkey` view, `proof_a_neg`, and the `Groth16Verifier`
+/// state — live here and disappear at function exit.  Because this helper
+/// is `#[inline(never)]`, LTO=fat cannot fold it into Anchor's
+/// `__global::verify_batch_proof` wrapper, so its frame doesn't merge
+/// with the wrapper's deserialized-argument frame.  This is the
+/// structural fix for the BPF 4 KB per-frame stack overflow described
+/// in the call-site comment in `verify_batch_proof`.
+///
+/// Inputs are taken by reference to avoid duplicating the (already
+/// argument-deserialized) ~1 312-byte payload across stack frames.
+/// Heap allocations: one `Vec<[u8; 64]>` of length `nr_ic` inside
+/// `VkBuf`, dropped at exit.  No `Box::leak`; no static state.
+#[inline(never)]
+fn verify_groth16_proof(
+    vk_storage_data: &[u8],
+    proof_a: &[u8; 64],
+    proof_b: &[u8; 128],
+    proof_c: &[u8; 64],
+    public_inputs: &[[u8; 32]; NR_PUBLIC_INPUTS],
+) -> Result<()> {
+    let vk_buf = VkBuf::parse(vk_storage_data).map_err(|_| ErrorCode::InvalidProofFormat)?;
+    let vk = vk_buf.as_verifying_key();
+    let proof_a_neg = negate_g1_point(proof_a).map_err(|_| ErrorCode::InvalidProofFormat)?;
+
+    let mut verifier = Groth16Verifier::<NR_PUBLIC_INPUTS>::new(
+        &proof_a_neg,
+        proof_b,
+        proof_c,
+        public_inputs,
+        &vk,
+    )
+    .map_err(|_| ErrorCode::InvalidProofFormat)?;
+
+    verifier
+        .verify()
+        .map_err(|_| ErrorCode::ProofVerificationFailed)?;
+    Ok(())
 }
 
 /// Negate the Y coordinate of a G1 point for groth16-solana's expected
@@ -707,7 +826,10 @@ pub struct StoreVerificationKey<'info> {
     pub verifier_config: Account<'info, VerifierConfig>,
     #[account(
         init_if_needed, payer = authority,
-        space = 8 + 4 + 10240,
+        // 8 (disc) + 4 (Vec len) + 10228 (data) = 10240 = the Solana
+        // CPI realloc cap (`MAX_PERMITTED_DATA_INCREASE`).  Must stay
+        // in lockstep with `VK_MAX_BYTES` in `store_verification_key`.
+        space = 8 + 4 + 10228,
         seeds = [b"vk-storage", verifier_config.key().as_ref()],
         bump
     )]
@@ -875,7 +997,7 @@ pub enum ErrorCode {
     Paused,
     #[msg("VK chunk arrived out of order (expected next_vk_chunk)")]
     ChunkOutOfOrder,
-    #[msg("VK storage capacity exceeded (10240 bytes)")]
+    #[msg("VK storage capacity exceeded (10228 bytes)")]
     VkStorageFull,
     #[msg("Arithmetic overflow")]
     Overflow,
@@ -997,9 +1119,13 @@ mod tests {
 
     #[test]
     fn vk_buf_fits_in_stack_budget() {
-        // Mirrors the const assertion in the top of the file — having it also
-        // as a runtime test makes the failure message readable.
-        assert!(core::mem::size_of::<VkBuf>() < 3072);
+        // Mirrors the const assertion at the top of the file; runtime form
+        // gives a readable failure message.  After moving the IC table to
+        // the heap, the stack-resident shell is ~480 bytes.  The 1 KB
+        // ceiling leaves the rest of the BPF 4 KB per-frame budget for
+        // Anchor's deserialized argument struct (~1 312 bytes) plus the
+        // verifier's other locals.
+        assert!(core::mem::size_of::<VkBuf>() < 1024);
     }
 
     // ─── SOLID-SEC-006 freeze-gate + timelock regression gates ──────────

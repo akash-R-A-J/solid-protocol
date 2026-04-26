@@ -12,23 +12,109 @@ default = []
 # `wasm/` (crate `solid-wasm`) as a separate workspace member.  See
 # ADR-0002 / SOLID-SEC-009 / SOLID-SEC-028.
 
+# ─── Common deps (compile on ALL THREE targets: BPF, non-wasm32 host, wasm32) ─
+#
+# Anything in `[dependencies]` is pulled into the issuer-registry /
+# schema-registry / zk-verifier BPF binaries AND into the WASM bridge
+# (`wasm/`, target `wasm32-unknown-unknown`) through the `solid-core`
+# import.  Keep this list strictly to crates that are clean on ALL
+# three targets.
+#
+# In particular, **do not** add `light-poseidon`, `aes-gcm`, `argon2`,
+# `rand` (with default features), or anything else that pulls a
+# stack-heavy parameter table or `getrandom` syscall here.  Those are
+# gated below to the host-only target.  Likewise, **do not** add
+# `solana-program` here: solana-program 1.18.x has no wasm32 support
+# (its host fallback transitively pulls `std::sync::Mutex`,
+# `std::time::*`, and `getrandom` without the `js` feature), so it
+# must be target-conditioned to BPF + non-wasm32 host only (see below).
+#
+# `ark-bn254` is BPF- and wasm32-clean (pure-Rust BN254 arithmetic,
+# no syscalls, small stack footprint) and is required by dual-target
+# conversion helpers (`poseidon::fr_to_bytes_le`, `poseidon::u64_to_fr`,
+# etc.) that are reached from `issuer-registry`'s
+# `compute_issuer_leaf_bytes` and from `wasm/src/lib.rs`.
 [dependencies]
-light-poseidon = "0.2"
 ark-bn254 = { workspace = true }
 ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-ed-on-bn254 = { workspace = true }
 ark-std = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+# ─── BPF-only: `solana-program` for the `sol_poseidon` syscall ─────────────
+#
+# `solana_program::poseidon::hashv` dispatches to the on-chain
+# `sol_poseidon` syscall.  No `light-poseidon` parameter table is
+# loaded into the BPF binary, so there is no 4 KB stack-frame overflow
+# under `lto = "fat"` (SOLID-SEC-XXX, B3).
+[target.'cfg(target_os = "solana")'.dependencies]
+solana-program = { workspace = true }
+
+# ─── Non-wasm32 host: `solana-program` for the byte-identical fallback ─────
+#
+# On Linux/macOS host (cargo test, examples/gen_vectors, off-chain
+# prover, cross-language vectors gate), `solana_program::poseidon::hashv`
+# falls back to a pure-Rust implementation backed by `light-poseidon
+# 0.2.0` — byte-identical to the syscall.  CI gates byte equality via
+# the cross-language-vectors job (`tests/vectors/`).
+#
+# This arm is intentionally NOT extended to `target_arch = "wasm32"`:
+# `solana-program 1.18.x` does not support wasm32-unknown-unknown
+# (its non-BPF fallback transitively reaches `std::sync::Mutex`,
+# `std::time::*`, and `getrandom` without `js` feature), and there is
+# no upstream CI for that target.  The wasm32 build of `solid-core`
+# (consumed by `wasm/`, the SDK's WASM bridge) reaches `light-poseidon`
+# directly through the `cfg(not(target_os = "solana"))` arm below;
+# see `crates/solid-core/src/poseidon.rs::hash_bytes` for the
+# corresponding dispatch.  This is a structural three-target split
+# (BPF / non-wasm32 host / wasm32), not a workaround.
+# See ADR-0002 / SOLID-SEC-028 / docs/E2E_BLOCKERS.md B6.
+[target.'cfg(all(not(target_os = "solana"), not(target_arch = "wasm32")))'.dependencies]
+solana-program = { workspace = true }
+
+# ─── Off-chain deps (BPF target excluded; covers host AND wasm32) ──────────
+#
+# These crates are reference / off-chain implementations that either:
+#   - allocate large parameter tables on the stack
+#     (`light-poseidon 0.2.0`, would overflow BPF's 4 KB frame under
+#     `lto = "fat"`), or
+#   - depend on `getrandom` / OS RNG syscalls (`rand::rngs::OsRng`,
+#     `aes-gcm` AEAD nonce generation, `argon2` salt; `blake2` is fine
+#     in itself but is co-located with the encrypted-key bundle code),
+#   - serve the SDK / WASM / prover side only and are never reached
+#     from on-chain code paths (`serde_json` for credential
+#     serialization, `BJJIdentity` JSON export).
+#
+# `light-poseidon 0.2.0` is wasm32-clean (pure-Rust ark-bn254 + ark-ff
+# arithmetic, no syscalls, no `getrandom`).  On wasm32 it is the
+# Poseidon backend that `poseidon::hash_bytes` dispatches to directly
+# (see the cfg(target_arch = "wasm32") arm in `poseidon.rs`).  On a
+# non-wasm32 host it is also the underlying backend, but reached
+# indirectly via `solana_program::poseidon::hashv`'s host fallback
+# (above) — both paths are byte-identical to circomlib by construction.
+#
+# Reachability check: the only items the on-chain programs import from
+# `solid-core` are
+#   - `babyjubjub::{BJJPublicKey, require_in_prime_order_subgroup}`
+#     (issuer-registry),
+#   - `schema::compute_schema_hash_from_parts` (schema-registry, which
+#     internally calls `poseidon::hash_fields_to_bytes`),
+#   - `poseidon::{hash_bytes, fr_to_bytes_le, u64_to_fr}`
+#     (issuer-registry, `compute_issuer_leaf_bytes` path).
+# All of these are dual-target.  The host-only items below are never
+# reachable from the BPF entrypoints.
+[target.'cfg(not(target_os = "solana"))'.dependencies]
+light-poseidon = "0.2"
+serde_json = { workspace = true }
 rand = { workspace = true }
 aes-gcm = "0.10"
 argon2 = "0.5"
 blake2 = "0.10"
-hex = { workspace = true }
-thiserror = { workspace = true }
 
 [dev-dependencies]
 ark-std = { workspace = true }

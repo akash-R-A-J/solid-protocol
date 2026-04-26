@@ -18,4 +18,11 @@ idl-build = ["anchor-lang/idl-build"]
 [dependencies]
 anchor-lang = { workspace = true }
 solid-core = { path = "../../crates/solid-core" }
-light-poseidon = "0.2"
+# NOTE: previously had a direct `light-poseidon = "0.2"` dep here.  It was
+# unused (no `light_poseidon::*` import in this crate) and was the primary
+# vector for the BPF stack-overflow:
+#   Function _ZN14light_poseidon10parameters8bn254_x5 23get_poseidon_parameters...
+#   Stack offset of 30448 exceeded max offset of 4096 bytes (under `lto = "fat"`).
+# Schema-hash computation goes through `solid_core::schema::compute_schema_hash_from_parts`
+# -> `solid_core::poseidon::hash_fields_to_bytes` -> `solana_program::poseidon::hashv`
+# (the `sol_poseidon` syscall on BPF), which is byte-identical and stack-safe.

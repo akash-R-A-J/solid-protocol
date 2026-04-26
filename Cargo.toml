@@ -18,6 +18,13 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Workspace MSRV. Matches the rustc bundled with Solana 1.18.x platform-
+# tools (1.75.0). Declaring it lets cargo's MSRV-aware resolver pick
+# transitive versions whose own MSRV is <= 1.75 — preventing the
+# edition2024 / rustc-1.85 dep cascade from leaking into the lockfile
+# at `cargo update` time. See `.cargo/config.toml` for the resolver
+# fallback opt-in (cargo 1.84+).
+rust-version = "1.75"
 license = "Apache-2.0 OR MIT"
 
 [workspace.dependencies]
@@ -36,8 +43,52 @@ thiserror = "1.0"
 anchor-lang = "0.30.1"
 anchor-spl = "0.30.1"
 ark-groth16 = "0.4"
+# Solana platform-tools toolchain; matches anchor-lang 0.30.1 / Solana 1.18.x.
+# Used by `solid-core` for the `sol_poseidon` syscall on BPF targets and the
+# host-side `light-poseidon` fallback. Pinning to `~1.18` keeps the lockfile
+# inside the 1.18.x range that anchor-lang itself is compatible with.
+solana-program = "~1.18"
+# NOTE: `light-poseidon` is intentionally NOT a workspace dep.  It is a
+# host-side reference implementation only (round-constants table sits on
+# the stack and overflows BPF's 4 KB frame under `lto = "fat"`).  The
+# only crate that pulls it is `solid-core`, gated via
+# `[target.'cfg(not(target_os = "solana"))'.dependencies]`.  On BPF we
+# use `solana_program::poseidon::hashv` (the `sol_poseidon` syscall),
+# which is byte-identical to `light-poseidon 0.2.0`'s `hash_bytes_le`
+# under the same parameters (`Bn254X5`, `LittleEndian`).  See
+# `crates/solid-core/src/poseidon.rs`.
 
 [profile.release]
 overflow-checks = true
-lto = "fat"
+# `lto = "thin"` (not `"fat"`) is the load-bearing setting for BPF.
+#
+# With `lto = "fat"`, LLVM performs whole-program optimization in a
+# single translation unit and aggressively spills across function
+# boundaries.  On Solana's BPF target, where each function gets a flat
+# 4 KB stack frame, this caused Anchor's generated
+# `__private::__global::verify_batch_proof` wrapper to exceed the
+# per-frame budget by 456 bytes (4552 vs 4096).  The wrapper itself
+# holds the deserialized instruction arg struct (1312 bytes for
+# `proof_a`/`proof_b`/`proof_c`/`public_inputs`/`nullifier`), the
+# `VerifyBatchProof` accounts struct (~700 bytes), the BPF outgoing-
+# argument slots for the call into the user fn (another 1312 bytes),
+# bumps + ctx + slice fat-ptr (~200 bytes), and partial destructured
+# locals.  `lto = "fat"` made the slot-reuse heuristics conservative
+# enough that the partial spill tipped the frame past 4 KB.
+#
+# `lto = "thin"` is the standard Cargo release setting (`"fat"` is an
+# aggressive override).  It still does cross-crate inlining inside
+# thin chunks, so hot paths stay optimized.  CU cost is unchanged in
+# practice because Groth16 verification is dominated by `alt_bn128`
+# syscalls, not Rust-level optimization, and SPL-AC operations are
+# dominated by `sol_poseidon` syscalls.  Program size grows by a few
+# KB worst case — well under the Solana 10 MB program limit.
+#
+# This is the durable fix for SOLID-SEC-XXX (BPF stack overflow in
+# Anchor wrapper).  Do not switch back to `"fat"` without first
+# proving the wrapper frame still fits — see
+# `programs/zk-verifier/src/lib.rs::verify_batch_proof` for the
+# accompanying `#[inline(never)]` on the user fn that keeps its locals
+# in their own frame.
+lto = "thin"
 codegen-units = 1

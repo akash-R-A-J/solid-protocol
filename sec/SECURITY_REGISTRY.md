@@ -20,11 +20,17 @@ One file. No fragmentation. Nothing deleted.
   - 2026-04-25 v0.6.1 deep comprehensive audit
     (`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`)
     -- **canonical post-Phase-3-impl-4 state-of-protocol**
-- Last registry update: 2026-04-25 (folds the v0.6.1 audit: opens
-  SOLID-SEC-045 and SOLID-SEC-046 from Section 5.4; refreshes
-  summary counts)
+- Last registry update: 2026-04-25 late-session (build-pipeline
+  restoration session: opens **SOLID-SEC-047** as Fixed -- BPF
+  stack-frame overflow in `verify_batch_proof` wrapper, surfaced
+  once the upstream light-poseidon link failure was lifted by the
+  Poseidon syscall refactor; refreshes summary counts).  Earlier
+  same day folded the v0.6.1 audit (opens SOLID-SEC-045 and
+  SOLID-SEC-046 from Section 5.4).
 - Next audit target: after P0 close-out (NEW-01/45, NEW-02/46,
-  SEC-010, integration suite 02..11) per v0.6.1 Section 6.1
+  NEW-03/47-followups, SEC-010, integration suite 02..11) per
+  v0.6.1 Section 6.1.  Localnet `npm run e2e` punch list lives
+  in `docs/E2E_BLOCKERS.md`.
 
 See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
@@ -35,11 +41,22 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 3     | 0        | 0         | 3     |
-| HIGH      | 2    | 0           | 10    | 0        | 0         | 12    |
-| MEDIUM    | 12   | 0           | 4     | 0        | 0         | 16    |
+| HIGH      | 3    | 0           | 10    | 0        | 0         | 13    |
+| MEDIUM    | 12   | 0           | 5     | 0        | 0         | 17    |
 | LOW       | 4    | 0           | 5     | 0        | 0         | 9     |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 22   | 0           | 24    | 0        | 0         | 46    |
+| **Total** | 23   | 0           | 25    | 0        | 0         | 48    |
+
+Delta vs prior summary: SOLID-SEC-047 added as Fixed (MEDIUM); SOLID-
+SEC-048 added as Open / interim-bypass (HIGH; mainnet deploy-blocker).
+SEC-048 captures the BPF-runtime extension to SEC-007: the in-handler
+prime-order subgroup check is logic-correct but exceeds the 1.4M CU
+per-tx ceiling on BPF, so localnet/devnet builds gate it behind a
+`sec007-skip-onchain` Cargo feature with the off-chain SDK predicate
+acting as the load-bearing gate while the real fix is in flight.  This
+session's other working-tree fixes (circuit compile, dep cascade,
+Poseidon BPF refactor) are build-pipeline issues, not security
+findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 
 ---
 
@@ -93,6 +110,8 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | SOLID-SEC-044   | LOW      | Fixed  | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
 | SOLID-SEC-045   | MEDIUM   | Open   | `revoke_issuer_atomic` / `request_withdrawal_atomic` do not update `IssuerTreeBinding.current_root` in the same ix |
 | SOLID-SEC-046   | MEDIUM   | Open   | No CU-budget regression gate on `verify_batch_proof` |
+| SOLID-SEC-047   | MEDIUM   | Fixed  | `verify_batch_proof` Anchor wrapper exceeds BPF 4 KB per-frame stack by ~456 B (structural; surfaced post Poseidon refactor) |
+| SOLID-SEC-048   | HIGH     | Open (interim bypass live) | `register_issuer` BJJ prime-order subgroup check exceeds 1.4M CU per-tx ceiling on BPF; localnet/devnet builds gate the check behind `sec007-skip-onchain` Cargo feature -- mainnet-blocking until a CU-affordable on-chain replacement ships |
 
 ---
 
@@ -1226,6 +1245,282 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
   growth from SEC-006 Part 2 and SEC-010, and the triggering
   constants (`NR_PUBLIC_INPUTS`, VK IC count).
 
+### SOLID-SEC-047 -- `verify_batch_proof` Anchor wrapper exceeds BPF 4 KB per-frame stack
+
+- **Severity:** MEDIUM (security exploit class: nil; deploy-blocker
+  class: HIGH -- without the fix, `cargo-build-sbf` refuses to link
+  `zk_verifier.so`).
+- **Status:** Fixed (working tree, **uncommitted as of this
+  registry update**).
+- **Introduced:** 2026-04-24 (Phase 2 impl 2, commit `73871dc`,
+  ADR-0014).  When `NR_PUBLIC_INPUTS` grew from 31 to 32 to make
+  room for the new `issuerTreeRoot` slot, the by-value
+  `public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS]` ix arg gained 32 B
+  -- pushing the Anchor `__global::verify_batch_proof` wrapper's
+  frame from "fits-with-margin" to "overflows-by-456-B".  Was
+  masked since by the upstream light-poseidon BPF link failure
+  (Poseidon's stack-allocated round-constants table aborted the
+  link earlier in the same `anchor build`); surfaced once the
+  Poseidon refactor lifted that upstream failure on 2026-04-25.
+- **Surfaced by:** 2026-04-25 build-pipeline restoration session
+  (this registry update).  Discovery method: clean
+  `anchor build --program-name schema_registry --no-idl` SUCCEEDED
+  (proving the Poseidon fix), but the subsequent
+  `--program-name zk_verifier` failed with
+  `Stack offset of ... exceeded max offset of 4096 by 456 bytes`
+  in the platform-tools linker.
+- **Evidence (pre-fix).**
+  - `programs/zk-verifier/src/lib.rs:329` ix signature was
+    `verify_batch_proof(ctx, public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS], nullifier: [u8; 32])`
+    -- 1024 B on the wrapper's stack for the deserialised ix struct
+    plus ~1024 B for the BPF outgoing-arg slots when the wrapper
+    calls the user fn.
+  - `Cargo.toml:42` workspace `[profile.release]` has
+    `lto = "fat"`, but **the overflow is independent of LTO**.  We
+    verified by toggling `lto = "thin"` -- frame size stayed at
+    exactly 4552 B, proving the bloat is from declarative storage
+    requirements (struct sizes + BPF calling-convention spill),
+    not from optimiser inlining.
+  - The compile-time `assert!(size_of::<VkBuf>() < 3072, ...)` at
+    `programs/zk-verifier/src/lib.rs:80-87` correctly bounds one
+    component (VkBuf) but does NOT bound the function's total
+    stack frame, so the regression slipped past every "tests
+    green" reporting.
+- **Stack accounting (matches the reported 456 B overflow):**
+  ```
+  __ix struct (deserialized in wrapper)
+    proof_a: [u8; 64]  +  proof_b: [u8; 128]  +  proof_c: [u8; 64]
+    + public_inputs: [[u8; 32]; 32]  +  nullifier: [u8; 32]
+                                                    = 1312 B
+  VerifyBatchProof accounts struct (10 accts)        ~  900 B
+  ctx + bumps + slice fat-ptr + return slot          ~  200 B
+  BPF outgoing-arg slots for the user fn call        ~ 1312 B
+  Saved registers + alignment + spill                ~  800 B
+                                                     -------
+                                                     ~ 4524 B
+  -                                  4 KB BPF ceiling -4096 B
+                                                     -------
+                                            overflow ~  428-456 B
+  ```
+- **Impact.**  `cargo-build-sbf` refuses to link `zk_verifier.so`
+  -- a deploy-blocker, not a runtime exploit.  No security
+  regression in deployed code (the previous `zk_verifier.so` was
+  never deployed against the post-Phase-2-impl-2 source tree
+  because the link never succeeded on a clean machine; the older
+  green baselines were against locally-cached older deps that
+  resolved to a smaller frame).
+- **Remediation (landed in working tree).**  Fix in
+  `programs/zk-verifier/src/lib.rs`:
+  - Ix arg signature changed:
+    `public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS]` ->
+    `public_inputs: Vec<[u8; 32]>`.  The 1024 B payload moves from
+    the wrapper's stack into the BPF heap allocator (32 KB
+    bump-allocator budget); the wrapper stack overhead drops to a
+    24-byte `Vec` descriptor.
+  - Explicit `require!(public_inputs.len() == NR_PUBLIC_INPUTS,
+    ErrorCode::InvalidPublicInputsLength)` immediately on entry
+    closes the only new attack surface the change introduces
+    (otherwise `Vec` deserialisation is unbounded -- though
+    Solana's 1232-byte ix data limit is a practical defence in
+    depth).
+  - Inner Groth16-verify body extracted into a separate
+    `#[inline(never)]` helper at lines ~717-723 that takes
+    `public_inputs: &[[u8; 32]; NR_PUBLIC_INPUTS]` by reference.
+    The `#[inline(never)]` on the user fn AND on the inner helper
+    forces two distinct BPF frames; each gets its own 4 KB
+    budget.
+  - The audit-called-out **stack-owned `VkBuf`** invariant
+    (Section 2.1, item 6 of the v0.6.1 audit) is preserved.  No
+    `Box<VkBuf>` introduced; no LTO knob changed.
+- **Verification (this session).**
+  - `target/deploy/zk_verifier.so` builds cleanly (327 KB ELF
+    eBPF, valid magic `7f 45 4c 46 02 01 01 00`).
+  - `issuer_registry.so` (684 KB) and `schema_registry.so`
+    (332 KB) also build (Poseidon refactor proven for both).
+  - `cargo test -p zk-verifier --lib`: 17/17 (existing tests
+    use a host-side helper that does not go through the Anchor
+    wrapper, so they continue to construct `public_inputs` as
+    `[[u8; 32]; 32]` and the host code path is unchanged).
+- **Regression gate.**  Two layers:
+  1. `tests/integration/verify_batch_proof_rejects_wrong_public_inputs_length.test.ts`
+     should be added when the integration suite (02..11) lands;
+     it asserts the `InvalidPublicInputsLength` path on a length
+     mismatch.
+  2. **Stack-frame size CI gate** -- a build-side test that emits
+     the actual `verify_batch_proof` BPF frame size and fails
+     CI if it's > 3.6 KB (10% margin under 4 KB).  Closes the
+     gap the component-level `VkBuf < 3072` assertion does NOT
+     cover.  Pairs with **SOLID-SEC-046** (CU-budget gate).
+- **SDK / IDL impact.**  Anchor IDL emits the new `Vec<[u8; 32]>`
+  type for `public_inputs`; downstream TS SDK encoders must
+  prepend the 4-byte Borsh `Vec` length before the 32x32-byte
+  payload.  If the SDK uses Anchor's auto-generated client (the
+  recommended path), this is handled by IDL regeneration.
+  Hand-rolled byte-layout encoders need an audit pass.  Net wire
+  delta: +4 bytes per verify ix data blob.  Cross-language
+  vectors (`tests/vectors/commitment_and_nullifier.json`) are
+  unaffected -- they exercise hashing, not the ix wire format.
+- **Companion follow-ups (P0 per v0.6.1 Section 6.1):**
+  - Add the stack-frame size CI gate (paired with SOLID-SEC-046's
+    CU-baseline gate).
+  - Land an integration test that exercises the new
+    `InvalidPublicInputsLength` rejection path.
+  - Document the `Vec<T>` argument-marshalling pattern in
+    `docs/MODULE_CONTRACTS.md` as the canonical answer for any
+    on-chain ix whose by-value arg surface approaches BPF's per-
+    frame stack ceiling.
+
+### SOLID-SEC-048 -- `register_issuer` BJJ subgroup check exceeds 1.4M CU per-tx ceiling on BPF
+
+- **Severity:** HIGH (security exploit class on mainnet: HIGH if the
+  bypass build is deployed there; deploy-blocker class on
+  localnet/devnet without the bypass: HIGH -- e2e cannot complete).
+- **Status:** Open, with an interim feature-gated bypass live in the
+  working tree for localnet/devnet only.  Real fix tracked under this
+  ID and as a P0 entry in `docs/IMPROVEMENTS_ROADMAP.md`.
+- **Discovered:** 2026-04-25 (this session, while running
+  `npm run bootstrap-issuer` against a fresh localnet validator).
+- **Relationship to SOLID-SEC-007:** SEC-007 was closed on host-side
+  logic correctness: the prime-order subgroup check correctly rejects
+  cofactor-8 torsion points, the Edwards neutral element, and
+  off-curve points (47 host-side test cases pass).  SEC-048 is the
+  BPF-runtime extension of that gate -- the same logic, structurally
+  not affordable at on-chain compute prices.  The handler-level
+  enforcement point is therefore not currently sound on BPF without
+  the off-chain SDK acting as the load-bearing predicate.
+- **Trust assumption while bypass is active:** every off-chain caller
+  of `register_issuer` MUST run `isInPrimeOrderSubgroup(pkX, pkY)`
+  pre-submit (the canonical reference implementation lives in
+  `ts-sdk/packages/core/src/index.ts` and routes through
+  `solid_core::babyjubjub::is_in_prime_order_subgroup` on host via
+  the WASM bridge).  A caller who skips the predicate and submits a
+  cofactor-8 torsion pubkey can register an issuer whose downstream
+  EdDSA-style signatures verify only over the 8-element subgroup --
+  i.e., the security parameter for credentials issued by that key
+  drops from 251 bits to 3 bits.  The `is_on_curve + !is_identity`
+  consolation gate on-chain catches off-curve garbage and the
+  identity element, but does NOT catch this attack class.
+- **Why audit didn't catch this earlier.**  B3 (light-poseidon BPF
+  refactor) explicitly notes the subgroup helpers were
+  "intentionally NOT gated, kept dual-target."  That is true: both
+  targets compile and link.  What was not measured is the runtime
+  BPF compute cost per call.  The omission is that the
+  dual-target-link gate is not the same as a dual-target-runtime
+  gate, and there was no on-chain test exercising
+  `register_issuer` against a real validator with default compute
+  budgets.  See **regression gate** below for the closing test.
+- **Evidence.**
+  - Failure signature: BPF program log:
+    `Program 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+     consumed 1400000 of 1400000 compute units` followed by
+    `Program failed to complete: exceeded CUs meter at BPF
+     instruction`.
+  - Reproduces with `ComputeBudgetProgram.setComputeUnitLimit({
+    units: 1_400_000 })` (the per-tx ceiling) -- raising the budget
+    is not an option, the cost is structural.
+  - Build flags tried: toggling `lto = "thin"` / `"fat"`, varying
+    `codegen-units`, `opt-level = "z"` / `3`, all left the cost
+    pegged at the ceiling.
+  - Cost decomposition: `EdwardsAffine::mul_bigint` over a ~251-bit
+    scalar = ~251 doublings + ~125 conditional additions through
+    arkworks' BPF-portable backend.  Each doubling is ~5K CU
+    (modular arithmetic over a 254-bit prime field on BPF), so the
+    aggregate is ~1.6-2.0M CU before the comparison.  No individual
+    arkworks operation is anomalously expensive; the structural
+    251-bit width is the hard wall.  Solana's alt_bn128 syscall
+    family (used by `verify_batch_proof`) is BN254 G1/G2, a
+    different curve, and does not help here.
+- **Interim remediation (working tree, 2026-04-25; NOT FOR MAINNET).**
+  - `programs/issuer-registry/Cargo.toml` -- new Cargo feature
+    `sec007-skip-onchain` (no default; `[features]` block carries an
+    in-file warning that mainnet builds MUST NOT set it).
+  - `programs/issuer-registry/src/lib.rs:189` --
+    `solid_core::babyjubjub::require_in_prime_order_subgroup(&bjj_pub_key)`
+    is gated behind `#[cfg(not(feature = "sec007-skip-onchain"))]`.
+    With the feature set, the handler runs the consolation gate
+    (`is_on_curve + !is_identity`), emits
+    `msg!("SEC-048: sec007-skip-onchain active; off-chain SDK
+     predicate is enforcement point")`, and emits a structured
+    `Sec007Bypass { issuer_authority, slot }` event so off-chain
+    monitors can detect a bypass binary on a cluster it shouldn't
+    be on.
+  - `crates/solid-core/src/babyjubjub.rs` -- new public helpers
+    `is_on_curve(&BJJPublicKey) -> bool` and
+    `is_identity(&BJJPublicKey) -> bool` for the consolation gate.
+  - `ts-sdk/packages/core/src/index.ts` -- `isInPrimeOrderSubgroup`
+    re-exported as the canonical client-side predicate, with
+    extensive doc-comments naming itself the load-bearing gate
+    while the on-chain check is bypassed.
+  - `scripts/bootstrap_issuer.ts` -- pre-submit gate now invokes the
+    new export and aborts the script before `register_issuer` is
+    even built if the generated key fails the check.  Compute
+    budget on the on-chain ix reduced from 1.4M to 400K CU
+    (measured ~120K CU steady-state with the bypass; 400K leaves
+    headroom for `init`, the `system_program::transfer` CPI, and
+    Clock syscalls on noisy validators).
+- **Build / deploy invocation (localnet/devnet only):**
+  ```
+  CARGO_TARGET_DIR=$PWD/target cargo build-sbf -p issuer-registry \
+    --features sec007-skip-onchain
+  solana program deploy target/deploy/issuer_registry.so \
+    --program-id keys/localnet/issuer_registry-keypair.json
+  ```
+  `check_program_ids.py` is unaffected (program ID unchanged).  IDL
+  hash is unaffected (pure feature gating, no schema change).
+- **Real fix candidates (in increasing soundness preference):**
+  1. **Cofactor-clear in the issuer SDK.**  Multiply candidate
+     pubkey by `8` (the cofactor) off-chain before submission; check
+     the result is non-identity.  On-chain stays at the
+     `is_on_curve + !is_identity` consolation gate.  Cheapest, but
+     trusts the off-chain SDK to do the multiplication; a malicious
+     caller can skip it and the bypass is invisible until the
+     issuer's first signed credential fails to verify in-circuit.
+  2. **Move the subgroup gate into the issuance circuit.**  Every
+     `issue_credential` proof commits to the issuer's pubkey; adding
+     a `is_in_prime_order_subgroup` constraint there makes the gate
+     enforcement a circuit-level invariant rather than a handler-
+     level one.  Costs ~30K extra constraints (one EdDSA-style
+     scalar mul) and shifts ZK proving cost up correspondingly.
+     Strongest soundness binding; slowest to ship (requires trusted
+     setup re-run, batches with SEC-006 Part 2).
+  3. **Solana BJJ syscall.**  Propose adding `sol_babyjubjub_*`
+     syscalls upstream so on-chain code can do subgroup /
+     scalar-mul checks at curve speed (a few thousand CU).  Multi-
+     quarter timeline; depends on validator buy-in.
+- **Mainnet deploy-blocker mechanics:**
+  - `programs/issuer-registry/Cargo.toml` carries an in-file
+    "NOT FOR MAINNET" warning on the `sec007-skip-onchain` feature.
+  - SEC-048 closeout includes a CI gate that rejects mainnet release
+    builds setting the feature (added to `scripts/check_program_ids.py`
+    or a sibling `scripts/check_release_features.py`).
+  - Production cluster monitor: alert (or hard-fail rollout) on any
+    `Sec007Bypass` event observed in mainnet logs -- the event is
+    deliberately structured for index-time matching.
+- **Regression gate.**  Two layers:
+  1. Add `tests/integration/register_issuer_compute_units.test.ts`
+     (E2E suite) that lands a `register_issuer` against a real
+     validator with the default 200K CU budget (no
+     `setComputeUnitLimit` override) and asserts the bypass build
+     succeeds; against the no-feature build it asserts the
+     `exceeded CUs meter` failure mode.  Closes the dual-target-link
+     vs dual-target-runtime gap that let SEC-048 slip past SEC-007's
+     verification.
+  2. Add a CI step that runs
+     `cargo build-sbf -p issuer-registry --release --no-default-features`
+     (the mainnet shape) and re-runs the same on-chain regression
+     test against a localnet started with that binary.  The test
+     MUST fail on the no-feature build until the real fix lands;
+     when it passes, SEC-048 closes.
+- **Tracking cross-references.**
+  - Build-pipeline tracker: `docs/E2E_BLOCKERS.md` B9 (interim
+    bypass) and O7 (registry pointer).
+  - Roadmap entry: `docs/IMPROVEMENTS_ROADMAP.md` (P0 SEC-048).
+  - Top-of-mind blockers: `plan/RESUME.md`,
+    `docs/FORWARD_ROADMAP.md`.
+  - Audit trail: SOLID-SEC-007 was closed on host-logic
+    correctness; SEC-048 extends it to BPF-runtime feasibility
+    and is the active line until closed.
+
 ---
 
 ## History
@@ -1245,6 +1540,8 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 | 2026-04-25 | Phase 3 impl 3 (SEC-041 content-addressed VK artifact)               | --                                        | SOLID-SEC-041 (verification_key.sha256 emitted by setup.js; initialize.ts enforces the pin via env or file) |
 | 2026-04-25 | Phase 3 impl 4 (ADR-0014 Cooldown-verify-negative amendment)         | --                                        | SOLID-SEC-044 (request_withdrawal_atomic; legacy request_withdrawal gated on !is_tree_enrolled) |
 | 2026-04-25 | `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md` (post Phase-3-impl-4 snapshot) | SOLID-SEC-045, -046               | 0 (both introduced Open)                          |
+| 2026-04-25 | Build-pipeline restoration session (circuit compile fixes, dep-cascade resolution, Poseidon BPF refactor, `verify_batch_proof` frame fix; `docs/E2E_BLOCKERS.md` tracker created) | SOLID-SEC-047                       | SOLID-SEC-047 (registered Fixed in working tree; `target/deploy/zk_verifier.so` builds cleanly post-fix) |
+| 2026-04-25 | E2E unblock session (B6/B7 closed; `npm run e2e` walked through `initialize` -> `backfill-issuer-tree` -> `bootstrap-issuer`; SEC-007 BPF CU exhaustion surfaced on `register_issuer` and a feature-gated bypass landed in working tree; documented as B9 in E2E_BLOCKERS) | SOLID-SEC-048                       | 0 (introduced Open with interim bypass live; localnet/devnet only) |
 
 ### Note on the 2026-04-22 numbering
 

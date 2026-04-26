@@ -35,7 +35,7 @@ use crate::credential_tree::{
 /// Hard-coded program IDs the verifier trusts for schema-tree metadata. The
 /// on-chain caller must still check that the supplied `schema_tree_N` account
 /// is owned by this program; this constant is purely documentation.
-pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT";
+pub const SCHEMA_REGISTRY_PROGRAM_ID: &str = "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1";
 
 /// Typed counterpart of [`SCHEMA_REGISTRY_PROGRAM_ID`].
 ///
@@ -48,12 +48,12 @@ pub const SCHEMA_REGISTRY_ID: Pubkey =
     anchor_lang::prelude::Pubkey::new_from_array(SCHEMA_REGISTRY_ID_BYTES);
 
 /// Raw bytes of `SCHEMA_REGISTRY_ID`, base58-decoded at the source location
-/// `"DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"`. Kept as a separate const
+/// `"4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"`. Kept as a separate const
 /// so the program-ID literal above is usable in `const` contexts without the
 /// `pubkey!` proc-macro, which is not re-exported from `anchor_lang::prelude`.
 const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
-    184, 31, 191, 183, 14, 126, 178, 219, 191, 193, 249, 206, 232, 77, 185, 224, 56, 51, 91, 209,
-    33, 205, 175, 183, 155, 9, 46, 66, 147, 25, 1, 94,
+    52, 211, 14, 237, 78, 235, 34, 17, 230, 13, 239, 27, 51, 103, 62, 210, 206, 53, 34, 210, 147,
+    198, 67, 29, 255, 178, 228, 216, 244, 2, 125, 52,
 ];
 
 /// Hard-coded program ID for the `issuer-registry` program.
@@ -62,19 +62,19 @@ const SCHEMA_REGISTRY_ID_BYTES: [u8; 32] = [
 /// `issuer_tree_binding` against this constant before trusting any
 /// byte of it -- same two-layer guard pattern as
 /// `SCHEMA_REGISTRY_ID` (SOLID-SEC-032).
-pub const ISSUER_REGISTRY_PROGRAM_ID: &str = "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR";
+pub const ISSUER_REGISTRY_PROGRAM_ID: &str = "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx";
 
 /// Typed counterpart of [`ISSUER_REGISTRY_PROGRAM_ID`].
 pub const ISSUER_REGISTRY_ID: Pubkey =
     anchor_lang::prelude::Pubkey::new_from_array(ISSUER_REGISTRY_ID_BYTES);
 
 /// Raw bytes of `ISSUER_REGISTRY_ID`, base58-decoded at the source
-/// location `"CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"`.  The
+/// location `"5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"`.  The
 /// drift test below is the local gate; `scripts/check_program_ids.py`
 /// is the repo-wide gate.
 const ISSUER_REGISTRY_ID_BYTES: [u8; 32] = [
-    169, 168, 18, 211, 249, 105, 70, 114, 159, 27, 28, 172, 73, 149, 87, 152, 51, 253, 20, 143,
-    121, 225, 183, 185, 137, 84, 62, 138, 230, 57, 221, 184,
+    69, 105, 202, 235, 252, 94, 62, 176, 58, 15, 195, 222, 140, 226, 248, 106, 219, 80, 80, 11, 75,
+    153, 89, 137, 211, 153, 71, 68, 205, 102, 24, 79,
 ];
 
 // ─── Program-ID consistency tests (SOLID-SEC-032) ──────────────────────────

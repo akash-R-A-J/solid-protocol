@@ -26,9 +26,9 @@ soundness or availability:
   deployments/*.json must all agree. CI enforces via
   scripts/check_program_ids.py.
 - Canonical program IDs:
-  - zk_verifier: BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2
-  - issuer_registry: CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR
-  - schema_registry: DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
+  - zk_verifier: DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
+  - issuer_registry: 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+  - schema_registry: 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
 - Rust and TypeScript primitives must agree byte-for-byte. The
   cross_language_vectors CI job hard-gates this via tests/vectors/.
 - The on-chain verifier must owner-check global_tree, schema_tree_N,
@@ -70,6 +70,12 @@ wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
 
 # Anchor programs
+# `target/deploy/` is gitignored, so on a fresh checkout the program
+# keypairs must be hydrated from the tracked `keys/localnet/` copies
+# before `anchor build` (otherwise Anchor silently regenerates fresh
+# keypairs and the canonical program IDs drift). The script is
+# idempotent.
+bash scripts/sync_program_keypairs.sh
 anchor build
 
 # TS SDK workspace
@@ -80,6 +86,7 @@ End-to-end against localnet:
 
 ```
 solana-test-validator --reset &
+bash scripts/sync_program_keypairs.sh   # hydrate target/deploy from keys/localnet
 anchor deploy --provider.cluster localnet
 ts-node scripts/initialize.ts
 ts-node scripts/issue.ts
@@ -108,6 +115,21 @@ do this for you inside Nix.
 - snarkjs 0.7.5
 - wasm-pack 0.13.1
 - node 18 with npm 10+
+
+The rust pin is enforced two ways now:
+
+- Top-level rust-toolchain.toml. Cargo and rust-analyzer read this and
+  resolve to 1.79.0 inside the project root. Do not delete it; the
+  hidden `rustup override` it superseded was invisible to IDEs and
+  caused recurring proc-macro ABI mismatches (`expected: rustc 1.95.0,
+  got: rustc 1.79.0`) when contributors had a newer default toolchain.
+- .vscode/settings.json. Tells rust-analyzer to set
+  `RUSTUP_TOOLCHAIN=1.79.0` for both its cargo and proc-macro server,
+  and to write its own check artefacts to `target/rust-analyzer/` so
+  it does not race anchor build for `target/debug/deps/serde_derive.dylib`.
+  The file is kept under version control (gitignore carves out
+  `!.vscode/settings.json`) because the wiring is project-wide, not
+  personal.
 
 Recent cargo versions (1.95+) work for host tests but anchor build still
 wants the pinned rust-toolchain.
@@ -162,6 +184,47 @@ external-audit-ready close-out.
 - SOLID-SEC-012 multi-party trusted-setup ceremony to replace
   circuits/scripts/setup.js. Mainnet blocker.
 - External audit of the post-Phase-2 codebase.
+
+## Debugging discipline (learnings)
+
+These are not stylistic preferences; they are rules earned by paying
+for the same mistake more than once. Full origin stories and
+concrete examples live in plan/RESUME.md "Learnings (running log)".
+Read that section before starting a new debugging arc.
+
+- L1. Take a step back before tinkering. If a fix bounces ("change
+  X, then Y breaks, then Z breaks"), stop editing. The cascade is
+  the diagnostic: the change is operating below the level of the
+  actual defect. Find the one definition whose wrongness produces
+  the cascade and fix that.
+- L2. Programs and circuits are the source of truth; everything
+  else is a consumer. Hierarchy: programs/circuits > crates
+  (solid-core, solid-light) > WASM bridge + TS SDK > scripts. When
+  a script fights a contract, the script is wrong OR the contract
+  is wrong. Never "the script needs to be smarter about working
+  around the contract."
+- L3. If the contract is wrong, fix the contract. No workarounds,
+  no regressions. Encode invariants in the type system (Anchor
+  Account<T>, Account<Mint>, Signer, typed PDAs); free Pubkey or
+  [u8; 32] params are a smell. Atomicity beats convention -- birth
+  co-dependent accounts in the same accounts struct (#[account(
+  init, ...)]), not in two ix joined by a doc comment. Stale
+  on-chain state from a pre-fix build is NOT a reason to relax the
+  new contract; clean-validator-restart is.
+- L4. Add unit + integration tests + targeted msg! logs as part of
+  the fix, not after. The same commit that fixes the defect lands
+  the regression gate that stops it re-landing. A fix without a
+  regression gate has not shipped. Note the gate in
+  docs/E2E_BLOCKERS.md (or the relevant blocker doc) under
+  "Regression gate".
+- L5. Runtime address entropy is signal. "Access violation at
+  0xXXXX" with the address varying across runs = uninitialised /
+  corrupted pointer = fix upstream of the dereference (init,
+  writeback, lifetime). Stable address = fixed layout bug = read
+  the linker map.
+- L6. Doc lies are tomorrow's bugs. "Caller MUST do X" without
+  enforcement is one careless integration away from being
+  enforcement-by-nothing. Promote convention to type or guard.
 
 ## Working-style notes
 

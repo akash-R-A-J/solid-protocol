@@ -10,7 +10,14 @@ acceptance. Every item references `SOLID-SEC-NNN` in
   Part 1 + SEC-041 + SEC-044 all flipped Fixed; v0.6.1 audit
   dropped in, registering SEC-045 and SEC-046 as MEDIUM;
   canonical state-of-protocol snapshot at
-  `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`)
+  `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`).
+  Late-session addendum 2026-04-25: SOLID-SEC-007 partially
+  reopened on-chain as **SOLID-SEC-048** (BJJ prime-order subgroup
+  check exceeds the 1.4M CU per-tx ceiling on BPF; localnet/devnet
+  runs an interim feature-gated bypass; **mainnet deploy-blocker**;
+  promoted to Phase 4 P0 in `docs/FORWARD_ROADMAP.md` and P0-7 in
+  `docs/IMPROVEMENTS_ROADMAP.md`; tracked end-to-end in
+  `docs/E2E_BLOCKERS.md` B9 + O7 and in this plan's §1.16 below).
 - Next revision trigger: P0 close-out per v0.6.1 Section 6.1
   (SEC-045, SEC-046, SEC-010, integration suite 02..11, module
   split, devnet deploy)
@@ -45,6 +52,29 @@ mature, externally-audited mainnet at the end of Phase 3.
    surfaces any CRITICAL-equivalent finding, the mainnet date slips.
    Schedule mainnet against audit close-out plus one sprint, not
    against audit submission.
+
+> **Standing exception register.** The non-negotiables above
+> ADMIT NO EXCEPTIONS for production / mainnet artifacts.  They
+> permit one explicitly-named, time-boxed, infrastructure-gated
+> exception for development clusters only:
+>
+>   * **SOLID-SEC-048 (`sec007-skip-onchain` Cargo feature on
+>     issuer-registry, lit 2026-04-25).**  Violates rule (1) on
+>     localnet/devnet only -- the feature exists *because* the
+>     root-cause fix for the BPF CU exhaustion is multi-week
+>     (circuit constraint, SDK cofactor-clear, or `sol_babyjubjub_*`
+>     syscall) and `npm run e2e` cannot otherwise run.  The
+>     feature is opt-in (no default); mainnet builds MUST reject
+>     it via a CI gate (P0-7 deliverable in
+>     `docs/IMPROVEMENTS_ROADMAP.md`); a `Sec007Bypass` event is
+>     emitted on every triggering call and a production-cluster
+>     monitor MUST alert on observation.  Exception lifts on
+>     SOLID-SEC-048 close (real fix landed AND
+>     `tests/integration/register_issuer_compute_units.test.ts`
+>     green on a no-feature build).  Any further candidate
+>     exception goes through the same form: registered finding +
+>     CI mainnet-build rejection + on-chain telemetry +
+>     time-boxed close criteria.  See §1.16 and §6 row "SEC-048".
 
 ---
 
@@ -142,6 +172,73 @@ all-null deploy fields).
 - Multisig governance (SOLID-SEC-013).
 - Native mobile prover; W3C VC translation; recursive SNARKs;
   cross-chain anchoring.
+
+### 1.16 Active interim bypass -- SOLID-SEC-048 (BJJ subgroup BPF CU)
+
+**Status as of 2026-04-25 late-session:** lit on the working tree;
+mainnet deploy-blocker; promoted to Phase 4 P0 (top of list); no
+P1/P2 work in any phase advances against this until the real fix
+(or its regression-gate proxy) is in CI.
+
+**What is bypassed.**  `register_issuer` no longer calls
+`solid_core::babyjubjub::require_in_prime_order_subgroup` when the
+issuer-registry crate is built with the `sec007-skip-onchain`
+Cargo feature.  Localnet/devnet/CI builds enable it; mainnet
+builds MUST NOT.  The on-chain consolation gate is
+`is_on_curve(pk) && !is_identity(pk)`; this rejects off-curve
+garbage and the Edwards neutral element but DOES NOT reject
+cofactor-8 torsion points -- a custom caller that bypasses the
+off-chain SDK can still register a compromised key.
+
+**Where the soundness now lives.**  The off-chain TS predicate
+`isInPrimeOrderSubgroup` in `ts-sdk/packages/core/src/index.ts`
+is the load-bearing SEC-007 gate while SOLID-SEC-048 is open.
+Every off-chain `register_issuer` caller MUST run it pre-submit;
+`scripts/bootstrap_issuer.ts` does so.  Any third-party SDK or
+custom caller that skips this predicate produces an unsound
+issuer registration.
+
+**Telemetry.**  The bypass arm emits `msg!("SEC-048: ...")` plus a
+structured `Sec007Bypass { issuer_authority, slot }` event on
+every call.  Operator obligation: any mainnet observation of this
+event is a deployment incident (mis-built binary on a production
+cluster) and triggers immediate rollback.
+
+**Real-fix candidates (must pick one before mainnet).**
+1. **SDK cofactor-clear.**  Multiply by 8 in the issuer SDK before
+   submission; on-chain stays at the consolation gate.  Cheapest;
+   trusts the off-chain caller.
+2. **In-circuit subgroup binding.**  Add the prime-order constraint
+   to the issuance circuit (~30K extra constraints, one EdDSA-style
+   scalar mul).  Strongest soundness; batches with SOLID-SEC-006
+   Part 2 trusted-setup cycle.
+3. **`sol_babyjubjub_*` syscall upstream.**  Multi-quarter timeline.
+
+**Regression gate that closes SOLID-SEC-048.**
+`tests/integration/register_issuer_compute_units.test.ts` (P0-7
+deliverable; not yet authored).  Lands `register_issuer` on a
+real validator at the default 200K CU budget; against the
+no-feature build it MUST keep failing with
+`exceeded CUs meter at BPF instruction` until the real fix lands.
+The day that test passes against a no-feature build, SOLID-SEC-048
+flips Fixed.
+
+**Cross-references (canonical, do not duplicate elsewhere):**
+sec/SECURITY_REGISTRY.md -> SOLID-SEC-048;
+docs/E2E_BLOCKERS.md -> B9 (live), O7 (close-out);
+docs/IMPROVEMENTS_ROADMAP.md -> P0-7;
+docs/FORWARD_ROADMAP.md -> Phase 4 P0 first item;
+plan/RESUME.md -> "Open / Fixed punch-list" + reopened SEC-007
+section;
+crates/solid-core/src/babyjubjub.rs -> `is_on_curve`,
+`is_identity` (consolation gate);
+programs/issuer-registry/src/lib.rs -> feature-gated arm +
+`Sec007Bypass` event;
+programs/issuer-registry/Cargo.toml -> `sec007-skip-onchain`
+feature with NOT-FOR-MAINNET banner;
+ts-sdk/packages/core/src/index.ts -> `isInPrimeOrderSubgroup`;
+scripts/bootstrap_issuer.ts -> off-chain pre-submit gate +
+adjusted CU cap.
 
 ---
 
@@ -626,6 +723,9 @@ All simultaneously true:
 | `verifier_throughput_300_concurrent`                              | 3     | 018 |
 | `mainnet_artifact_hash_pin_check`                                 | 3     | new |
 | `staged_outage_alerting`                                          | 3     | new |
+| `register_issuer_compute_units` (no-feature build hits CU ceiling; bypass build emits `Sec007Bypass`) | 4 (P0-7) | 048 |
+| `mainnet_build_rejects_sec007_skip_onchain_feature` (CI gate)     | 4 (P0-7) | 048 |
+| `mainnet_monitor_alerts_on_sec007bypass_event`                    | 4 (P0-7) | 048 |
 
 ---
 

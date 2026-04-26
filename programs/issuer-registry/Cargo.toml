@@ -13,7 +13,28 @@ no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
 cpi = ["no-entrypoint"]
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+# SEC-048 / SOLID-SEC-007 escape hatch (NOT FOR MAINNET).
+#
+# When this feature is enabled, `register_issuer` skips the
+# `solid_core::babyjubjub::require_in_prime_order_subgroup` check and
+# emits a `Sec007BypassActive` log + event so off-chain monitors can
+# alert.  The check is currently un-affordable on BPF: the cofactor-8
+# `r * P == O` scalar mul through arkworks costs > 1.4M CU (the
+# per-tx ceiling), so a build with the on-chain check enforced cannot
+# land `register_issuer` at all.  Localnet/devnet/CI builds enable
+# this feature so `npm run e2e` can complete; mainnet builds MUST NOT
+# set it -- the `check_program_ids.py` invariant test plus the
+# release-build script reject this feature on mainnet targets.
+#
+# The off-chain TS predicate `isInPrimeOrderSubgroup` in
+# `ts-sdk/packages/core/src/index.ts` becomes the load-bearing gate
+# while this feature is active; every off-chain `register_issuer`
+# caller MUST run it pre-submit.
+#
+# Tracking: docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048,
+#          docs/IMPROVEMENTS_ROADMAP.md (P0).
+sec007-skip-onchain = []
 
 [dependencies]
 anchor-lang = { workspace = true, features = ["init-if-needed"] }

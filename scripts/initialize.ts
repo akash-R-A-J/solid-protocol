@@ -20,11 +20,12 @@
 import { Connection, Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
 import * as crypto from 'crypto';
-import { initWasm, poseidonHashBytes, PROGRAM_IDS } from '@solid-protocol/core';
+import { createMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { initWasm, poseidonHash, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { stateFilePath, writeState } from './lib/e2e_state';
+import { readStateOrNull, stateFilePath, writeState } from './lib/e2e_state';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -118,24 +119,83 @@ async function main() {
   await initWasm();
 
   // 1. Initialize issuer registry.
+  //
+  // Contract (post 2026-04-26 redesign — see programs/issuer-registry/src/lib.rs
+  // and docs/E2E_BLOCKERS.md B10):
+  //
+  //   `initialize_registry` requires a typed SPL `Mint` account
+  //   (`governance_mint`) and atomically births the singleton governance
+  //   vault TokenAccount under the PDA `["governance-vault", registry_config]`.
+  //   The previous shape — a free `governance_token_mint: Pubkey` parameter
+  //   with no validation — let scripts pass `Pubkey::default()`, which then
+  //   poisoned every downstream guard that compared a vault's mint against
+  //   `registry.governance_token_mint`.  That bug is fixed at the contract
+  //   layer; this script must respect the new contract.
+  //
+  // Mint resolution order:
+  //   1. `SOLID_GOVERNANCE_MINT` env override (operator opt-in).
+  //   2. Cached `state.governanceMint` from a prior run.
+  //   3. Fresh SPL mint created here (decimals=6, mint authority = wallet).
+  //
+  // The chosen mint is persisted to the E2E state file so downstream
+  // scripts (bootstrap_issuer, etc.) can pick it up without re-creating.
   console.log('\n[1/6] initialize_registry');
   const [registryPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('registry-config')],
     PROGRAM_PUBKEYS.issuerRegistry,
   );
-  const governanceMint = process.env.SOLID_GOVERNANCE_MINT
-    ? new PublicKey(process.env.SOLID_GOVERNANCE_MINT)
-    : PublicKey.default;
+  const [governanceVaultPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('governance-vault'), registryPda.toBuffer()],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+
+  const existingState = readStateOrNull() ?? {};
+  let governanceMint: PublicKey;
+  if (process.env.SOLID_GOVERNANCE_MINT) {
+    governanceMint = new PublicKey(process.env.SOLID_GOVERNANCE_MINT);
+    console.log(`   mint (env override) ${governanceMint.toBase58()}`);
+  } else if (existingState.governanceMint) {
+    governanceMint = new PublicKey(existingState.governanceMint);
+    console.log(`   mint (cached state) ${governanceMint.toBase58()}`);
+  } else {
+    governanceMint = await createMint(
+      connection,
+      wallet,
+      wallet.publicKey,
+      null,
+      6,
+    );
+    console.log(`   mint (fresh)        ${governanceMint.toBase58()}`);
+  }
+
+  // The voting period is the same parameter `bootstrap_issuer.ts` reads
+  // from `SOLID_VOTING_PERIOD_SECONDS` (default 20s).  Keeping these two
+  // entry points aligned is a hard E2E invariant: `initialize_registry`
+  // runs first and writes the period to the registry; `bootstrap-issuer`
+  // is then idempotent (its own `initialize_registry` becomes a no-op).
+  // If the two ever disagree, finalize_voting fails with
+  // VotingPeriodNotEnded after a real-time wait that is bounded by the
+  // *first* writer.  86400s (1 day) is a production default; localnet
+  // E2E always overrides via env (see scripts/init.sh / npm run e2e).
+  const initVotingPeriodSeconds = Number(
+    process.env.SOLID_VOTING_PERIOD_SECONDS ?? '86400',
+  );
+  const initMinStakeLamports = new anchor.BN(
+    process.env.SOLID_MIN_STAKE_LAMPORTS ?? '1000000000',
+  );
   try {
     await issuerProgram.methods.initializeRegistry(
-      governanceMint,
-      new anchor.BN(1_000_000_000),
-      new anchor.BN(86400),
+      initMinStakeLamports,
+      new anchor.BN(initVotingPeriodSeconds),
       new anchor.BN(6000),
     ).accounts({
       registryConfig: registryPda,
+      governanceMint,
+      governanceVault: governanceVaultPda,
       authority: wallet.publicKey,
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
     }).rpc();
     console.log('   ok (initialised)');
   } catch (e: any) {
@@ -143,17 +203,44 @@ async function main() {
     console.log('   ok (already active)');
   }
 
-  // 2. Register schema.
-  console.log('\n[2/6] register_schema');
-  const metadataBytes = Buffer.from(SCHEMA_FIELDS.join(','));
-  const chunkCount = Math.ceil(metadataBytes.length / 32);
-  const schemaChunks: Uint8Array[] = [];
-  for (let i = 0; i < chunkCount; i++) {
-    const chunk = new Uint8Array(32);
-    chunk.set(metadataBytes.subarray(i * 32, (i + 1) * 32));
-    schemaChunks.push(chunk);
+  // Reconcile against on-chain truth: the program is the source of truth.
+  // If the registry already existed and was bound to a different mint,
+  // adopt the on-chain value (a corrupt `Pubkey::default()` is no longer
+  // representable under the new contract — `initialize_registry` would
+  // have failed at deserialise — but we still defensively check).
+  const onChainConfig = await issuerProgram.account.registryConfig.fetch(registryPda);
+  const onChainMint = onChainConfig.governanceTokenMint as PublicKey;
+  if (!onChainMint.equals(governanceMint)) {
+    console.log(`   reconciling: local ${governanceMint.toBase58()} -> on-chain ${onChainMint.toBase58()}`);
+    governanceMint = onChainMint;
   }
-  const schemaHash = poseidonHashBytes(schemaChunks);
+  existingState.governanceMint = governanceMint.toBase58();
+  writeState(existingState);
+
+  // 2. Register schema.
+  //
+  // The schema_hash MUST be computed by the canonical formula in
+  // `solid_core::schema::compute_schema_hash_from_parts(name, version,
+  // field_count)` so the on-chain `register_schema` integrity check at
+  // programs/schema-registry/src/lib.rs:119-122 passes. The preimage is
+  //   [name_le_u64_chunks..., version_u64, field_count_u64]
+  // truncated to ≤16 inputs (Poseidon arity cap is 12, but the Rust
+  // helper carries a 16-cap that we mirror for safety), then hashed via
+  // `poseidon::hash_fields_to_bytes` (= `poseidonHash` in the WASM
+  // bridge). Cross-language vector coverage tracked in
+  // SOLID-SEC-010.
+  console.log('\n[2/6] register_schema');
+  const schemaHashInputs: bigint[] = [];
+  const nameBytes = Buffer.from(SCHEMA_NAME, 'utf-8');
+  for (let i = 0; i < nameBytes.length; i += 8) {
+    const buf = Buffer.alloc(8);
+    nameBytes.subarray(i, i + 8).copy(buf);
+    schemaHashInputs.push(buf.readBigUInt64LE(0));
+  }
+  schemaHashInputs.push(BigInt(SCHEMA_VERSION));
+  schemaHashInputs.push(BigInt(SCHEMA_FIELDS.length));
+  if (schemaHashInputs.length > 16) schemaHashInputs.length = 16;
+  const schemaHash = poseidonHash(schemaHashInputs);
   console.log(`   schema_hash: ${Buffer.from(schemaHash).toString('hex')}`);
   const [schemaPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('schema'), Buffer.from(SCHEMA_NAME), Buffer.from([SCHEMA_VERSION])],
@@ -352,9 +439,14 @@ async function main() {
   const totalChunks = Math.ceil(vkBytes.length / CHUNK_SIZE);
   for (let i = 0; i < totalChunks; i++) {
     const chunk = vkBytes.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+    // Anchor 0.30 IDL declares `chunk_data` as the `bytes` type, which
+    // the BorshInstructionCoder encodes via `byteVec` and expects a
+    // `Buffer` (not `number[]`).  Passing `Array.from(chunk)` triggers
+    // `Blob.encode[data] requires (length N) Buffer as src` — the
+    // diagnostic is misleading but the root cause is just the type.
     await zkProgram.methods.storeVerificationKey(
       i,
-      Array.from(chunk),
+      Buffer.from(chunk),
       i === totalChunks - 1,
     ).accounts({
       verifierConfig: verifierConfigPda,
@@ -370,11 +462,14 @@ async function main() {
   // `$XDG_RUNTIME_DIR` / `$TMPDIR` with mode 0600 (SOLID-SEC-020);
   // never under the repo working tree.
   const state = {
+    ...(readStateOrNull() ?? {}),
     schemaName: SCHEMA_NAME,
     schemaVersion: SCHEMA_VERSION,
     schemaHash: Buffer.from(schemaHash).toString('hex'),
     schemaPda: schemaPda.toBase58(),
     registryPda: registryPda.toBase58(),
+    governanceMint: governanceMint.toBase58(),
+    governanceVaultPda: governanceVaultPda.toBase58(),
     schemaTreeBindingPda: bindingPda.toBase58(),
     globalBindingPda: globalBindingPda.toBase58(),
     issuerTreeBindingPda: issuerTreeBindingPda.toBase58(),

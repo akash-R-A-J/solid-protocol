@@ -13,8 +13,16 @@
 // path exactly as a downstream consumer would see them.
 
 import { strict as assert } from 'node:assert';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
-const core = await import('./dist/index.js');
+// Resolve `@solid-protocol/core`'s built entry point relative to this script
+// file, not the caller's CWD.  The compiled bundle and its sibling `wasm/`
+// directory live under `ts-sdk/packages/core/`, exactly where downstream
+// consumers see them via the workspace symlink.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const corePath = resolve(__dirname, '../ts-sdk/packages/core/dist/index.js');
+const core = await import(corePath);
 
 await core.initWasm();
 

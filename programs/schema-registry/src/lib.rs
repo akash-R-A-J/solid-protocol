@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::system_instruction;
 
-declare_id!("DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT");
+declare_id!("4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1");
 
 // ─── Byte-level binding layouts ────────────────────────────────────────────
 //

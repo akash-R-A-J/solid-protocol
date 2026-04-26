@@ -272,9 +272,9 @@ Expected output ends with three `Program Id:` lines matching the
 canonical IDs pinned in `Anchor.toml`:
 
 ```
-zk_verifier:       BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2
-issuer_registry:   CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR
-schema_registry:   DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
+zk_verifier:       DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
+issuer_registry:   5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+schema_registry:   4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
 ```
 
 Mismatch means one of `Anchor.toml`, `declare_id!`, or the freshly
@@ -462,7 +462,7 @@ incremented:
 # Derive the VerifierConfig PDA.
 VERIFIER_CONFIG=$(solana address \
   --seed 'verifier-config' \
-  --owner BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2 2>/dev/null)
+  --owner DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb 2>/dev/null)
 
 # Dump its data.
 solana account "$VERIFIER_CONFIG" --output json | jq .account.data
@@ -735,9 +735,9 @@ tail -f /tmp/validator.log
 Per-program program logs after a tx:
 
 ```bash
-solana logs BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2 --url localhost
-solana logs CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR --url localhost
-solana logs DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT --url localhost
+solana logs DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb --url localhost
+solana logs 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx --url localhost
+solana logs 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1 --url localhost
 ```
 
 ---

@@ -7,14 +7,14 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-zk_verifier = "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
-issuer_registry = "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
-schema_registry = "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
+zk_verifier = "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+issuer_registry = "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
+schema_registry = "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
 
 [programs.devnet]
-zk_verifier = "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
-issuer_registry = "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
-schema_registry = "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
+zk_verifier = "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+issuer_registry = "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
+schema_registry = "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
 
 [registry]
 url = "https://api.apr.dev"

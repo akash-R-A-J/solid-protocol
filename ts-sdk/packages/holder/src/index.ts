@@ -22,7 +22,7 @@ import {
   computeIdentityState,
   computeIssuerLeaf,
   deriveCredentialKey,
-  poseidonHashBytes,
+  poseidonHash,
   type BJJKeypair,
   type CompoundQuery,
   type MultiCredentialQuery,
@@ -677,7 +677,11 @@ function computeQueryContextHash(query: CompoundQuery): Uint8Array {
   inputs.push(BigInt(query.compoundLogic === 'AND' ? 0 : 1));
   inputs.push(BigInt(query.expirationTimestamp ?? 0));
 
-  return poseidonHashBytes(inputs);
+  // `inputs` is `bigint[]` (field elements), so use `poseidonHash` (field-typed)
+  // instead of `poseidonHashBytes` (which expects `Uint8Array[]`). Both ultimately
+  // converge to the same Poseidon BN254 permutation; the two entry points exist
+  // only to give callers a stable type contract.
+  return poseidonHash(inputs);
 }
 
 function bytesToBigInt(buf: Uint8Array): bigint {

@@ -12,7 +12,7 @@ Three Anchor programs, strict separation of concerns.
 
 ### zk-verifier
 
-Program ID: BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2
+Program ID: DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
 
 Owns Groth16 verification and replay protection. Does not touch governance or
 issuance. Does not know or care which storage backend produced the Merkle
@@ -50,7 +50,7 @@ Invariants:
 
 ### issuer-registry
 
-Program ID: CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR
+Program ID: 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
 
 DAO-governed issuer registry plus the on-chain entry point for credential
 issuance into SPL AC.
@@ -85,7 +85,7 @@ Issuance:
 
 ### schema-registry
 
-Program ID: DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
+Program ID: 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
 
 Registers schemas and manages the byte-level binding PDAs the zk-verifier
 consumes.

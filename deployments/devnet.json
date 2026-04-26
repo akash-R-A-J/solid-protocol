@@ -9,21 +9,21 @@
   },
   "programs": {
     "schema_registry": {
-      "program_id": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT",
+      "program_id": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1",
       "upgrade_authority": null,
       "idl_metadata": null,
       "binary": "target/deploy/schema_registry.so",
       "description": "On-chain credential schema registry plus SchemaTreeBinding and GlobalStateBinding PDAs"
     },
     "zk_verifier": {
-      "program_id": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2",
+      "program_id": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
       "upgrade_authority": null,
       "idl_metadata": null,
       "binary": "target/deploy/zk_verifier.so",
       "description": "Groth16 batch verifier with PDA-per-nullifier replay protection"
     },
     "issuer_registry": {
-      "program_id": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR",
+      "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
       "upgrade_authority": null,
       "idl_metadata": null,
       "binary": "target/deploy/issuer_registry.so",
@@ -33,32 +33,32 @@
   "pdas": {
     "verifier_config": {
       "seeds": ["verifier-config"],
-      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
     },
     "vk_storage": {
       "seeds": ["vk-storage", "<verifier_config_pubkey>"],
-      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2"
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
     },
     "nullifier_record_example": {
       "seeds": ["null", "<nullifier_bytes>"],
-      "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2",
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
       "note": "One PDA per proof, created atomically by verify_batch_proof; replaces the v0.1 nullifier_bloom design"
     },
     "registry_config": {
       "seeds": ["registry-config"],
-      "program": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
+      "program": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
     },
     "dao_treasury": {
       "seeds": ["dao-treasury"],
-      "program": "CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR"
+      "program": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
     },
     "global_binding": {
       "seeds": ["global-binding"],
-      "program": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
+      "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
     },
     "schema_tree_binding_example": {
       "seeds": ["schema-tree-binding", "<schema_hash>"],
-      "program": "DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT"
+      "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
     }
   },
   "toolchain": {

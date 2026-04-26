@@ -467,7 +467,7 @@ Padding slots trivially pass because expirationTimestamp is forced to 0 by the i
 
 ### 4.1 zk-verifier
 
-**Program ID:** BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2
+**Program ID:** DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
 
 **What it is:** The on-chain Groth16 verifier. Accepts a proof and public inputs, runs
 alt_bn128 pairing check, and atomically registers the nullifier to prevent replay.
@@ -552,7 +552,7 @@ bump: u8   (existence == proof was verified; init on first verify = replay guard
 
 ### 4.2 issuer-registry
 
-**Program ID:** CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR
+**Program ID:** 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
 
 **What it is:** DAO-governed registry of approved credential issuers. Controls who may
 call issue_credential. Implements token-weighted voting, staking, slashing, and trust-anchor
@@ -674,7 +674,7 @@ voter: Pubkey, amount_staked: u64, active_votes_count: u8, last_stake_slot: u64
 
 ### 4.3 schema-registry
 
-**Program ID:** DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
+**Program ID:** 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
 
 **What it is:** Registry of credential schemas and their SPL AC Merkle tree bindings.
 Maintains the on-chain root state that the ZK verifier reads.
@@ -870,8 +870,7 @@ via the relative runtime import `../wasm/solid_wasm.js`. There is no
 | JS name | Rust fn | What it does |
 |---------|---------|-------------|
 | `poseidonHash(fields: BigUint64Array)` | poseidon_hash | Hash u64 field values. Returns 32-byte LE. |
-| `poseidonHashBytes(inputs: Uint8Array)` | poseidon_hash_bytes | Hash 32-byte LE chunks. |
-| `poseidonHashShared(len: number)` | poseidon_hash_shared | Hash from zero-copy shared buffer. |
+| `poseidonHashBytes(inputs: Uint8Array)` | poseidon_hash_bytes | Hash 32-byte LE chunks (concatenated flat buffer, length must be multiple of 32). |
 | `generateBJJKeypair()` | generate_bjj_keypair | Returns {privateKey, publicKeyX, publicKeyY} as Uint8Arrays. |
 | `signMessage(priv, msg: Uint8Array)` | sign_message | EdDSA-Poseidon sign. Returns {r8x, r8y, s}. |
 | `verifySignature(pkx, pky, msg, r8x, r8y, s)` | verify_signature | Returns boolean. |
@@ -882,8 +881,6 @@ via the relative runtime import `../wasm/solid_wasm.js`. There is no
 | `deriveKey(masterKey, context)` | derive_key | Poseidon(master, context). Returns 32-byte scalar. |
 | `deriveCredentialKey(masterKey, schemaHash)` | derive_credential_key | Returns {privateKey, publicKeyX, publicKeyY}. |
 | `computeIdentityState(pkX, pkY, revocNonce)` | compute_identity_state | Poseidon(pkX, pkY, nonce). Returns 32-byte. |
-| `getSharedBufferPointer()` | get_shared_buffer_pointer | For zero-copy bulk hashing. |
-| `resizeSharedBuffer(newSize)` | resize_shared_buffer | Resize the shared memory buffer. |
 
 **All inputs/outputs are `Uint8Array` (32 bytes LE) for field elements.**
 **All u64 values are passed as `BigInt` in JS.**

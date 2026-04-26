@@ -11,9 +11,9 @@
 
 | Program            | Program ID                                       |
 |--------------------|--------------------------------------------------|
-| `zk_verifier`      | `BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2`   |
-| `issuer_registry`  | `CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR`   |
-| `schema_registry`  | `DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT`   |
+| `zk_verifier`      | `DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb`   |
+| `issuer_registry`  | `5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx`   |
+| `schema_registry`  | `4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1`   |
 
 These match the `declare_id!()` macros in each `programs/<name>/src/lib.rs`,
 match what the circuits and the TS SDK assume, and are locked to cluster
@@ -65,9 +65,9 @@ to be reconstructed locally from the keys `Anchor.toml` declares.
 # Abort if the keypairs on disk don't match Anchor.toml.
 anchor keys list
 # Expected lines:
-#   zk_verifier:     BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2
-#   issuer_registry: CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR
-#   schema_registry: DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT
+#   zk_verifier:     DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
+#   issuer_registry: 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+#   schema_registry: 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
 ```
 
 If any ID differs, the keypair on disk is wrong. Restore the canonical

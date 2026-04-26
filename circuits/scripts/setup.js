@@ -31,7 +31,12 @@ const SETUP_DIR = path.join(__dirname, '..', 'trusted_setup');
 /// Circuit identity -- keep in one place. If you add another circuit,
 /// parametrise this script rather than forking it.
 const CIRCUIT_NAME = 'batch_credential_query';
-const PTAU_POWER = 17; // 2^17 = 131072 constraints; batch circuit uses ~60K.
+// 2^17 = 131,072 constraints; batch_credential_query currently
+// reports 86,616 non-linear constraints (snarkjs r1cs info, 2026-04-25),
+// leaving ~34% headroom. If you add predicates / fields / creds and
+// the constraint count crosses ~110K, bump to PTAU_POWER = 18 and
+// re-run the trusted setup ceremony.
+const PTAU_POWER = 17;
 
 /// Canonical contribution entropy.
 ///

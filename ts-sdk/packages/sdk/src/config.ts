@@ -38,9 +38,9 @@ export const SOLID_CONFIG = {
   // Canonical program IDs (MUST match Anchor.toml).  `scripts/check_program_ids.py`
   // fails CI on drift.
   PROGRAM_IDS: {
-    ZK_VERIFIER: 'BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2',
-    ISSUER_REGISTRY: 'CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR',
-    SCHEMA_REGISTRY: 'DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT',
+    ZK_VERIFIER: 'DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb',
+    ISSUER_REGISTRY: '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
+    SCHEMA_REGISTRY: '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
   },
 
   // Circuit Settings

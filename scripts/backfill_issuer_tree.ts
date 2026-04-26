@@ -44,6 +44,16 @@ import {
   deriveIssuerTreeAuthority,
   deriveIssuerTreeBinding,
 } from '@solid-protocol/light';
+// SPL AC SDK 0.2.1 — used here to (a) compute the canonical account size
+// (`getConcurrentMerkleTreeAccountSize`), and (b) build the `transfer_authority`
+// instruction so we don't hand-roll discriminators.  `createInitEmptyMerkleTreeIx`
+// can't be used directly because it marks the authority as a signer and we
+// need a temporary wallet-as-authority init followed by a PDA hand-off
+// (see comment block at "init_empty_merkle_tree" below).
+import {
+  getConcurrentMerkleTreeAccountSize,
+  createTransferAuthorityIx,
+} from '@solana/spl-account-compression';
 import { initWasm, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -137,8 +147,10 @@ async function main() {
   const issuerIdl = loadIdl('issuerRegistry');
   const issuerProgram = new anchor.Program(issuerIdl, provider);
 
-  const [bindingPda] = deriveIssuerTreeBinding();
-  const [treeAuthorityPda] = deriveIssuerTreeAuthority();
+  // `derive*` returns `{ pda, bump }` (NOT a tuple).  Tracked under the
+  // SDK return-shape consistency note in SESSION_LOG_2026-04-25.
+  const { pda: bindingPda } = deriveIssuerTreeBinding();
+  const { pda: treeAuthorityPda } = deriveIssuerTreeAuthority();
   console.log(`Binding PDA:        ${bindingPda.toBase58()}`);
   console.log(`TreeAuthority PDA:  ${treeAuthorityPda.toBase58()}`);
 
@@ -160,7 +172,12 @@ async function main() {
   } else {
     console.log('\n[1/4] Creating SPL AC tree account');
     treeKeypair = Keypair.generate();
-    const size = concurrentMerkleTreeAccountSize(
+    // Use the SDK's canonical size; our prior hand-rolled
+    // `concurrentMerkleTreeAccountSize` returned 35472b for (16,64,0)
+    // but the deployed mainnet SPL AC expects 35960b and panicked
+    // (`assertion failed: mid <= self.len()` at lib.rs:186) on init.
+    // 2026-04-25 -- mismatch was 488b in the V1 header layout.
+    const size = getConcurrentMerkleTreeAccountSize(
       ISSUER_TREE_DEPTH,
       ISSUER_TREE_BUFFER,
       ISSUER_TREE_CANOPY,
@@ -182,19 +199,43 @@ async function main() {
   }
 
   // ─── 2. SPL AC init_empty_merkle_tree ──────────────────────────────
-  // Discriminator for `init_empty_merkle_tree`: sha256("global:init_empty_merkle_tree")[..8]
-  // = [191, 26, 167, 158, 149, 82, 224, 161]
-  console.log('\n[2/4] spl_account_compression::init_empty_merkle_tree');
-  const initEmptyDisc = Buffer.from([191, 26, 167, 158, 149, 82, 224, 161]);
+  //
+  // SPL AC's `init_empty_merkle_tree` accounts (program v0.4+):
+  //   [0] merkle_tree     (writable)
+  //   [1] authority       (signer)            <-- becomes tree authority
+  //   [2] noop            (program)
+  //
+  // Our protocol needs the issuer-registry's `tree_authority_pda` to be
+  // the on-chain authority (because `append_issuer_leaf` /
+  // `revoke_issuer_atomic` invoke_signed CPI as that PDA).  But a PDA
+  // can't sign `init_empty_merkle_tree` directly here; only an in-program
+  // `invoke_signed` can do that, and the issuer-registry currently
+  // exposes no `initialize_issuer_tree` wrapper (gap noted below).
+  //
+  // Two workable paths:
+  //   (a) Add an `initialize_issuer_tree` instruction to issuer-registry
+  //       that CPIs SPL AC under the PDA seeds.  Architecturally the
+  //       cleanest, but requires a program change + redeploy.
+  //   (b) Init with `wallet` as the temp authority, then call SPL AC's
+  //       `transfer_authority` to hand off to the PDA.  No program
+  //       change; one extra tx.
+  //
+  // We pick (b) here for the e2e because it requires no program
+  // changes.  The trade-off: one tx-window where the tree authority
+  // is the operator wallet, immediately closed by `transfer_authority`.
+  // Long-term, `initialize_issuer_tree` (option a) is the correct fix
+  // and is tracked in SESSION_LOG_2026-04-25 §"Future work".
+  console.log('\n[2a/4] spl_account_compression::init_empty_merkle_tree');
+  const INIT_EMPTY_DISC = Buffer.from([191, 11, 119, 7, 180, 107, 220, 110]);
+  const TRANSFER_AUTH_DISC = Buffer.from([48, 169, 76, 72, 229, 180, 55, 161]);
   const initEmptyData = Buffer.alloc(8 + 4 + 4);
-  initEmptyDisc.copy(initEmptyData, 0);
+  INIT_EMPTY_DISC.copy(initEmptyData, 0);
   initEmptyData.writeUInt32LE(ISSUER_TREE_DEPTH, 8);
   initEmptyData.writeUInt32LE(ISSUER_TREE_BUFFER, 12);
   const initEmptyIx = new anchor.web3.TransactionInstruction({
     programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
     keys: [
       { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
-      { pubkey: treeAuthorityPda, isSigner: false, isWritable: false },
       { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
       { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
     ],
@@ -209,6 +250,40 @@ async function main() {
     const m = String(e?.message ?? e);
     if (m.includes('already in use') || m.includes('already initialized')) {
       console.log('   ok (already initialised)');
+    } else {
+      throw e;
+    }
+  }
+
+  // ─── 2b. SPL AC transfer_authority -> issuer-registry PDA ──────────
+  //
+  // SPL AC `transfer_authority` accounts:
+  //   [0] merkle_tree          (writable)
+  //   [1] authority            (signer, current authority)
+  //   [2] new_authority        (readonly, no-sign)
+  // Data: discriminator(8) | new_authority(32)
+  console.log('\n[2b/4] spl_account_compression::transfer_authority -> tree_authority_pda');
+  const transferData = Buffer.concat([TRANSFER_AUTH_DISC, treeAuthorityPda.toBuffer()]);
+  const transferIx = new anchor.web3.TransactionInstruction({
+    programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+    keys: [
+      { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
+      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+    ],
+    data: transferData,
+  });
+  try {
+    await anchor.web3.sendAndConfirmTransaction(
+      connection, new Transaction().add(transferIx), [wallet],
+    );
+    console.log('   ok');
+  } catch (e: any) {
+    // If we already transferred (re-run), the wallet is no longer
+    // authority and SPL AC will reject this with a "wrong authority"
+    // signal -- treat as idempotent success.
+    const m = String(e?.message ?? e);
+    if (m.includes('IncorrectAuthority') || m.includes('already')) {
+      console.log('   ok (already transferred)');
     } else {
       throw e;
     }
@@ -235,7 +310,17 @@ async function main() {
   // ─── 4. Enroll existing approved issuers ─────────────────────────
   console.log('\n[4/4] enrolling approved issuers');
   const approved: any[] = [];
-  const all = await (issuerProgram.account as any).issuerAccount.all();
+  // `scripts/build_idls.mjs` denamespaces account names so Anchor's TS
+  // client exposes them under their unqualified camelCased form (e.g.
+  // `issuerAccount` rather than `issuerRegistry::issuerAccount`).
+  // See plan/SESSION_LOG_2026-04-25_PART2.md for the historical context.
+  const issuerNs = (issuerProgram.account as any).issuerAccount;
+  if (!issuerNs) {
+    throw new Error(
+      `Could not find IssuerAccount in IDL namespace. Available: ${Object.keys(issuerProgram.account).join(', ')}`,
+    );
+  }
+  const all = await issuerNs.all();
   for (const entry of all) {
     const acc = entry.account;
     const status = acc.status && typeof acc.status === 'object'
@@ -280,7 +365,7 @@ async function main() {
       issuerTreeBinding: bindingPda,
       authority: wallet.publicKey,
     }).rpc();
-    console.log(`   enrolled ${pda.toBase58()} -> leaf_index ${(await (issuerProgram.account as any).issuerAccount.fetch(pda)).issuerTreeLeafIndex}`);
+    console.log(`   enrolled ${pda.toBase58()} -> leaf_index ${(await issuerNs.fetch(pda)).issuerTreeLeafIndex}`);
   }
 
   // ─── Persist state ────────────────────────────────────────────────

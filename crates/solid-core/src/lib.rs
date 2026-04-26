@@ -18,18 +18,32 @@ pub const NUM_FIELDS: usize = 8;
 pub const TREE_DEPTH: usize = 20;
 
 pub mod babyjubjub;
-pub mod commitment;
-pub mod credential;
 pub mod error;
 pub mod identity;
-pub mod multi_cred;
 pub mod nullifier;
 pub mod poseidon;
 pub mod query;
 pub mod sas;
 pub mod schema;
 
+// ─── Host-only modules ─────────────────────────────────────────────────────
+//
+// These modules pull host-only crypto (`serde_json`, `rand`, `aes-gcm`,
+// `argon2`) and/or call the host-only field-element Poseidon path
+// (`poseidon::hash_fr` / `hash_fields`) and the host-only EdDSA primitives
+// (`babyjubjub::sign` / `verify`).  They are never reached from on-chain
+// code (issuer-registry / schema-registry / zk-verifier) and therefore are
+// excluded from the BPF compilation unit.  See `babyjubjub.rs` and
+// `poseidon.rs` for the rationale and the on-chain reachability map.
+#[cfg(not(target_os = "solana"))]
+pub mod commitment;
+#[cfg(not(target_os = "solana"))]
+pub mod credential;
+#[cfg(not(target_os = "solana"))]
+pub mod multi_cred;
+
 pub use babyjubjub::{BJJKeypair, BJJPublicKey, EdDSASignature};
+#[cfg(not(target_os = "solana"))]
 pub use credential::{Credential, CredentialBuilder};
 pub use error::{Result, SolidError};
 pub use query::{

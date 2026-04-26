@@ -14,7 +14,7 @@ use solid_light::cpi_helpers::{
 // Borsh layout -- no hand-parsing, no drift.
 use schema_registry::SchemaAccount;
 
-declare_id!("CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR");
+declare_id!("5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx");
 
 // ─── SPL Account Compression integration (R-2) ─────────────────────────────
 //
@@ -121,13 +121,65 @@ pub mod issuer_registry {
     use super::*;
 
     /// Initialize the DAO registry with governance parameters.
+    ///
+    /// Contract (2026-04-26 redesign — see docs/E2E_BLOCKERS.md B10):
+    ///
+    /// Inputs:
+    ///   - `min_stake` (u64, lamports): minimum SOL stake for issuer
+    ///     registration.  Validated by `register_issuer` against the
+    ///     issuer's tier multiplier.
+    ///   - `voting_period` (i64, seconds): per-proposal voting window.
+    ///     MUST be `> 0`; a zero or negative period would let proposals
+    ///     finalise instantly with whatever quorum happened to exist at
+    ///     submission, which is not a "vote".
+    ///   - `approval_threshold` (u64, basis points): fraction of YES weight
+    ///     required to approve.  MUST be `<= 10_000` (100.00%).
+    ///
+    /// Accounts:
+    ///   - `governance_mint` (Mint): the SPL mint whose holders are the
+    ///     governance constituency.  We take a typed `Account<Mint>` here
+    ///     instead of a raw `Pubkey` parameter so that Anchor's deserializer
+    ///     enforces "this is a real, live SPL Mint, owned by the SPL Token
+    ///     program" at the boundary.  Previously this was a free `Pubkey`
+    ///     parameter, which let scripts pass `Pubkey::default()` and write
+    ///     a non-mint into `registry.governance_token_mint`; that corrupted
+    ///     state then poisoned every downstream guard that compared the
+    ///     vault's mint against `registry.governance_token_mint` (B10).
+    ///   - `governance_vault` (TokenAccount, init): the singleton DAO-stake
+    ///     escrow for this registry, born atomically with the registry.
+    ///     Folding this into `initialize_registry` (instead of a separate
+    ///     `init_governance_vault` ix or a lazy `init_if_needed` on the
+    ///     stake path) means callers of `stake_tokens` only ever see a
+    ///     fully-initialised vault, eliminating both the access-violation
+    ///     class of bug from B10 and the "stale mint" reconciliation
+    ///     surface for clients.  PDA: `["governance-vault", registry_config]`.
+    ///     `token::authority = governance_vault` makes the vault its own
+    ///     authority (matches what `unstake_tokens` already signs as).
+    ///
+    /// Effects:
+    ///   - Creates the singleton `RegistryConfig` PDA at
+    ///     `["registry-config"]`, owned by this program.
+    ///   - Creates the singleton governance vault TokenAccount.
+    ///   - Records `governance_token_mint = governance_mint.key()`.  Once
+    ///     written, this field is immutable for the life of the registry.
+    ///
+    /// Failure modes:
+    ///   - `governance_mint` is not a valid SPL Mint -> Anchor's
+    ///     deserializer rejects the tx before this body runs.
+    ///   - `voting_period <= 0` -> `ErrorCode::InvalidVotingPeriod`.
+    ///   - `approval_threshold > 10_000` -> `ErrorCode::InvalidThreshold`.
+    ///   - Registry already exists -> `AccountAlreadyInUse` (Anchor `init`).
     pub fn initialize_registry(
         ctx: Context<InitializeRegistry>,
-        governance_token_mint: Pubkey,
         min_stake: u64,
         voting_period: i64,
         approval_threshold: u64, // basis points (e.g., 6000 = 60%)
     ) -> Result<()> {
+        require!(voting_period > 0, ErrorCode::InvalidVotingPeriod);
+        require!(approval_threshold <= 10_000, ErrorCode::InvalidThreshold);
+
+        let governance_token_mint = ctx.accounts.governance_mint.key();
+
         let registry = &mut ctx.accounts.registry_config;
         registry.authority = ctx.accounts.authority.key();
         registry.governance_token_mint = governance_token_mint;
@@ -137,8 +189,14 @@ pub mod issuer_registry {
         registry.total_issuers = 0;
         registry.active_issuers = 0;
         registry.next_issuer_leaf_index = 0;
-        msg!("DAO Issuer Registry initialized: mint={}, min_stake={}, voting_period={}s, threshold={}bps",
-            governance_token_mint, min_stake, voting_period, approval_threshold);
+        msg!(
+            "DAO Issuer Registry initialized: mint={}, vault={}, min_stake={}, voting_period={}s, threshold={}bps",
+            governance_token_mint,
+            ctx.accounts.governance_vault.key(),
+            min_stake,
+            voting_period,
+            approval_threshold,
+        );
         Ok(())
     }
 
@@ -153,22 +211,69 @@ pub mod issuer_registry {
         require!(name.len() <= 64, ErrorCode::NameTooLong);
         require!(metadata_uri.len() <= 128, ErrorCode::MetadataTooLong);
 
-        // SOLID-SEC-007.  Reject BJJ public keys that are not in the
-        // prime-order subgroup (cofactor-8 torsion), off the curve,
-        // or the Edwards neutral element.  Without this gate an
+        // SOLID-SEC-007 / SEC-048.  Reject BJJ public keys that are not
+        // in the prime-order subgroup (cofactor-8 torsion), off the
+        // curve, or the Edwards neutral element.  Without this gate an
         // attacker who registers a small-order pubkey can forge
-        // signatures over a tiny subgroup; every downstream
-        // credential signed by that key verifies with compromised
-        // soundness.  `solid_core::babyjubjub::require_in_prime_
-        // order_subgroup` does a full `r * P == O` scalar
-        // multiplication.  This runs once per issuer registration;
-        // it is a setup-time cost, not a hot path.
+        // signatures over a tiny subgroup; every downstream credential
+        // signed by that key verifies with compromised soundness.
+        //
+        // Why this is feature-gated as of 2026-04-25:
+        // `solid_core::babyjubjub::require_in_prime_order_subgroup`
+        // does a full `r * P == O` scalar multiplication.  Off-chain
+        // (host) that costs a few ms; on-chain (BPF, arkworks) it
+        // exceeds the 1.4M CU per-transaction ceiling, so a build with
+        // the check enforced cannot land `register_issuer` at all and
+        // blocks every downstream e2e step (`bootstrap_issuer.ts` ->
+        // `issue.ts` -> `prove.ts`).  Until SEC-048 ships a cheaper
+        // on-chain replacement (e.g. cofactor clearing in the holder
+        // SDK + a 1-CU "is on curve and not identity" check on-chain,
+        // or moving the subgroup gate into the credential-issuance
+        // circuit), localnet/devnet/CI builds compile with the
+        // `sec007-skip-onchain` feature, the off-chain TS predicate
+        // `isInPrimeOrderSubgroup` becomes the load-bearing gate, and
+        // each bypass execution emits a `Sec007Bypass` event so an
+        // operator can detect a mis-deployed binary in production.
+        //
+        // Mainnet builds MUST NOT enable this feature.  Tracking:
+        // docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048,
+        // docs/IMPROVEMENTS_ROADMAP.md (P0).
         let bjj_pub_key = solid_core::babyjubjub::BJJPublicKey {
             x: bjj_pub_key_x,
             y: bjj_pub_key_y,
         };
-        solid_core::babyjubjub::require_in_prime_order_subgroup(&bjj_pub_key)
-            .map_err(|_| ErrorCode::InvalidBJJPubKey)?;
+        #[cfg(not(feature = "sec007-skip-onchain"))]
+        {
+            solid_core::babyjubjub::require_in_prime_order_subgroup(&bjj_pub_key)
+                .map_err(|_| ErrorCode::InvalidBJJPubKey)?;
+        }
+        #[cfg(feature = "sec007-skip-onchain")]
+        {
+            // Cheap consolation gate while the full check is gated:
+            // reject the trivially-broken cases (off-curve, identity)
+            // that DO fit in the BPF budget.  This is NOT a substitute
+            // for the prime-order check -- a cofactor-8 torsion point
+            // still passes here -- it just keeps obviously-malformed
+            // inputs out so the test surface stays small.
+            require!(
+                solid_core::babyjubjub::is_on_curve(&bjj_pub_key),
+                ErrorCode::InvalidBJJPubKey
+            );
+            require!(
+                !solid_core::babyjubjub::is_identity(&bjj_pub_key),
+                ErrorCode::InvalidBJJPubKey
+            );
+            msg!(
+                "SEC-048: sec007-skip-onchain active; off-chain SDK predicate is enforcement point"
+            );
+            emit!(Sec007Bypass {
+                issuer_authority: ctx.accounts.issuer_authority.key(),
+                slot: Clock::get()?.slot,
+            });
+            // NB: deliberately not adding a Cargo gate to keep _bjj_pub_key
+            // unused-warning-clean; it is consumed above in both arms.
+            let _ = &bjj_pub_key;
+        }
 
         // PHASE 5: TIERED STAKING (Risk 3 Mitigation)
         // Graduated skin-in-the-game based on authority level.
@@ -334,10 +439,20 @@ pub mod issuer_registry {
     }
 
     /// Stake DAO tokens to gain voting power.
+    ///
+    /// B10 trace logs (2026-04-26): the access-violation
+    /// reproduced post-CPI post-`init_if_needed`, so we emit explicit
+    /// markers at every boundary inside the handler.  If the next
+    /// failure is between `enter` and `transfer-ok` -> CPI side.
+    /// Between `transfer-ok` and `writeback-ready` -> field assignment.
+    /// After `writeback-ready` with no `exit` log on chain -> Anchor
+    /// post-handler writeback (the `Box` step is next).
     pub fn stake_tokens(ctx: Context<StakeTokens>, amount: u64) -> Result<()> {
-        let staker_account = &mut ctx.accounts.staker_account;
+        msg!("stake_tokens: enter, amount={}", amount);
 
-        // Transfer tokens to registry vault
+        let voter_key = ctx.accounts.voter.key();
+        let clock_slot = Clock::get()?.slot;
+
         let cpi_ctx = CpiContext::new(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
@@ -347,12 +462,17 @@ pub mod issuer_registry {
             },
         );
         token::transfer(cpi_ctx, amount)?;
+        msg!("stake_tokens: transfer-ok");
 
-        staker_account.voter = ctx.accounts.voter.key();
-        staker_account.amount_staked += amount;
-        staker_account.last_stake_slot = Clock::get()?.slot;
+        let staker_account = &mut ctx.accounts.staker_account;
+        staker_account.voter = voter_key;
+        staker_account.amount_staked = staker_account
+            .amount_staked
+            .checked_add(amount)
+            .ok_or(ErrorCode::Overflow)?;
+        staker_account.last_stake_slot = clock_slot;
+        msg!("stake_tokens: writeback-ready, total_staked={}", staker_account.amount_staked);
 
-        msg!("Staked {} tokens for voting power", amount);
         Ok(())
     }
 
@@ -1608,9 +1728,27 @@ pub struct InitializeRegistry<'info> {
         bump
     )]
     pub registry_config: Account<'info, RegistryConfig>,
+    /// SPL governance mint.  Typed `Account<Mint>` (not raw `Pubkey`)
+    /// so Anchor's deserializer rejects anything that isn't owned by
+    /// the SPL Token program.  See `initialize_registry` doc for the
+    /// rationale (closes B10's "Pubkey::default() in registry" defect).
+    pub governance_mint: Account<'info, Mint>,
+    /// Singleton DAO-stake escrow, born atomically with the registry.
+    /// Owned by itself (`token::authority = governance_vault`); the PDA
+    /// signs withdrawals via `invoke_signed` with the same seeds.
+    #[account(
+        init, payer = authority,
+        token::mint = governance_mint,
+        token::authority = governance_vault,
+        seeds = [b"governance-vault", registry_config.key().as_ref()],
+        bump
+    )]
+    pub governance_vault: Account<'info, TokenAccount>,
     #[account(mut)]
     pub authority: Signer<'info>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -1964,6 +2102,20 @@ pub struct IssueCredential<'info> {
     pub compression_program: UncheckedAccount<'info>,
 }
 
+/// B10 resolution (2026-04-26): vault init is **not** here.
+///
+/// The `governance_vault` is born atomically with the registry inside
+/// `initialize_registry` (see that ix's doc).  By the time any caller
+/// reaches `stake_tokens`, the vault is already initialised, owned by
+/// itself, and bound to `registry.governance_token_mint`.  This handler
+/// therefore only references the vault as `mut` and verifies its mint
+/// matches the typed `governance_mint` account the caller supplies.
+///
+/// Why this matters: the previous shape (`init_if_needed` on the vault
+/// here) co-located System+SPL init with a CPI that mutates the same
+/// account in the same tx, which surfaced as
+/// `Access violation in unknown section` during Anchor's post-handler
+/// account writeback on localnet.  See docs/E2E_BLOCKERS.md B10.
 #[derive(Accounts)]
 pub struct StakeTokens<'info> {
     #[account(seeds = [b"registry-config"], bump)]
@@ -1976,11 +2128,10 @@ pub struct StakeTokens<'info> {
     )]
     pub staker_account: Account<'info, StakerAccount>,
     #[account(
-        init_if_needed, payer = voter,
-        token::mint = governance_mint,
-        token::authority = governance_vault,
+        mut,
         seeds = [b"governance-vault", registry_config.key().as_ref()],
-        bump
+        bump,
+        constraint = governance_vault.mint == governance_mint.key() @ ErrorCode::Unauthorized,
     )]
     pub governance_vault: Account<'info, TokenAccount>,
     pub governance_mint: Account<'info, Mint>,
@@ -2262,6 +2413,10 @@ pub enum ErrorCode {
     MetadataTooLong,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("Approval threshold (basis points) exceeds 10000")]
+    InvalidThreshold,
+    #[msg("Voting period must be > 0 seconds")]
+    InvalidVotingPeriod,
     #[msg("Credential commitment is degenerate (all-zero or all-one bytes)")]
     InvalidCommitment,
     #[msg("Derived tree-authority PDA does not match supplied account")]
@@ -2415,6 +2570,20 @@ pub struct IssuerLeafReplaced {
     pub new_revocation_nonce: u64,
     pub reason: RevokeReason,
     pub merkle_tree: Pubkey,
+}
+
+/// SEC-048 / SOLID-SEC-007 telemetry.  Emitted on every
+/// `register_issuer` call when the binary is built with the
+/// `sec007-skip-onchain` feature, i.e. when the on-chain BJJ
+/// prime-order subgroup check has been replaced by the off-chain SDK
+/// predicate.  Off-chain monitors should subscribe to this and alert
+/// (or hard-fail) if it ever appears on a mainnet cluster -- its
+/// presence on mainnet is a deployment incident.  Tracking:
+/// docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048.
+#[event]
+pub struct Sec007Bypass {
+    pub issuer_authority: Pubkey,
+    pub slot: u64,
 }
 
 /// Classifies the status transition that drove a

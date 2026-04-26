@@ -17,7 +17,7 @@
  *       call succeeds.
  */
 
-import { Connection, ConnectionConfig } from '@solana/web3.js';
+import { Connection, ConnectionConfig, Commitment } from '@solana/web3.js';
 
 export class ResilientConnection {
   private readonly endpoints: readonly string[];
@@ -73,9 +73,12 @@ export class ResilientConnection {
   private getOrCreate(index: number): Connection {
     const cached = this.cached.get(index);
     if (cached) return cached;
+    // `Connection`'s second argument is `Commitment | ConnectionConfig | undefined`.
+    // Our internal `config` is typed as the same union plus `string`, so widen via
+    // a discriminated branch before calling the constructor.
     const conn =
-      typeof this.config === 'string' || this.config === undefined
-        ? new Connection(this.endpoints[index], this.config)
+      typeof this.config === 'string'
+        ? new Connection(this.endpoints[index], this.config as Commitment)
         : new Connection(this.endpoints[index], this.config);
     this.cached.set(index, conn);
     return conn;

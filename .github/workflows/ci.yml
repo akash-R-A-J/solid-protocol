@@ -479,9 +479,9 @@ jobs:
           export PATH="$PWD/.toolchain/bin:$PATH"
           solana-test-validator \
             --reset --quiet \
-            --bpf-program BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2 target/deploy/zk_verifier.so \
-            --bpf-program CRGYfonXwDk6gKEm9fC1U33VVBkqnQVD3sPdLKzqHWoR target/deploy/issuer_registry.so \
-            --bpf-program DPk6XUH6CArLWt4KMqJmpNBnPwQ3gG9P3dBd3MDVE3bT target/deploy/schema_registry.so \
+            --bpf-program DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb target/deploy/zk_verifier.so \
+            --bpf-program 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx target/deploy/issuer_registry.so \
+            --bpf-program 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1 target/deploy/schema_registry.so \
             >/tmp/validator.log 2>&1 &
           echo $! > /tmp/validator.pid
           # Wait for RPC readiness

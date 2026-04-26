@@ -138,20 +138,29 @@ export function buildVerifyBatchProofIx(params: {
   }
   if (nullifier.length !== 32) throw new Error('nullifier must be 32 bytes');
 
-  // Borsh layout for the instruction args (Anchor uses Borsh under the hood
-  // for fixed-size `[u8; N]` / `[[u8; 32]; M]` — a flat concatenation).
-  //   discriminator (8)
-  // + proof_a (64) + proof_b (128) + proof_c (64)
-  // + public_inputs (31 * 32 = 992)
-  // + nullifier (32)
-  // = 1288 bytes
+  // Borsh layout for the instruction args.  `public_inputs` is a Rust
+  // `Vec<[u8; 32]>` on-chain (heap-resident; see the comment block on
+  // `verify_batch_proof` in `programs/zk-verifier/src/lib.rs` for why
+  // this isn't a fixed-size array), so its borsh wire layout is a
+  // 4-byte LE length prefix followed by the flat 32-byte slices.
+  // Fixed-size `[u8; N]` fields stay as a flat concatenation.
+  //
+  //   discriminator      (8)
+  // + proof_a            (64)
+  // + proof_b            (128)
+  // + proof_c            (64)
+  // + public_inputs len  (4)            <-- borsh Vec length prefix
+  // + public_inputs body (32 * 32 = 1024)
+  // + nullifier          (32)
+  // = 1324 bytes
   const disc = anchorDiscriminator('verify_batch_proof');
-  const data = Buffer.alloc(8 + 64 + 128 + 64 + NR_PUBLIC_INPUTS * 32 + 32);
+  const data = Buffer.alloc(8 + 64 + 128 + 64 + 4 + NR_PUBLIC_INPUTS * 32 + 32);
   let offset = 0;
   disc.copy(data, offset); offset += 8;
   Buffer.from(proof_a).copy(data, offset); offset += 64;
   Buffer.from(proof_b).copy(data, offset); offset += 128;
   Buffer.from(proof_c).copy(data, offset); offset += 64;
+  data.writeUInt32LE(NR_PUBLIC_INPUTS, offset); offset += 4;
   for (const pi of publicInputs) {
     Buffer.from(pi).copy(data, offset); offset += 32;
   }

@@ -85,6 +85,10 @@ export class SolID {
     masterPublicKey: { x: Uint8Array; y: Uint8Array };
     revocationNonce: bigint;
     globalStateTree: PublicKey;
+    /** ADR-0014: SPL AC account backing the singleton issuer tree. */
+    issuerMerkleTree: PublicKey;
+    /** ADR-0014: the singleton issuer-tree root the caller claims is current. */
+    issuerTreeRoot: Uint8Array;
     merkleProofAdapter: MerkleProofSource['merkleProofAdapter'];
     circuitPaths?: { wasmPath: string; zkeyPath: string };
   }): Promise<BatchProofResult> {
@@ -103,6 +107,8 @@ export class SolID {
       {
         merkleProofAdapter: params.merkleProofAdapter,
         globalStateTree: params.globalStateTree,
+        issuerMerkleTree: params.issuerMerkleTree,
+        issuerTreeRoot: params.issuerTreeRoot,
       },
     );
   }

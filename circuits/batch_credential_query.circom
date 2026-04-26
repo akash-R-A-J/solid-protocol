@@ -195,14 +195,14 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH,
         isZero[i].out * issuerRevocationNonces[i] === 0;
     }
 
+    signal orderingNextNotZero[NUM_CREDS - 1];
     for (var i = 0; i < NUM_CREDS - 1; i++) {
         ordering[i] = LessThan(252);
         ordering[i].in[0] <== schemaHashes[i];
         ordering[i].in[1] <== schemaHashes[i+1];
 
-        signal nextNotZero;
-        nextNotZero <== 1 - isZero[i+1].out;
-        nextNotZero * (1 - ordering[i].out) === 0;
+        orderingNextNotZero[i] <== 1 - isZero[i+1].out;
+        orderingNextNotZero[i] * (1 - ordering[i].out) === 0;
     }
 
     // ========================================================================
@@ -361,19 +361,31 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH,
     and012 <== and01 * predicateResults[2];
     andResult <== and012 * predicateResults[3];
 
+    // R1CS allows one multiplication per constraint; introduce one
+    // intermediate per active term so the OR sum stays quadratic.
+    signal orTerm0;
+    signal orTerm1;
+    signal orTerm2;
+    signal orTerm3;
+    orTerm0 <== isActive[0] * evaluators[0].result;
+    orTerm1 <== isActive[1] * evaluators[1].result;
+    orTerm2 <== isActive[2] * evaluators[2].result;
+    orTerm3 <== isActive[3] * evaluators[3].result;
     signal orSum;
-    orSum <== (isActive[0] * evaluators[0].result) +
-              (isActive[1] * evaluators[1].result) +
-              (isActive[2] * evaluators[2].result) +
-              (isActive[3] * evaluators[3].result);
+    orSum <== orTerm0 + orTerm1 + orTerm2 + orTerm3;
     component orCheck = GreaterThan(8);
     orCheck.in[0] <== orSum;
     orCheck.in[1] <== 0;
     signal orResult;
     orResult <== orCheck.out;
 
+    // Same rule: split the AND/OR mux into two single-product terms.
+    signal andBranch;
+    signal orBranch;
+    andBranch <== (1 - compoundLogic) * andResult;
+    orBranch  <== compoundLogic * orResult;
     signal finalResult;
-    finalResult <== (1 - compoundLogic) * andResult + compoundLogic * orResult;
+    finalResult <== andBranch + orBranch;
     finalResult === 1;
 
     // ========================================================================

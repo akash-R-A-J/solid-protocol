@@ -36,7 +36,7 @@
  * issuers can be approved by either path.
  */
 
-import { Connection, Keypair, PublicKey, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, SystemProgram, LAMPORTS_PER_SOL, ComputeBudgetProgram } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
 import {
   createMint,
@@ -44,7 +44,7 @@ import {
   getOrCreateAssociatedTokenAccount,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { initWasm, generateKeypair, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
+import { initWasm, generateKeypair, isInPrimeOrderSubgroup, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
 import { LocalReplicaAdapter, poseidonHashPair } from '@solid-protocol/light';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -147,49 +147,123 @@ async function main() {
   const issuerIdl = loadIdl('issuerRegistry');
   const issuerProgram = new anchor.Program(issuerIdl, provider);
 
-  // ─── 1. Governance mint ──────────────────────────────────────────
-  console.log('\n[1/9] Governance mint');
-  let governanceMint: PublicKey;
-  if (state.governanceMint) {
-    governanceMint = new PublicKey(state.governanceMint);
-    console.log(`   re-used ${governanceMint.toBase58()}`);
-  } else if (process.env.SOLID_GOVERNANCE_MINT) {
-    governanceMint = new PublicKey(process.env.SOLID_GOVERNANCE_MINT);
-    console.log(`   env-supplied ${governanceMint.toBase58()}`);
-  } else {
-    governanceMint = await createMint(connection, wallet, wallet.publicKey, null, 6);
-    console.log(`   created ${governanceMint.toBase58()}`);
-  }
-  state.governanceMint = governanceMint.toBase58();
-
-  // ─── 2. initialize_registry (idempotent) ────────────────────────
-  console.log('\n[2/9] initialize_registry');
+  // ─── 1. Governance mint (deferred: see step 2b) ─────────────────
+  //
+  // Architectural rule: the issuer-registry program is the source of
+  // truth.  `initialize_registry` (the handler) records
+  // `registry.governance_token_mint` exactly once -- the value passed
+  // by the FIRST caller is canonical forever.  This script is a
+  // consumer; it MUST adopt whatever the registry already committed
+  // to, never override it.
+  //
+  // We therefore split mint resolution in two:
+  //   (1) compute a *candidate* mint here -- from cached state, env
+  //       override, or (lazily) create a fresh mint;
+  //   (2) after step 2 (`initialize_registry` attempt) read the
+  //       on-chain registry back and lock `governanceMint` to
+  //       `registry.governance_token_mint`.  If the candidate
+  //       disagrees with chain, we fail loudly with a runbook --
+  //       silently drifting onto a sock-puppet mint is exactly the
+  //       class of bug the program-side guard now prevents.
+  // ─── 1. Governance mint ─────────────────────────────────────────
+  //
+  // Source of truth precedence:
+  //   1. `state.governanceMint` (canonically written by `npm run init-onchain`,
+  //       which calls `initialize_registry` and persists the bound mint).
+  //   2. `SOLID_GOVERNANCE_MINT` env override (operator opt-in).
+  //   3. Fresh SPL mint (only used if registry is uninitialised below).
+  //
+  // After step 2 we reconcile against on-chain truth: the program-side
+  // contract (post 2026-04-26 redesign) typed-checks `governance_mint` as
+  // an `Account<Mint>`, so a `Pubkey::default()` value is no longer
+  // representable on chain at all.
+  console.log('\n[1/8] Governance mint');
   const [registryConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('registry-config')],
     PROGRAM_PUBKEYS.issuerRegistry,
   );
+  const [governanceVaultPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('governance-vault'), registryConfigPda.toBuffer()],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+  let governanceMint: PublicKey;
+  let mintCreatedThisRun = false;
+  if (state.governanceMint) {
+    governanceMint = new PublicKey(state.governanceMint);
+    console.log(`   candidate (cached state) ${governanceMint.toBase58()}`);
+  } else if (process.env.SOLID_GOVERNANCE_MINT) {
+    governanceMint = new PublicKey(process.env.SOLID_GOVERNANCE_MINT);
+    console.log(`   candidate (env override) ${governanceMint.toBase58()}`);
+  } else {
+    governanceMint = await createMint(connection, wallet, wallet.publicKey, null, 6);
+    mintCreatedThisRun = true;
+    console.log(`   candidate (fresh mint)   ${governanceMint.toBase58()}`);
+  }
+
+  // ─── 2. initialize_registry (idempotent, atomic vault) ───────────
+  //
+  // Contract (post 2026-04-26 redesign — see programs/issuer-registry/src/lib.rs
+  // doc and docs/E2E_BLOCKERS.md B10):
+  //
+  //   `initialize_registry` takes `governance_mint` as a typed
+  //   `Account<Mint>` and atomically births the singleton governance
+  //   vault under `["governance-vault", registry_config]`.  Anchor's
+  //   deserializer rejects anything that isn't an SPL Mint, so the
+  //   class of bug where `Pubkey::default()` ends up in the registry
+  //   is no longer reachable.  No separate `init_governance_vault`
+  //   step is required (and none exists in the IDL).
+  console.log('\n[2/8] initialize_registry');
+  let registryAlreadyInitialized = false;
   try {
     await issuerProgram.methods.initializeRegistry(
-      governanceMint,
       MIN_STAKE_LAMPORTS,
       new anchor.BN(VOTING_PERIOD_SECONDS),
       new anchor.BN(6000),
     ).accounts({
       registryConfig: registryConfigPda,
+      governanceMint,
+      governanceVault: governanceVaultPda,
       authority: wallet.publicKey,
+      tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
     }).rpc();
-    console.log('   ok (initialised)');
+    console.log(`   ok (initialised, vault=${governanceVaultPda.toBase58()})`);
   } catch (e: any) {
     const m = String(e?.message ?? e);
     if (!m.includes('already in use') && !m.includes('already initialized')) {
       throw e;
     }
+    registryAlreadyInitialized = true;
     console.log('   ok (already active)');
   }
 
+  // Reconcile against on-chain truth: the program is the source of truth.
+  // If the registry already existed (e.g. `npm run init-onchain` ran first
+  // and bound a different mint), adopt the on-chain value.
+  const onChainConfig = await issuerProgram.account.registryConfig.fetch(registryConfigPda);
+  const onChainMint = onChainConfig.governanceTokenMint as PublicKey;
+  if (!onChainMint.equals(governanceMint)) {
+    if (registryAlreadyInitialized) {
+      console.log(
+        `   reconciling: candidate ${governanceMint.toBase58()} -> on-chain ${onChainMint.toBase58()}`,
+      );
+      if (mintCreatedThisRun) {
+        console.log('   note: fresh local mint discarded; on-chain registry has a different mint');
+      }
+      governanceMint = onChainMint;
+    } else {
+      throw new Error(
+        `initialize_registry post-condition violated: sent ${governanceMint.toBase58()}, ` +
+          `on chain ${onChainMint.toBase58()}`,
+      );
+    }
+  }
+  state.governanceMint = governanceMint.toBase58();
+  state.governanceVaultPda = governanceVaultPda.toBase58();
+
   // ─── 3. register_issuer ───────────────────────────────────────────
-  console.log('\n[3/9] register_issuer');
+  console.log('\n[3/8] register_issuer');
   const issuerBjj = state.issuerBjj
     ? {
         private_key: Uint8Array.from(state.issuerBjj.private_key),
@@ -201,17 +275,39 @@ async function main() {
     ? Keypair.fromSecretKey(Uint8Array.from(state.issuerAuthoritySecret))
     : Keypair.generate();
 
+  // SOLID-SEC-007 / SEC-048 client-side enforcement.
+  //
+  // The on-chain `register_issuer` instruction historically called
+  // `solid_core::babyjubjub::require_in_prime_order_subgroup` to reject
+  // small-order / off-curve / identity public keys.  On BPF that
+  // `r * P == O` scalar multiplication exceeds the 1.4M CU per-tx
+  // ceiling, so as of 2026-04-25 the on-chain check is gated behind
+  // the `sec007-skip-onchain` Cargo feature on issuer-registry.  This
+  // off-chain predicate is therefore the load-bearing gate while
+  // SEC-048 (cheap on-chain replacement) is open; a failing key here
+  // MUST never reach the registry.  See docs/E2E_BLOCKERS.md B9 and
+  // sec/SECURITY_REGISTRY.md SEC-048.
+  if (!isInPrimeOrderSubgroup(issuerBjj.public_key_x, issuerBjj.public_key_y)) {
+    throw new Error(
+      'SEC-048 guard: generated issuer BJJ public key is not in the ' +
+        'prime-order subgroup (off-curve / identity / cofactor-8 torsion). ' +
+        'Refusing to submit register_issuer; regenerate the keypair.',
+    );
+  }
+  console.log('   sec-048 off-chain subgroup check: ok');
+
   // Fund issuer authority so it can pay for the register_issuer
-  // `init` allocation (its PDA rent).  One transfer, idempotent via
-  // balance check.
+  // `init` allocation (its PDA rent) + the 1 SOL stake CPI transfer
+  // into stake_vault.  One transfer, idempotent via balance check.
+  // 1.1 SOL covers 1 SOL stake + rent + tx fees with headroom.
   const bal = await connection.getBalance(issuerAuthority.publicKey);
-  if (bal < 0.01 * LAMPORTS_PER_SOL) {
+  if (bal < 1.05 * LAMPORTS_PER_SOL) {
     const fundSig = await connection.sendTransaction(
       new anchor.web3.Transaction().add(
         SystemProgram.transfer({
           fromPubkey: wallet.publicKey,
           toPubkey: issuerAuthority.publicKey,
-          lamports: 0.05 * LAMPORTS_PER_SOL,
+          lamports: 1.1 * LAMPORTS_PER_SOL,
         }),
       ),
       [wallet],
@@ -228,6 +324,15 @@ async function main() {
     PROGRAM_PUBKEYS.issuerRegistry,
   );
   try {
+    // SEC-048: the on-chain BJJ subgroup check is currently gated
+    // behind the `sec007-skip-onchain` Cargo feature on issuer-registry
+    // (see docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048),
+    // so this transaction completes within the default 200K CU budget.
+    // The 400K cap below is intentionally above measured (~120K) to
+    // keep headroom for Anchor `init`, the `system_program::transfer`
+    // CPI, and Clock syscalls without hitting the ceiling on noisy
+    // validators.  When the on-chain check is restored, raise to the
+    // 1.4M per-tx ceiling and revisit (see SEC-048 remediation plan).
     await issuerProgram.methods.registerIssuer(
       'e2e-test-issuer',
       'ipfs://none',
@@ -240,7 +345,9 @@ async function main() {
       stakeVault: stakeVaultPda,
       issuerAuthority: issuerAuthority.publicKey,
       systemProgram: SystemProgram.programId,
-    }).signers([issuerAuthority]).rpc();
+    })
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
+      .signers([issuerAuthority]).rpc();
     console.log(`   ok (issuer=${issuerAccountPda.toBase58()})`);
   } catch (e: any) {
     const m = String(e?.message ?? e);
@@ -249,13 +356,16 @@ async function main() {
   }
 
   // ─── 4. stake_tokens ─────────────────────────────────────────────
-  console.log('\n[4/9] stake_tokens (voter = wallet)');
+  //
+  // The governance vault was created atomically with the registry in
+  // step 2 (post 2026-04-26 contract redesign — see B10 in
+  // docs/E2E_BLOCKERS.md).  `stake_tokens` therefore references the
+  // vault read-mostly (mut for the inbound transfer), with no
+  // `init_if_needed` co-located with a Token::Transfer CPI — which
+  // is what was triggering the post-CPI access violation on localnet.
+  console.log('\n[4/8] stake_tokens (voter = wallet)');
   const [stakerPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('staker'), wallet.publicKey.toBuffer()],
-    PROGRAM_PUBKEYS.issuerRegistry,
-  );
-  const [governanceVaultPda] = PublicKey.findProgramAddressSync(
-    [Buffer.from('governance-vault'), registryConfigPda.toBuffer()],
     PROGRAM_PUBKEYS.issuerRegistry,
   );
   const voterAta = await getOrCreateAssociatedTokenAccount(
@@ -284,12 +394,12 @@ async function main() {
   console.log(`   ok (staked ${STAKE_AMOUNT})`);
 
   // ─── 5. wait 100 slots (flash-loan protection) ───────────────────
-  console.log('\n[5/9] waiting 100 slots for flash-loan cool-off...');
+  console.log('\n[5/8] waiting 100 slots for flash-loan cool-off...');
   await waitUntilSlot(stakeStartSlot + 102, 120_000);
   console.log('   ok');
 
   // ─── 6. vote_on_issuer (approve=true) ────────────────────────────
-  console.log('\n[6/9] vote_on_issuer');
+  console.log('\n[6/8] vote_on_issuer');
   const [voteRecordPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('vote'), issuerAccountPda.toBuffer(), wallet.publicKey.toBuffer()],
     PROGRAM_PUBKEYS.issuerRegistry,
@@ -311,7 +421,7 @@ async function main() {
   }
 
   // ─── 7. wait past voting_ends_at ─────────────────────────────────
-  console.log('\n[7/9] waiting for voting period to end...');
+  console.log('\n[7/8] waiting for voting period to end...');
   // Voting window started at issuer.voting_ends_at - voting_period.
   // Simpler: sleep `VOTING_PERIOD_SECONDS + 2` from now, which is
   // always sufficient on a fresh run.  On a re-run the finalize call
@@ -320,7 +430,7 @@ async function main() {
   console.log('   ok');
 
   // ─── 8. finalize_voting ──────────────────────────────────────────
-  console.log('\n[8/9] finalize_voting');
+  console.log('\n[8/8] finalize_voting');
   try {
     await issuerProgram.methods.finalizeVoting().accounts({
       registryConfig: registryConfigPda,

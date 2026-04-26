@@ -1,23 +1,49 @@
 //! BabyJubJub EdDSA-Poseidon implementation matching circomlib's `eddsaposeidon.circom`.
 //!
-//! Uses `ark-ed-on-bn254` for curve arithmetic and `light-poseidon` for hashing.
-//! Key design: separately managed BJJ identity (NOT derived from Solana wallet).
+//! Uses `ark-ed-on-bn254` for curve arithmetic and circomlib-compatible
+//! Poseidon for hashing.  Key design: separately managed BJJ identity
+//! (NOT derived from Solana wallet).
 //!
 //! The signing and verification equations match circomlib exactly:
 //!   Sign:   S = r + Poseidon(R8.x, R8.y, A.x, A.y, M) * sk
 //!   Verify: S * Base8 == R8 + Poseidon(R8.x, R8.y, A.x, A.y, M) * A
+//!
+//! ## Dual-target split
+//!
+//! Items reachable from on-chain BPF code paths are dual-target:
+//!   - `BJJPublicKey` (just bytes),
+//!   - `derive_public_key` / `BJJKeypair::from_private_key`
+//!     (pure curve arithmetic, no RNG / no host-only Poseidon),
+//!   - `is_in_prime_order_subgroup` / `require_in_prime_order_subgroup`
+//!     (SOLID-SEC-007 subgroup check; called from `issuer-registry`),
+//!   - `derive_key` (Poseidon-based KDF; uses byte-oriented `hash_bytes`).
+//!
+//! Items gated host-only (`cfg(not(target_os = "solana"))`):
+//!   - `generate_keypair` (uses `OsRng` / `getrandom`),
+//!   - `sign` / `verify` (use `poseidon::hash_fr`, the field-element-typed
+//!     hasher that pulls `light-poseidon`'s parameter table — host-only,
+//!     SOLID-SEC-010),
+//!   - `BJJIdentity` and its encrypted-storage machinery (AES-GCM,
+//!     Argon2id, `serde_json`, `std::time` — none of which are reached
+//!     from BPF).
 
+use ark_ec::{AffineRepr, CurveGroup, Group};
+use ark_ed_on_bn254::{EdwardsAffine, EdwardsProjective, Fq, Fr};
+use ark_ff::{BigInteger, PrimeField};
+use ark_std::Zero;
+use serde::{Deserialize, Serialize};
+
+#[cfg(not(target_os = "solana"))]
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
-use ark_ec::{AffineRepr, CurveGroup, Group};
-use ark_ed_on_bn254::{EdwardsAffine, EdwardsProjective, Fq, Fr};
-use ark_ff::{BigInteger, PrimeField, UniformRand};
-use ark_std::Zero;
+#[cfg(not(target_os = "solana"))]
+use ark_ff::UniformRand;
+#[cfg(not(target_os = "solana"))]
 use blake2::{Blake2b512, Digest};
+#[cfg(not(target_os = "solana"))]
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SolidError};
 use crate::poseidon;
@@ -162,6 +188,29 @@ pub fn is_in_prime_order_subgroup(pk: &BJJPublicKey) -> bool {
     point.is_in_correct_subgroup_assuming_on_curve()
 }
 
+/// Cheap on-chain predicate: does `pk` decode to a point on the
+/// BabyJubJub curve?  Costs a single curve-equation eval (no scalar
+/// mul), so fits comfortably in BPF compute budgets.  This is the
+/// "consolation gate" used by the issuer-registry bypass build (see
+/// SEC-048 / `sec007-skip-onchain`); it is NOT a substitute for the
+/// full subgroup check, only a coarse sanity filter against
+/// off-curve garbage.
+pub fn is_on_curve(pk: &BJJPublicKey) -> bool {
+    let x = bytes_to_fq(&pk.x);
+    let y = bytes_to_fq(&pk.y);
+    EdwardsAffine::new_unchecked(x, y).is_on_curve()
+}
+
+/// Cheap on-chain predicate: is `pk` the Edwards neutral element
+/// (i.e. unusable as a signing key)?  Same BPF-affordable cost
+/// profile as `is_on_curve` and used in the same bypass path.
+/// SEC-048.
+pub fn is_identity(pk: &BJJPublicKey) -> bool {
+    let x = bytes_to_fq(&pk.x);
+    let y = bytes_to_fq(&pk.y);
+    EdwardsAffine::new_unchecked(x, y).is_zero()
+}
+
 /// Fail-closed form of `is_in_prime_order_subgroup`.  Use this at
 /// every on-chain or off-chain site that takes a BJJ public key as
 /// an untrusted input (issuer registration, signature verification,
@@ -189,6 +238,11 @@ pub fn require_in_prime_order_subgroup(pk: &BJJPublicKey) -> Result<()> {
 ///
 /// The private key is a random scalar in the BJJ scalar field.
 /// The public key is `private_key * Base8`.
+///
+/// **Host-only.**  Uses `rand::rngs::OsRng` / `getrandom`, which is not
+/// available on the Solana BPF runtime.  On-chain code never generates
+/// keys; issuers and holders do that off-chain.
+#[cfg(not(target_os = "solana"))]
 pub fn generate_keypair() -> Result<BJJKeypair> {
     let sk = Fr::rand(&mut OsRng);
     let pk_point = base8().mul_bigint(sk.into_bigint()).into_affine();
@@ -228,6 +282,12 @@ pub fn derive_key(master_key: &[u8; 32], context: &[u8; 32]) -> Result<[u8; 32]>
 ///   4. S = r + h * sk
 ///
 /// The circuit verifies: S * Base8 == R8 + h * A
+///
+/// **Host-only.**  Uses `Blake2b512` for the deterministic nonce and
+/// `poseidon::hash_fr` (host-only field-element hasher) for the
+/// challenge.  Issuance signing happens off-chain at the issuer; the
+/// chain only verifies the resulting signature inside the ZK circuit.
+#[cfg(not(target_os = "solana"))]
 pub fn sign(private_key: &[u8; 32], message: &[u8; 32]) -> Result<EdDSASignature> {
     let sk = bytes_to_fr(private_key);
     if sk.is_zero() {
@@ -267,6 +327,12 @@ pub fn sign(private_key: &[u8; 32], message: &[u8; 32]) -> Result<EdDSASignature
 /// Verify an EdDSA-Poseidon signature.
 ///
 /// Checks: S * Base8 == R8 + Poseidon(R8.x, R8.y, A.x, A.y, msg) * A
+///
+/// **Host-only.**  Uses `poseidon::hash_fr` (host-only field-element
+/// hasher).  On-chain verification happens inside the ZK circuit
+/// (`circuits/batch_credential_query.circom`); this function is for
+/// off-chain test vectors and SDK self-checks.
+#[cfg(not(target_os = "solana"))]
 pub fn verify(
     public_key: &BJJPublicKey,
     message: &[u8; 32],
@@ -307,12 +373,17 @@ pub fn verify(
     Ok(lhs == rhs)
 }
 
-// ─── Encrypted Key Storage ─────────────────────────────────────────────────
+// ─── Encrypted Key Storage (host-only) ─────────────────────────────────────
+//
+// AES-256-GCM, Argon2id, `serde_json`, and `std::time::SystemTime` are not
+// available on the Solana BPF runtime.  None of this is reached from
+// on-chain code paths -- holders generate / unlock identities client-side.
 
 /// Portable BJJ identity bundle with encrypted private key.
 ///
 /// The private key is encrypted with AES-256-GCM using a passphrase-derived
 /// key (Argon2id). This enables secure storage and cross-device transfer.
+#[cfg(not(target_os = "solana"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BJJIdentity {
     pub version: u8,
@@ -321,6 +392,7 @@ pub struct BJJIdentity {
     pub metadata: IdentityMetadata,
 }
 
+#[cfg(not(target_os = "solana"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EncryptedKey {
     pub ciphertext: Vec<u8>,
@@ -328,6 +400,7 @@ pub struct EncryptedKey {
     pub salt: [u8; 32],
 }
 
+#[cfg(not(target_os = "solana"))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IdentityMetadata {
     pub created_at: u64,
@@ -335,6 +408,7 @@ pub struct IdentityMetadata {
     pub rotated_from: Option<BJJPublicKey>,
 }
 
+#[cfg(not(target_os = "solana"))]
 impl BJJIdentity {
     /// Generate a new identity with a fresh BJJ keypair.
     /// Private key is encrypted with the given passphrase via Argon2id + AES-256-GCM.

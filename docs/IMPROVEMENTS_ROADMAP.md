@@ -1,14 +1,41 @@
 # SolID Protocol -- Improvement Roadmap
 
 > **Original document date:** 2026-04-21
-> **Last status reconciliation:** 2026-04-25 (Phase 3 kickoff doc sweep)
+> **Last status reconciliation:** 2026-04-25 late-session (build-
+> pipeline restoration: circuit compile fixes, Cargo.lock
+> edition2024 dep-cascade resolution via `rust-version = "1.75"` +
+> `.cargo/config.toml` MSRV resolver, Poseidon BPF refactor through
+> the `sol_poseidon` syscall, `verify_batch_proof` BPF stack-frame
+> fix; SOLID-SEC-047 added to the registry as Fixed.  E2E unblock
+> session 2026-04-25 evening: SOLID-SEC-048 added as Open with an
+> interim feature-gated bypass live on localnet/devnet -- mainnet
+> deploy-blocker; registered as P0-7 below.).
 > **Original source:** Independent system audit (2026-04-21, Antigravity)
 >
-> **Status as of 2026-04-25.** Phase 1 and Phase 2 are closed. The
-> sec/SECURITY_REGISTRY.md living tracker is the canonical source of
-> truth for every open and closed security item. This document is
-> preserved as the historical backlog and is kept reconciled with the
-> registry. When the two disagree, the registry wins.
+> **Status as of 2026-04-25 late-session.** Phase 1 and Phase 2 are
+> closed.  Build-pipeline restoration is closed at the link level
+> (three `target/deploy/*.so` files build cleanly under the pinned
+> Solana 1.18.x platform-tools); the remaining gates to a green
+> localnet `npm run e2e` are tracked in `docs/E2E_BLOCKERS.md`.
+> The sec/SECURITY_REGISTRY.md living tracker remains the canonical
+> source of truth for every open and closed security item. This
+> document is preserved as the historical backlog and is kept
+> reconciled with the registry. When the two disagree, the registry
+> wins.
+>
+> **Forward planning lives in `docs/FORWARD_ROADMAP.md`** (Phase 4 ->
+> Phase 6). Do not add new forward-looking items here. The reference
+> verifier app design (referenced from Phase 4 Day 8-10) lives in
+> `docs/REFERENCE_VERIFIER_APP.md`.
+>
+> **Near-term ship-blockers** (build, host-test, and pipeline gates
+> still standing between this checkpoint and a green localnet
+> `npm run e2e`) live in `docs/E2E_BLOCKERS.md`.  That tracker is
+> intended to be archived under `docs/archive/` once `npm run e2e`
+> passes twice on a clean machine and `docs/DEPLOYMENT_AND_TESTING.md`
+> has been updated to reflect the post-fix toolchain pin
+> (`rust-version = "1.75"` + `.cargo/config.toml` resolver fallback)
+> and the new VK sha256.
 >
 > - New findings since 2026-04-21: recorded in the registry as
 >   SOLID-SEC-NNN, not appended here.
@@ -163,6 +190,114 @@ const nullifier = bigintToBytes32(BigInt(publicSignals[0]));
 - `checkIssuerStatus(connection, issuerAuthority)` — reads and parses `IssuerAccount` PDA
 
 **Risk if not fixed:** Every E2E guide in the docs references this package. It cannot be imported. All demo and integration code fails at the first import statement.
+
+---
+
+### P0-7 — SOLID-SEC-048: `register_issuer` BJJ subgroup check exceeds 1.4M CU per-tx ceiling on BPF
+
+**Location:** `programs/issuer-registry/src/lib.rs:189`,
+`crates/solid-core/src/babyjubjub.rs::require_in_prime_order_subgroup`,
+`programs/issuer-registry/Cargo.toml` (`sec007-skip-onchain` feature),
+`ts-sdk/packages/core/src/index.ts::isInPrimeOrderSubgroup`,
+`scripts/bootstrap_issuer.ts`.
+
+**Status:** Open with an interim feature-gated bypass live in the
+working tree for localnet/devnet only.  Mainnet builds MUST NOT enable
+`sec007-skip-onchain`.
+
+**What is wrong.**  `solid_core::babyjubjub::require_in_prime_order_subgroup`
+performs a full `r * P == O` check on the candidate issuer pubkey (~251
+doublings + ~125 conditional adds through arkworks).  Host-side cost is
+a few ms; on BPF the same code path consumes > 1.4M CU, which is the
+hard per-transaction ceiling.  No build flag, inlining setting, helper
+crate selection, or compute-budget tweak brings it under the cap; the
+`r * P` cost is structural for a 251-bit scalar.  Solana's alt_bn128
+syscall family (used by `verify_batch_proof` for BN254 G1/G2) does not
+help -- BabyJubJub is a different curve.
+
+**Why this slipped past SEC-007's "Fixed" close.**  SEC-007 was closed
+on host-side logic correctness (47 host-side cases pass, including
+cofactor-8 torsion / off-curve / identity rejection).  The same code
+compiles AND links for BPF, so the dual-target-link gate was satisfied.
+What was not measured before the fix was registered as Fixed is the
+runtime BPF compute cost per call.  That oversight is the structural
+gap that SEC-048 closes (see "Regression gate" below).
+
+**What to fix (real fix; the bypass is interim only).**  Three
+candidates, in increasing soundness preference:
+
+1. **Cofactor-clear in the issuer SDK.**  Multiply candidate pubkey by
+   `8` (the BJJ cofactor) off-chain before submission; check the result
+   is non-identity.  On-chain stays at the
+   `is_on_curve + !is_identity` consolation gate.  Cheapest, but trusts
+   the off-chain SDK; a malicious caller can skip the cofactor-clear
+   and a cofactor-8 torsion key still registers.
+2. **Move the subgroup gate into the issuance circuit.**  Every
+   `issue_credential` proof commits to the issuer's pubkey; adding a
+   `is_in_prime_order_subgroup` constraint there makes the gate a
+   circuit-level invariant rather than handler-level.  Costs ~30K extra
+   constraints (one EdDSA-style scalar mul) and shifts ZK proving cost
+   up correspondingly.  Strongest soundness binding; slowest to ship
+   (requires trusted-setup re-run, batches with SEC-006 Part 2).
+3. **Solana BJJ syscall.**  Propose `sol_babyjubjub_*` upstream so on-
+   chain code can do subgroup / scalar-mul checks at curve speed (a
+   few thousand CU).  Multi-quarter timeline; depends on validator
+   buy-in.
+
+**Interim bypass shape (already landed in working tree, 2026-04-25).**
+- `programs/issuer-registry/Cargo.toml` adds the no-default Cargo
+  feature `sec007-skip-onchain` with an in-file "NOT FOR MAINNET"
+  warning.
+- `programs/issuer-registry/src/lib.rs` gates the
+  `require_in_prime_order_subgroup` call behind
+  `#[cfg(not(feature = "sec007-skip-onchain"))]`.  The bypass arm
+  (`#[cfg(feature = "sec007-skip-onchain")]`) runs the consolation
+  gate (`is_on_curve + !is_identity`), emits an operator-visible
+  `msg!("SEC-048: sec007-skip-onchain active; …")` line, and emits a
+  structured `Sec007Bypass { issuer_authority, slot }` event.
+- `crates/solid-core/src/babyjubjub.rs` adds `is_on_curve(&pk)` and
+  `is_identity(&pk)` cheap predicates for the consolation gate.
+- `ts-sdk/packages/core/src/index.ts` re-exports
+  `isInPrimeOrderSubgroup` as the canonical client-side predicate.
+  This becomes the load-bearing SEC-007 gate while the on-chain check
+  is bypassed; every off-chain `register_issuer` caller MUST run it
+  pre-submit.
+- `scripts/bootstrap_issuer.ts` invokes the predicate before the ix is
+  built; the on-chain CU cap drops from 1.4M to 400K (measured ~120K
+  steady-state with the bypass).
+
+**Mainnet deploy-blocker mechanics (must ship as part of the close-out).**
+- Add a CI gate (`scripts/check_release_features.py` or extend
+  `scripts/check_program_ids.py`) that fails any release/mainnet
+  artifact built with `--features sec007-skip-onchain` or any
+  Anchor.toml that sets it.
+- Add a production-cluster monitor that alerts (or hard-fails the
+  rollout) on any `Sec007Bypass` event observed in mainnet logs.
+
+**Regression gate (closes the dual-target-link vs dual-target-runtime
+gap that let SEC-048 slip past SEC-007).**
+- Add `tests/integration/register_issuer_compute_units.test.ts` to the
+  E2E suite.  It lands a `register_issuer` against a real validator
+  with the default 200K CU budget (no `setComputeUnitLimit` override).
+  - Against the bypass build: asserts success and asserts exactly one
+    `SEC-048: sec007-skip-onchain active; …` line in the program log.
+  - Against the no-feature build (mainnet shape): asserts the
+    `exceeded CUs meter at BPF instruction` failure mode.  The test
+    MUST keep failing on the no-feature build until the real fix
+    lands; once it passes, SEC-048 closes.
+
+**Risk if not fixed (real fix, not bypass).**  Mainnet deploy is
+blocked.  Even on localnet/devnet under the bypass, the off-chain SDK
+predicate is the load-bearing gate -- any ecosystem participant who
+writes a custom `register_issuer` caller and forgets the predicate can
+register a cofactor-8-torsion issuer whose downstream credential
+signatures verify only over the 8-element subgroup, dropping the
+effective security parameter from 251 bits to 3 bits.
+
+**Tracking cross-references:** registry SOLID-SEC-048;
+`docs/E2E_BLOCKERS.md` B9 + O7; `plan/RESUME.md`;
+`docs/FORWARD_ROADMAP.md`.  This entry MUST stay in P0 until both the
+real fix lands AND the regression gate above is in CI.
 
 ---
 
@@ -599,7 +734,7 @@ The bloom filter was replaced by PDA-per-nullifier in v0.2. This PDA seed patter
 ```json
 "nullifier_record_example": {
     "seeds": ["null", "<nullifier_bytes_hex>"],
-    "program": "BZkVFdMhAEeGMvEAhXNjt3r3bEA2sCPqEFcsEbSbFGj2",
+    "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
     "note": "One PDA per proof; created atomically during verify_batch_proof"
 }
 ```
@@ -786,12 +921,22 @@ Architectural (6 items -- longer term)
 Legend: `[x]` landed; `[~]` partially landed (scope split between
 original roadmap and a more specific SOLID-SEC-NNN); `[ ]` open.
 
-Registry count (as of 2026-04-25, post v0.6.1 audit): 46 findings;
-24 closed (Phase 1 + Phase 2 + SEC-007 + SEC-006 Part 1 + SEC-041
-+ SEC-044 landed).  Open HIGH: SOLID-SEC-010, -012.  Open MEDIUM:
-SOLID-SEC-013..-019, -021, -034, -043, -045, -046.  Open LOW:
-SOLID-SEC-022, -023, -024, -035.  Open INFO: SOLID-SEC-025, -026,
--037, -038.
+Registry count (as of 2026-04-25, post v0.6.1 audit + 2026-04-25
+late-session E2E unblock): 48 findings; 24 closed (Phase 1 + Phase 2
++ SEC-007 + SEC-006 Part 1 + SEC-041 + SEC-044 landed).  Open HIGH:
+SOLID-SEC-010, -012, -048.  Open MEDIUM: SOLID-SEC-013..-019, -021,
+-034, -043, -045, -046.  Open LOW: SOLID-SEC-022, -023, -024, -035.
+Open INFO: SOLID-SEC-025, -026, -037, -038.
+
+SOLID-SEC-048 (HIGH; Open with interim bypass live).
+`register_issuer` BJJ prime-order subgroup check exceeds the 1.4M CU
+per-tx ceiling on BPF; localnet/devnet builds gate the on-chain check
+behind the `sec007-skip-onchain` Cargo feature on issuer-registry,
+the off-chain TS predicate `isInPrimeOrderSubgroup` becomes the
+load-bearing gate, and each bypass execution emits a `Sec007Bypass`
+event for operator telemetry.  Mainnet deploy-blocker.  Tracked as
+P0-7 above; see also `docs/E2E_BLOCKERS.md` B9 + O7 and
+`sec/SECURITY_REGISTRY.md` SOLID-SEC-048.
 
 New post-roadmap items added in the 2026-04-25 v0.6.1 audit (both
 MEDIUM, both Open; P0 per v0.6.1 Section 6.1):
