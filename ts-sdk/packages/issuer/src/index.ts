@@ -92,7 +92,17 @@ export interface IssueOptions {
   /** Schema version byte (u8), as passed to
    *  `schema_registry::register_schema`. */
   schemaVersion: number;
-  /** Optional extra signers (e.g. fee payer ≠ issuer authority). */
+  /**
+   * Optional fee payer.  When set, this keypair is bound to `tx.feePayer`
+   * and prepended to the signer list.  Use when the `issuerAuthority` is
+   * an unfunded BJJ-anchored identity and a separate Solana wallet
+   * fronts the lamports.  When unset, the `issuerAuthority` pays its
+   * own fees.
+   */
+  feePayer?: Keypair;
+  /** Optional extra signers beyond `issuerAuthority` and `feePayer`.
+   *  Each must appear as a signer in the instruction's account list,
+   *  otherwise web3.js raises `unknown signer` at compile time. */
   extraSigners?: Keypair[];
   /** Override to avoid sending (returns the assembled tx for inspection). */
   dryRun?: boolean;
@@ -215,9 +225,23 @@ export async function issueCredential(
   );
 
   const tx = new Transaction().add(ix);
+  // Bind feePayer explicitly so web3.js adds it to the message
+  // accountKeys; otherwise passing a keypair via signers that isn't
+  // referenced by the instruction triggers "unknown signer" at
+  // compileMessage time.
+  const feePayer = options.feePayer ?? options.issuerAuthority;
+  tx.feePayer = feePayer.publicKey;
   let txSig = '';
   if (!options.dryRun) {
-    const signers = [options.issuerAuthority, ...(options.extraSigners ?? [])];
+    // De-dupe by pubkey: feePayer + issuerAuthority may be the same key.
+    const seen = new Set<string>();
+    const signers: Keypair[] = [];
+    for (const kp of [feePayer, options.issuerAuthority, ...(options.extraSigners ?? [])]) {
+      const k = kp.publicKey.toBase58();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      signers.push(kp);
+    }
     txSig = await sendAndConfirmTransaction(options.connection, tx, signers, {
       commitment: 'confirmed',
       skipPreflight: false,

@@ -17,6 +17,27 @@ template PredicateEvaluator() {
     isEq.in[0] <== fieldValue;
     isEq.in[1] <== queryValue;
 
+    // Domain contract: `fieldValue` and `queryValue` must each fit in
+    // 252 bits.  This is a protocol-level constraint inherited from
+    // `circomlib::LessThan(n) / GreaterThan(n)`, which assert
+    // `n <= 252`.
+    //
+    // `fieldValue` is sourced from issuer-signed credential leaves;
+    // the issuer SDK is responsible for keeping attribute values
+    // within the 252-bit domain (in practice all realistic
+    // attributes -- ages, dates, balances, geohash-style integers --
+    // are far smaller).  `queryValue` is a verifier-supplied
+    // constant exposed as a public input; the on-chain
+    // `verify_batch_proof` does not currently bound it, so verifiers
+    // are expected to keep query values in-domain.
+    //
+    // This is *not* the same problem as the schemaHash ordering
+    // overflow fixed in Phase 3.4 (see `lt_bn254.circom`): schema
+    // hashes are full-domain Poseidon outputs by construction,
+    // whereas predicate operands are domain-specific scalars.
+    // Promoting these to 254-bit-safe comparators would require a
+    // matching SDK / on-chain range-check on the operands and is
+    // tracked under Phase 4.
     component isGt = GreaterThan(252);
     isGt.in[0] <== fieldValue;
     isGt.in[1] <== queryValue;

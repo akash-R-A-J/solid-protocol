@@ -6,7 +6,17 @@ acceptance. Every item references `SOLID-SEC-NNN` in
 
 - Protocol version in scope: v0.6.1 (Phase 3 impl 1-4 closed) ->
   v1.0 mainnet
-- Last revision: 2026-04-25 (Phase 3 impl 1-4: SEC-007 + SEC-006
+- Last revision: 2026-04-27 (Phase 3.4 circuit + SDK alignment).
+  Landed: `LessThanBN254` + `BabyPbk254` in circuits; Rust fixture
+  generator `gen_circuit_vectors`; mocha harness under `circuits/test/`
+  (lt / babypbk / identity anchor) wired into the
+  `cross_language_vectors` CI job; BabyJubJub **circomlib-native vs
+  arkworks-normalized** coordinate isomorphism in
+  `crates/solid-core/src/babyjubjub.rs`; pinned field elements use
+  `Fq::from_le_bytes_mod_order` + `const [u8;32]` (no `MontFp!`) for
+  rust-analyzer stability.  Snapshot rows updated in
+  `docs/CURRENT_STATE.md` §2 / §5.2--5.3 / §6.
+- Previous revision: 2026-04-25 (Phase 3 impl 1-4: SEC-007 + SEC-006
   Part 1 + SEC-041 + SEC-044 all flipped Fixed; v0.6.1 audit
   dropped in, registering SEC-045 and SEC-046 as MEDIUM;
   canonical state-of-protocol snapshot at
@@ -78,13 +88,15 @@ mature, externally-audited mainnet at the end of Phase 3.
 
 ---
 
-## 1. Current state snapshot (as of 2026-04-25, post-Phase-2)
+## 1. Current state snapshot (as of 2026-04-27; Phase 3.4 circuit hardening included)
 
 ### Done and verified in code
 
 Cross-checked against code and
 `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`
-(supersedes the v0.6 audit):
+(supersedes the v0.6 audit), plus Phase 3.4 items below verified in
+`cargo test`, `cargo run --example gen_circuit_vectors`, and
+`circuits/npm test` (also gated in CI `cross_language_vectors`).
 
 - RegistryConfig space 112 bytes; matches struct.
 - Owner-check on `global_tree` and `schema_tree_N` against
@@ -109,6 +121,18 @@ Cross-checked against code and
   `CURRENT_TIMESTAMP_INPUT_INDEX = 31`).
 - Per-schema derived credential keys at circuit level (ADR-0005).
 - Canonical schema ascending ordering.
+- Phase 3.4: `LessThanBN254` replaces the old `LessThan(252)` /
+  `Num2Bits(253)` ordering path in `batch_credential_query.circom`;
+  `BabyPbk254` replaces `BabyPbk` in `identity_anchor.circom` for
+  full-domain `credPriv` scalars; isolated mocha templates + Rust
+  fixture `circuits/test/fixtures/circuit_vectors.json` (generator
+  `crates/solid-core/examples/gen_circuit_vectors.rs`) lock the
+  SDK-to-circuit byte contract (including bit-253-set regression
+  vectors).
+- BabyJubJub: circomlib-native wire form vs ark-ed-on-bn254 normalized
+  curve model bridged in `babyjubjub.rs` via fixed `sqrt(168700)` /
+  inverse; pinned `Fq` values use LE byte arrays + `from_le_bytes_mod_order`
+  (rust-analyzer-safe; same constants as the former `MontFp!` literals).
 - Atomic nullifier replay via `init` (ADR-0007).
 - Hardened 6-input nullifier (ADR-0006 revised by ADR-0014;
   Poseidon(masterKey, revocationNonce, verifierAddress,

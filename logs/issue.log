@@ -1,0 +1,9 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+
+> solid-protocol-e2e@0.1.0 issue
+> tsx scripts/issue.ts
+
+SolID Protocol -- credential issuance
+=====================================
+Error: state.merkleTreeAddress is unset. Create an SPL AC tree whose authority PDA is [b"tree-authority", schemaHash] and set SOLID_TREE_PUBKEY before running initialize.ts.
+    at main (/Users/rajakash/Desktop/testing/solid-protocol/scripts/issue.ts:69:11)

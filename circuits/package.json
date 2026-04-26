@@ -6,16 +6,18 @@
     "compile": "circom batch_credential_query.circom --r1cs --wasm --sym --c --output build/ -l node_modules/circomlib/circuits",
     "compile:compound": "circom compound_query.circom --r1cs --wasm --sym --c --output build/ -l node_modules/circomlib/circuits",
     "setup": "node scripts/setup.js",
+    "gen-vectors": "cd .. && cargo run --quiet --release -p solid-core --example gen_circuit_vectors",
     "test": "mocha 'test/**/*.test.js' --timeout 180000"
   },
   "dependencies": {
     "circomlib": "^2.0.5"
   },
   "devDependencies": {
-    "mocha": "^10.2.0",
     "chai": "^4.3.7",
-    "snarkjs": "^0.7.0",
+    "circom_tester": "^0.0.20",
+    "circomlibjs": "^0.1.7",
     "ffjavascript": "^0.2.59",
-    "circom_tester": "^0.0.20"
+    "mocha": "^10.2.0",
+    "snarkjs": "^0.7.0"
   }
 }

@@ -7,10 +7,24 @@
  * Steps:
  *   1. initialize_registry (issuer-registry)
  *   2. register_schema (schema-registry)
- *   3. initialize_tree_binding (schema-registry)
+ *   3. initialize_tree_binding (schema-registry) -- skipped if
+ *      SOLID_TREE_PUBKEY unset; deferred to bootstrap_schema_tree.ts.
  *   4. initialize_global_binding (schema-registry)
- *   5. initialize (zk-verifier)
- *   6. store_verification_key in chunks (zk-verifier)
+ *   5. initialize_issuer_tree_binding (issuer-registry, ADR-0014) --
+ *      skipped if SOLID_ISSUER_TREE_PUBKEY unset; deferred to
+ *      backfill_issuer_tree.ts.
+ *   6. initialize (zk-verifier)
+ *   7. store_verification_key in chunks (zk-verifier)
+ *
+ * Init-only contracts (skip-when-unset rationale):
+ *   - schema-tree-binding's `tree_pubkey` is immutable after init
+ *     (programs/schema-registry/src/lib.rs:189).
+ *   - issuer-tree-binding's `tree_pubkey` is immutable after init
+ *     (ADR-0014).
+ *   Hence we never call these instructions with `Pubkey::default()`
+ *   as a placeholder -- doing so would permanently brick the
+ *   binding.  Either supply the real pubkey via env, or skip and
+ *   let the dedicated bootstrap script create-and-bind in one shot.
  *
  * Program IDs are sourced from @solid-protocol/core::PROGRAM_IDS, the single
  * source of truth mirrored in Anchor.toml and enforced by CI via
@@ -139,7 +153,7 @@ async function main() {
   //
   // The chosen mint is persisted to the E2E state file so downstream
   // scripts (bootstrap_issuer, etc.) can pick it up without re-creating.
-  console.log('\n[1/6] initialize_registry');
+  console.log('\n[1/7] initialize_registry');
   const [registryPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('registry-config')],
     PROGRAM_PUBKEYS.issuerRegistry,
@@ -229,7 +243,7 @@ async function main() {
   // `poseidon::hash_fields_to_bytes` (= `poseidonHash` in the WASM
   // bridge). Cross-language vector coverage tracked in
   // SOLID-SEC-010.
-  console.log('\n[2/6] register_schema');
+  console.log('\n[2/7] register_schema');
   const schemaHashInputs: bigint[] = [];
   const nameBytes = Buffer.from(SCHEMA_NAME, 'utf-8');
   for (let i = 0; i < nameBytes.length; i += 8) {
@@ -265,32 +279,54 @@ async function main() {
   }
 
   // 3. SchemaTreeBinding.
-  console.log('\n[3/6] initialize_tree_binding');
-  const treePubkey = process.env.SOLID_TREE_PUBKEY
-    ? new PublicKey(process.env.SOLID_TREE_PUBKEY)
-    : PublicKey.default;
+  //
+  // Contract: `schema-registry::initialize_tree_binding` is INIT-ONLY
+  // (programs/schema-registry/src/lib.rs:189) -- once created, the
+  // `tree_pubkey` field is immutable.  Therefore we MUST NOT call this
+  // ix with `PublicKey.default` as a placeholder: the binding would
+  // be permanently dead and `issue_credential` would never succeed
+  // against it.
+  //
+  // Instead we mirror the same opt-in pattern step 5 uses for the
+  // issuer tree binding: only init when the caller has supplied a
+  // real tree pubkey via `SOLID_TREE_PUBKEY`.  Otherwise we skip and
+  // defer to `scripts/bootstrap_schema_tree.ts`, which creates the
+  // SPL AC tree, transfers authority to the
+  // `(b"tree-authority", schema_hash)` PDA, and only then calls
+  // `initialize_tree_binding` with the real pubkey.
+  console.log('\n[3/7] initialize_tree_binding');
   const [bindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('schema-tree-binding'), Buffer.from(schemaHash)],
     PROGRAM_PUBKEYS.schemaRegistry,
   );
-  try {
-    await schemaProgram.methods.initializeTreeBinding(
-      Array.from(schemaHash),
-      treePubkey,
-    ).accounts({
-      schemaAccount: schemaPda,
-      schemaTreeBinding: bindingPda,
-      authority: wallet.publicKey,
-      systemProgram: SystemProgram.programId,
-    }).rpc();
-    console.log('   ok (binding created)');
-  } catch (e: any) {
-    if (!isAlreadyInitialised(e)) throw e;
-    console.log('   ok (already active)');
+  let treePubkey = PublicKey.default;
+  if (process.env.SOLID_TREE_PUBKEY) {
+    treePubkey = new PublicKey(process.env.SOLID_TREE_PUBKEY);
+    try {
+      await schemaProgram.methods.initializeTreeBinding(
+        Array.from(schemaHash),
+        treePubkey,
+      ).accounts({
+        schemaAccount: schemaPda,
+        schemaTreeBinding: bindingPda,
+        authority: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+      console.log(`   ok (binding at ${bindingPda.toBase58()})`);
+    } catch (e: any) {
+      if (!isAlreadyInitialised(e)) throw e;
+      console.log('   ok (already active)');
+    }
+  } else {
+    console.log(
+      '   SKIPPED (SOLID_TREE_PUBKEY unset).  Run\n' +
+      '   `tsx scripts/bootstrap_schema_tree.ts` next to create the\n' +
+      '   SPL AC tree and bind it before credentials can be issued.',
+    );
   }
 
   // 4. GlobalStateBinding.
-  console.log('\n[4/7] initialize_global_binding');
+  console.log('\n[4/7] initialize_global_binding (singleton)');
   const [globalBindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('global-binding')],
     PROGRAM_PUBKEYS.schemaRegistry,
@@ -461,8 +497,16 @@ async function main() {
   // Persist state for downstream scripts.  Written under
   // `$XDG_RUNTIME_DIR` / `$TMPDIR` with mode 0600 (SOLID-SEC-020);
   // never under the repo working tree.
-  const state = {
-    ...(readStateOrNull() ?? {}),
+  //
+  // Idempotency rule: tree pubkeys are written only when this run
+  // actually bound them.  When the env var is unset (the localnet
+  // E2E default), we PRESERVE whatever a prior `bootstrap_*.ts` run
+  // wrote.  This keeps `npm run init-onchain` re-runnable mid-pipeline
+  // without bricking downstream `issue.ts` / `prove.ts` calls that
+  // depend on `state.merkleTreeAddress` being a real SPL AC tree.
+  const prior = readStateOrNull() ?? {};
+  const state: Record<string, any> = {
+    ...prior,
     schemaName: SCHEMA_NAME,
     schemaVersion: SCHEMA_VERSION,
     schemaHash: Buffer.from(schemaHash).toString('hex'),
@@ -473,11 +517,19 @@ async function main() {
     schemaTreeBindingPda: bindingPda.toBase58(),
     globalBindingPda: globalBindingPda.toBase58(),
     issuerTreeBindingPda: issuerTreeBindingPda.toBase58(),
-    issuerMerkleTreeAddress: issuerTreePubkey.toBase58(),
     verifierConfigPda: verifierConfigPda.toBase58(),
     vkStoragePda: vkStoragePda.toBase58(),
-    merkleTreeAddress: treePubkey.toBase58(),
   };
+  if (process.env.SOLID_TREE_PUBKEY) {
+    state.merkleTreeAddress = treePubkey.toBase58();
+  } else if (!prior.merkleTreeAddress) {
+    state.merkleTreeAddress = PublicKey.default.toBase58();
+  }
+  if (process.env.SOLID_ISSUER_TREE_PUBKEY) {
+    state.issuerMerkleTreeAddress = issuerTreePubkey.toBase58();
+  } else if (!prior.issuerMerkleTreeAddress) {
+    state.issuerMerkleTreeAddress = PublicKey.default.toBase58();
+  }
   const written = writeState(state);
   console.log(`\nWrote ${written}`);
   console.log(`(SOLID_E2E_STATE_FILE can override; default is ${stateFilePath()})`);

@@ -1,0 +1,40 @@
+npm warn Unknown env config "devdir". This will stop working in the next major version of npm.
+
+> solid-protocol-e2e@0.1.0 init-onchain
+> tsx scripts/initialize.ts
+
+SolID Protocol on-chain initialization
+======================================
+Wallet: 56cch2JpqChmm8ufqorRHGB2jbXs88drjPnQbBE2MDEe
+RPC:    http://127.0.0.1:8899
+
+[1/6] initialize_registry
+   mint (fresh)        EQ9hdXx35Y9rQVqeV7ttvP5dcSttNBVX1qbowdBQWSeq
+   ok (initialised)
+
+[2/6] register_schema
+   schema_hash: ea5e7617d56b6f5140e692ad1ed93b9d6270894f91c09cdbb1e063cb5e7b6b27
+   ok (registered)
+
+[3/6] initialize_tree_binding
+   ok (binding created)
+
+[4/7] initialize_global_binding
+   ok (global binding created)
+
+[5/7] initialize_issuer_tree_binding (ADR-0014)
+   SKIPPED (SOLID_ISSUER_TREE_PUBKEY unset).  Run
+   `tsx scripts/backfill_issuer_tree.ts` next to create the
+   SPL AC tree and bind it before proofs can verify.
+
+[6/7] zk_verifier.initialize
+   ok (initialised)
+
+[7/7] store_verification_key
+   VK sha256 gate: ok (debca4c083d0...; pin source: circuits/build/verification_key.sha256)
+   uploaded chunk 1/3   uploaded chunk 2/3   uploaded chunk 3/3
+   ok (2564 bytes)
+
+Wrote /var/folders/zl/64140z4n2137h6nm7sldkck80000gn/T/solid-e2e-501/state.json
+(SOLID_E2E_STATE_FILE can override; default is /var/folders/zl/64140z4n2137h6nm7sldkck80000gn/T/solid-e2e-501/state.json)
+Done.

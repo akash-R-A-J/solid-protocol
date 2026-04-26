@@ -2,7 +2,57 @@ pragma circom 2.1.0;
 
 include "../node_modules/circomlib/circuits/poseidon.circom";
 include "../node_modules/circomlib/circuits/babyjub.circom";
+include "../node_modules/circomlib/circuits/bitify.circom";
+include "../node_modules/circomlib/circuits/escalarmulfix.circom";
 include "./merkle_inclusion.circom";
+
+/// BabyPbk254
+///
+/// 254-bit-safe replacement for `circomlib::BabyPbk()`.
+///
+/// `circomlib::BabyPbk()` decomposes its input via `Num2Bits(253)` and
+/// then applies `EscalarMulFix(253, BASE8)`.  That contract is wrong
+/// for full-domain BN254 field elements: Poseidon outputs span the
+/// entire BN254 scalar field [0, p) where p is a 254-bit prime, so
+/// roughly 26% of derived `Poseidon(masterKey, schemaHash)` values
+/// have bit 253 set and trip the `Num2Bits(253)` overflow assertion.
+///
+/// The off-chain Rust counterpart in
+/// `crates/solid-core/src/babyjubjub.rs::derive_public_key` already
+/// handles this correctly by reducing modulo the BabyJubJub subgroup
+/// order r (~2^251) before scalar multiplication.  Because Base8 has
+/// order r, multiplying by either the raw 254-bit Poseidon output or
+/// the same value reduced mod r yields the **same** Edwards point.
+/// So the public key produced by this template is byte-identical to
+/// the one stored on the issuer leaf and used by the off-chain SDK.
+///
+/// This template uses `Num2Bits_strict()` (which attaches an
+/// `AliasCheck` enforcing the input lies in [0, p)) and then
+/// `EscalarMulFix(254, BASE8)`, sweeping all 254 bits.  No information
+/// is lost and there is no implicit reduction inside the circuit.
+///
+/// Hard invariant: any caller MUST be passing a value already in the
+/// canonical Fp range; a Poseidon output trivially satisfies this.
+template BabyPbk254() {
+    signal input  in;
+    signal output Ax;
+    signal output Ay;
+
+    var BASE8[2] = [
+        5299619240641551281634865583518297030282874472190772894086521144482721001553,
+        16950150798460657717958625567821834550301663161624707787222815936182638968203
+    ];
+
+    component pvkBits = Num2Bits_strict();
+    pvkBits.in <== in;
+
+    component mulFix = EscalarMulFix(254, BASE8);
+    for (var i = 0; i < 254; i++) {
+        mulFix.e[i] <== pvkBits.out[i];
+    }
+    Ax <== mulFix.out[0];
+    Ay <== mulFix.out[1];
+}
 
 /// Phase 3.1: IdentityAnchor (SOLID-SEC-029 hardening).
 ///
@@ -46,8 +96,13 @@ template IdentityAnchor(GLOBAL_DEPTH) {
     signal credentialPrivKey;
     credentialPrivKey <== credKeyDeriver.out;
 
-    // 2. Derive the per-schema public key via BabyJubJub scalar multiplication.
-    component bjjDerivation = BabyPbk();
+    // 2. Derive the per-schema public key via BabyJubJub scalar
+    //    multiplication.  Uses the local `BabyPbk254` (above) instead
+    //    of `circomlib::BabyPbk()` because Poseidon outputs are
+    //    254-bit and the circomlib variant rejects ~26% of valid
+    //    field elements.  See the BabyPbk254 docstring and ADR
+    //    Phase 3.4 (circuit/Rust contract divergence closeout).
+    component bjjDerivation = BabyPbk254();
     bjjDerivation.in <== credentialPrivKey;
     credentialPubKeyAx <== bjjDerivation.Ax;
     credentialPubKeyAy <== bjjDerivation.Ay;

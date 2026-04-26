@@ -384,6 +384,16 @@ jobs:
         run: cargo run -p solid-core --example gen_vectors -- tests/vectors/commitment_and_nullifier.json
       - name: Vectors unchanged (Rust is the source of truth)
         run: git diff --exit-code -- tests/vectors/commitment_and_nullifier.json
+      # Phase 3.4: regenerate the circuit-side vectors (BJJ keys,
+      # Poseidon-derived credPriv with bit-253 regression cases,
+      # 254-bit-safe Fp ordering ground truth) and assert no drift.
+      # Rust is the source of truth here too; any divergence between
+      # `solid_core::babyjubjub` / `poseidon` and the committed
+      # fixture is a HARD failure that blocks the build.
+      - name: Regenerate circuit vectors (Rust -> circuit fixture)
+        run: cargo run --release -p solid-core --example gen_circuit_vectors
+      - name: Circuit vectors unchanged
+        run: git diff --exit-code -- circuits/test/fixtures/circuit_vectors.json
       - name: Build wasm + SDK
         run: |
           export PATH="$PWD/.toolchain/bin:$PATH"
@@ -393,6 +403,19 @@ jobs:
       - name: Run TS-side vector check
         working-directory: ts-sdk
         run: npx ts-node --project ../tsconfig.json ../tests/vectors/check_vectors.ts
+      # Phase 3.4: drive the circuit mocha suite on the freshly
+      # regenerated fixture.  This closes the SDK<->circuit byte-
+      # identity contract: lt_bn254 + babypbk254 + identity_anchor
+      # all witness-calc against Rust ground truth, plus a triple
+      # witness against circomlibjs Poseidon.
+      - name: Install circuits npm deps
+        working-directory: circuits
+        run: npm ci
+      - name: Run circuit mocha suite
+        working-directory: circuits
+        run: |
+          export PATH="$PWD/../.toolchain/bin:$PATH"
+          npm test
 
   # ───────────────────────── 9. PROGRAM-ID CONSISTENCY ─────────────────────────
   # Hard gate on the drift that previously blocked a devnet deploy:

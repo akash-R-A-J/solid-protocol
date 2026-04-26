@@ -4,7 +4,18 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-26 ~02:20 IST (E2E push, B10 closed by
+- **Last updated:** 2026-04-27 (Phase 3.4 crypto + IDE stability).
+  `crates/solid-core/src/babyjubjub.rs` no longer uses `ark_ff::MontFp!`
+  for pinned `Fq` constants (`sqrt(168700)`, its inverse, and
+  arkworks-form Base8); the same wire values are loaded via
+  `Fq::from_le_bytes_mod_order` over `const [u8;32]` so rust-analyzer
+  stops panicking on `proc-macro panicked: could not parse` while
+  `cargo test -p solid-core --lib babyjubjub` stays green.  Circuit
+  regression suite (`circuits/test/*.test.js` against
+  `gen_circuit_vectors` output) and CI wiring are documented in
+  `docs/CURRENT_STATE.md` §5.2--5.3 and `CLAUDE.md` (toolchain note).
+  See also `plan/IMPLEMENTATION_PLAN.md` revision line.
+- **Previous update:** 2026-04-26 ~02:20 IST (E2E push, B10 closed by
   contract redesign).  Latest event: `npm run bootstrap-issuer`
   walks all 8 contract steps + `[8b/10] append_issuer_leaf` cleanly
   on a fresh localnet validator.  B10 (`stake_tokens` access

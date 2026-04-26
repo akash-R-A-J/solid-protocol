@@ -127,10 +127,18 @@ export function poseidonHashBytes(inputs: Uint8Array[]): Uint8Array {
 // SOLID-SEC-010 cross-language vector coverage will eventually freeze
 // the wire shape, after which we can collapse the rename.
 function snakeCaseBjj(raw: any): BJJKeypair {
+  // wasm-bindgen + serde returns these as plain `number[]` (JSON arrays),
+  // not `Uint8Array`. The `BJJKeypair` public contract promises
+  // `Uint8Array`, and downstream consumers (e.g. holder cohesion check
+  // calling `Buffer.from(...).compare(derivedX)`) require a typed array
+  // -- `Buffer.compare` rejects raw arrays with ERR_INVALID_ARG_TYPE.
+  // Coerce here once so every consumer sees the documented type.
+  const toU8 = (v: any): Uint8Array =>
+    v instanceof Uint8Array ? v : Uint8Array.from(v);
   return {
-    private_key: raw.privateKey ?? raw.private_key,
-    public_key_x: raw.publicKeyX ?? raw.public_key_x,
-    public_key_y: raw.publicKeyY ?? raw.public_key_y,
+    private_key: toU8(raw.privateKey ?? raw.private_key),
+    public_key_x: toU8(raw.publicKeyX ?? raw.public_key_x),
+    public_key_y: toU8(raw.publicKeyY ?? raw.public_key_y),
   };
 }
 
@@ -393,12 +401,26 @@ export class QueryBuilder {
 
     const hIndices = poseidonHash([...credIndices, ...fieldIndices]);
     const hOps = poseidonHash([...ops, ...vals]);
-    
+
+    // u64 -> 32-byte LE (low 8 bytes carry the value, remaining 24 are
+    // zero).  Matches `solid_core::poseidon::u64_to_fr` /
+    // `fr_to_bytes_le` and the canonical pattern in computeIssuerLeaf
+    // above.  The circuit consumes these as field elements directly, so
+    // 8-byte LE and 32-byte LE encode the same field value (numPredicates
+    // and compoundLogic are both < 2^64).  poseidonHashBytes requires
+    // 32-byte chunks at the wasm boundary; passing 8 bytes throws
+    // "input[i] is 8".
+    const u64Le32 = (v: bigint): Uint8Array => {
+      const out = new Uint8Array(32);
+      let x = v;
+      for (let i = 0; i < 8; i++) { out[i] = Number(x & 0xffn); x >>= 8n; }
+      return out;
+    };
     return poseidonHashBytes([
-        hIndices, 
-        hOps, 
-        new Uint8Array(new BigUint64Array([BigInt(this._predicates.length)]).buffer),
-        new Uint8Array(new BigUint64Array([this._logic === 'AND' ? 0n : 1n]).buffer)
+      hIndices,
+      hOps,
+      u64Le32(BigInt(this._predicates.length)),
+      u64Le32(this._logic === 'AND' ? 0n : 1n),
     ]);
   }
 

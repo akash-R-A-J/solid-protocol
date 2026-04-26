@@ -7,10 +7,11 @@
     "build:idl": "node scripts/build_idls.mjs",
     "init-onchain": "tsx scripts/initialize.ts",
     "backfill-issuer-tree": "tsx scripts/backfill_issuer_tree.ts",
+    "bootstrap-schema-tree": "tsx scripts/bootstrap_schema_tree.ts",
     "bootstrap-issuer": "tsx scripts/bootstrap_issuer.ts",
     "issue": "tsx scripts/issue.ts",
     "prove": "tsx scripts/prove.ts",
-    "e2e": "npm run build:idl && npm run init-onchain && npm run backfill-issuer-tree && npm run bootstrap-issuer && npm run issue && npm run prove",
+    "e2e": "npm run build:idl && npm run init-onchain && npm run backfill-issuer-tree && npm run bootstrap-schema-tree && npm run bootstrap-issuer && npm run issue && npm run prove",
     "check-vectors": "tsx tests/vectors/check_vectors.ts"
   },
   "dependencies": {

@@ -123,3 +123,10 @@ anyhow = "1.0"
 [[example]]
 name = "gen_vectors"
 path = "examples/gen_vectors.rs"
+
+# Phase-3.4: circuit-side ground-truth vectors.  Consumed by mocha
+# tests under `circuits/test/` (lt_bn254, babypbk254,
+# identity_anchor_derivation).  See ADR-0017.
+[[example]]
+name = "gen_circuit_vectors"
+path = "examples/gen_circuit_vectors.rs"

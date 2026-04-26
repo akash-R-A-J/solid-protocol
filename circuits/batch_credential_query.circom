@@ -8,6 +8,7 @@ include "lib/credential_atom.circom";
 include "lib/predicate_evaluator.circom";
 include "lib/nullifier_expiry.circom";
 include "lib/merkle_inclusion.circom";   // ADR-0014 issuer-tree inclusion
+include "lib/lt_bn254.circom";           // 254-bit-safe LessThan over Fp
 
 /// ============================================================================
 /// BatchCredentialQuerySolana (Phase 3.6)
@@ -167,7 +168,8 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH,
     //   `isZero[i].out` is in scope when we wire `anchors[i].enabled`.
     // ========================================================================
     component isZero[NUM_CREDS];
-    component ordering[NUM_CREDS - 1];
+    // (Phase 3.4) Old `LessThan(252)` array removed; see `orderingV2`
+    // below for the 254-bit-safe replacement.
     for (var i = 0; i < NUM_CREDS; i++) {
         isZero[i] = IsZero();
         isZero[i].in <== schemaHashes[i];
@@ -195,14 +197,29 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH,
         isZero[i].out * issuerRevocationNonces[i] === 0;
     }
 
+    // SEC-Phase-3.4: replaced `LessThan(252)` with `LessThanBN254`.
+    //
+    // schemaHashes are full-domain Poseidon outputs in [0, p) where
+    // p ~= 2^253.85.  The circomlib `LessThan(n)` template hard-asserts
+    // `n <= 252` and overflows `Num2Bits(n+1)` on 254-bit inputs,
+    // which during v0.6 e2e bring-up caused ~1-in-4 sort orderings to
+    // spuriously fail at this assert.  `LessThanBN254` strict-decomposes
+    // both inputs (with AliasCheck) and walks the bits MSB-first,
+    // producing a sound comparison over the full BN254 field.
+    //
+    // The on-chain verifier's `verify_batch_proof` uses byte-level
+    // strictly-ascending comparison on the active schema hashes
+    // (programs/zk-verifier/src/lib.rs §(4)), so the on-chain and
+    // in-circuit orderings stay byte-for-byte consistent.
     signal orderingNextNotZero[NUM_CREDS - 1];
+    component orderingV2[NUM_CREDS - 1];
     for (var i = 0; i < NUM_CREDS - 1; i++) {
-        ordering[i] = LessThan(252);
-        ordering[i].in[0] <== schemaHashes[i];
-        ordering[i].in[1] <== schemaHashes[i+1];
+        orderingV2[i] = LessThanBN254();
+        orderingV2[i].in[0] <== schemaHashes[i];
+        orderingV2[i].in[1] <== schemaHashes[i+1];
 
         orderingNextNotZero[i] <== 1 - isZero[i+1].out;
-        orderingNextNotZero[i] * (1 - ordering[i].out) === 0;
+        orderingNextNotZero[i] * (1 - orderingV2[i].out) === 0;
     }
 
     // ========================================================================

@@ -278,9 +278,52 @@ export async function generateProof(
  * Generate a Groth16 proof for multiple credentials (N=4).
  * Phase 3.1: Composable Identity.
  */
+/**
+ * Synthesize a "padding" credential — a sentinel slot the circuit recognises
+ * via `schemaHash == 0` and short-circuits via `anchors[i].enabled = 0`.
+ *
+ * The contract (docs/MODULE_CONTRACTS.md §generateBatchProof) is that callers
+ * pass 1..NUM_CREDS=4 real credentials and the holder pads to 4 internally.
+ * Padding slots must be cohesion-safe: every active credential's
+ * `holderPubKeyX` is checked against `deriveCredentialKey(masterPriv,
+ * schemaHash).public_key_x`. For zero schemaHash the derivation is
+ * deterministic, so we synthesise the matching pubkey here and the cohesion
+ * loop trivially passes for padding without a special case.
+ */
+function makePaddingCredential(masterPrivateKey: Uint8Array): StoredCredential {
+  const zero32 = new Uint8Array(32);
+  const derived = deriveCredentialKey(masterPrivateKey, zero32);
+  return {
+    schemaHash: zero32,
+    attestationData: [0n, 0n, 0n, 0n, 0n, 0n, 0n, 0n], // NUM_FIELDS=8
+    issuerSignature: { r8_x: zero32, r8_y: zero32, s: zero32 },
+    issuerPubKeyX: zero32,
+    issuerPubKeyY: zero32,
+    holderPubKeyX: Uint8Array.from(derived.public_key_x),
+    holderPubKeyY: Uint8Array.from(derived.public_key_y),
+    holderPrivateKey: Uint8Array.from(derived.private_key),
+    salt: zero32,
+    commitment: zero32,
+    expirationTimestamp: 0,
+    merkleTree: PublicKey.default,
+    issuerAuthority: PublicKey.default,
+    issuerStatusEpoch: 0n,
+    issuerRevocationNonce: 0n,
+    issuerTreeLeafIndex: 0n,
+  };
+}
+
+// Detect padding slots (schemaHash == 0 sentinel; circuit gates such
+// slots off via `anchors[i].enabled = 0`).  Hoisted as a function
+// declaration so the canonical-ordering sort at the top of
+// `generateBatchProof` can use it without a TDZ on the const-arrow form.
+function isPaddingSlot(c: StoredCredential): boolean {
+  return Buffer.from(c.schemaHash).every(b => b === 0);
+}
+
 export async function generateBatchProof(
   query: MultiCredentialQuery,
-  credentials: StoredCredential[], // Must be up to 4, padded with placeholders
+  credentials: StoredCredential[], // 1..NUM_CREDS=4; padded to NUM_CREDS internally.
   masterPrivateKey: Uint8Array,
   masterPublicKey: { x: Uint8Array; y: Uint8Array },
   revocationNonce: bigint,
@@ -302,11 +345,53 @@ export async function generateBatchProof(
 ): Promise<BatchProofResult> {
   await initWasm();
 
+  // Contract: 1..NUM_CREDS=4 real credentials, padded internally to NUM_CREDS.
+  if (credentials.length === 0 || credentials.length > MAX_CREDENTIALS) {
+    throw new Error(
+      `generateBatchProof: expected 1..${MAX_CREDENTIALS} credentials, got ${credentials.length}`,
+    );
+  }
+  const paddedCredentials: StoredCredential[] = credentials.slice();
+  while (paddedCredentials.length < MAX_CREDENTIALS) {
+    paddedCredentials.push(makePaddingCredential(masterPrivateKey));
+  }
+
   // SEC-20: Canonical Ordering & Smart Sorting (Phase 3.2)
-  // 1. Sort credentials with a stable sort to maintain predictability
-  const sortedCredsWithIndices = credentials
+  //
+  // Slot layout: ACTIVE credentials first (ascending by schemaHash, strictly),
+  // PADDING (schemaHash == 0) last.
+  //
+  // The on-chain verifier (programs/zk-verifier/src/lib.rs §(4)) is
+  // position-agnostic: it skips zero slots and only requires the active
+  // schemas to be strictly ascending. The circuit, however, encodes the
+  // same intent via `LessThan(252)` at batch_credential_query.circom:200,
+  // and that comparator's internal `Num2Bits(253)` overflows when one of
+  // its operands is a 254-bit Poseidon output (which is the canonical
+  // BN254 schemaHash size per crates/solid-core/src/poseidon.rs). With
+  // padding interleaved between actives - e.g. [0, 0, 0, h] - the
+  // boundary pair (in[0]=0, in[1]=h) makes the witness value
+  // (2^252 - h) mod p land at 253 bits with bit 252 set, which the
+  // gated constraint at line 205 then rejects.
+  //
+  // Sorting active-first sidesteps this entirely: every padding pair is
+  // (0, 0) (witness = 2^252, fits in 253 bits, gated off via
+  // orderingNextNotZero[i] = 0), and every active->padding transition
+  // (h, 0) gives witness h + 2^252 (mod p) which is small (~251 bits)
+  // because p ~= 2^254. The sort is consistent with the on-chain
+  // verifier's contract, so no ordering disagreement is introduced.
+  //
+  // Fixing the circuit comparator to natively handle 254-bit field
+  // elements is tracked under Phase 3 (requires a new trusted setup);
+  // until then, this canonical layout is the SDK's responsibility.
+  const sortedCredsWithIndices = paddedCredentials
     .map((c, i) => ({ cred: c, originalIndex: i }))
     .sort((a, b) => {
+        const aIsPad = isPaddingSlot(a.cred);
+        const bIsPad = isPaddingSlot(b.cred);
+        // Padding always sorts after actives.
+        if (aIsPad && !bIsPad) return 1;
+        if (!aIsPad && bIsPad) return -1;
+        // Within actives (or within padding), ascending hex of schemaHash.
         const hexA = Buffer.from(a.cred.schemaHash).toString('hex');
         const hexB = Buffer.from(b.cred.schemaHash).toString('hex');
         return hexA.localeCompare(hexB);
@@ -360,11 +445,43 @@ export async function generateBatchProof(
   // used downstream.
   void masterPublicKey;
 
+  // (isPaddingSlot is hoisted above generateBatchProof so the sort
+  // comparator at the top of this function -- which runs before
+  // const initialisers in linear order -- can call it without
+  // tripping a TDZ.)
+
+  // Per-circuit depths must match the main-component params at
+  // batch_credential_query.circom:459 -- BatchCredentialQuerySolana(
+  //   TREE_DEPTH=20, GLOBAL_DEPTH=20, ISSUER_TREE_DEPTH=16, ...).
+  const TREE_DEPTH = 20;
+  const GLOBAL_DEPTH = 20;
+  const ISSUER_TREE_DEPTH = 16;
+  const zeroSiblingsTree = Array.from({ length: TREE_DEPTH }, () => '0');
+  const zeroPathTree = Array.from({ length: TREE_DEPTH }, () => 0);
+  const zeroSiblingsGlobal = Array.from({ length: GLOBAL_DEPTH }, () => '0');
+  const zeroPathGlobal = Array.from({ length: GLOBAL_DEPTH }, () => 0);
+  const zeroSiblingsIssuer = Array.from({ length: ISSUER_TREE_DEPTH }, () => '0');
+  const zeroPathIssuer = Array.from({ length: ISSUER_TREE_DEPTH }, () => 0);
+
   // 4. Fetch per-credential Merkle proofs (per-schema SPL AC trees).
+  // Padding slots return a zero-shaped placeholder; the circuit's
+  // `isZero[i].out * merkleRoots[i] === 0` constraint accepts root=0.
   const credentialProofs = await Promise.all(
-    sortedCredentials.map(c =>
-      lightFetchMerkleProof(options.merkleProofAdapter, c.merkleTree, c.commitment),
-    ),
+    sortedCredentials.map(c => {
+      if (isPaddingSlot(c)) {
+        return Promise.resolve({
+          leaf: new Uint8Array(32),
+          siblings: zeroSiblingsTree,
+          pathIndices: zeroPathTree,
+          root: new Uint8Array(32),
+        });
+      }
+      return lightFetchMerkleProof(
+        options.merkleProofAdapter,
+        c.merkleTree,
+        c.commitment,
+      );
+    }),
   );
 
   // 5. Fetch a per-credential global inclusion proof.
@@ -378,30 +495,48 @@ export async function generateBatchProof(
   //
   // We reuse the keypairs derived in step 2b so the cohesion check and
   // the anchor leaves consume the exact same derivation.
-  const perSchemaAnchors = derivedKeypairs.map(kp => {
-    const leaf = computeIdentityState(kp.public_key_x, kp.public_key_y, revocationNonce);
-    return { keypair: kp, leaf };
-  });
+  //
+  // Padding slots short-circuit: the circuit's IdentityAnchor honors
+  // `enabled = 0` and skips the global-tree inclusion check entirely,
+  // so we hand it a zero-shaped placeholder rather than fetching a
+  // proof for a leaf that does not exist in the indexer.
   const globalProofs = await Promise.all(
-    perSchemaAnchors.map(a =>
-      lightFetchMerkleProof(
+    sortedCredentials.map((c, i) => {
+      if (isPaddingSlot(c)) {
+        return Promise.resolve({
+          leaf: new Uint8Array(32),
+          siblings: zeroSiblingsGlobal,
+          pathIndices: zeroPathGlobal,
+          root: new Uint8Array(32),
+        });
+      }
+      const kp = derivedKeypairs[i];
+      const leaf = computeIdentityState(kp.public_key_x, kp.public_key_y, revocationNonce);
+      return lightFetchMerkleProof(
         options.merkleProofAdapter,
         options.globalStateTree,
-        a.leaf,
-      ),
-    ),
+        leaf,
+      );
+    }),
   );
-  // Sanity: every credential's global root should be the same (single tree).
-  const canonicalGlobalRoot = globalProofs[0]?.root;
-  if (!canonicalGlobalRoot) {
-    throw new Error('No global-state proof returned for any credential');
-  }
-  for (const p of globalProofs) {
-    if (Buffer.from(p.root).compare(canonicalGlobalRoot) !== 0) {
+  // Sanity: every ACTIVE credential's global root should match (single tree).
+  // Padding slots carry a zero root that the circuit ignores; skip them.
+  let canonicalGlobalRoot: Uint8Array | undefined;
+  for (let i = 0; i < sortedCredentials.length; i++) {
+    if (isPaddingSlot(sortedCredentials[i])) continue;
+    const r = globalProofs[i].root;
+    if (!canonicalGlobalRoot) {
+      canonicalGlobalRoot = r;
+      continue;
+    }
+    if (Buffer.from(r).compare(canonicalGlobalRoot) !== 0) {
       throw new Error(
         'Global-state proofs returned divergent roots — indexer may be inconsistent',
       );
     }
+  }
+  if (!canonicalGlobalRoot) {
+    throw new Error('No active credential supplied: cannot derive global root');
   }
 
   // 5b. ADR-0014: per-credential issuer-tree inclusion proofs.  The
@@ -414,22 +549,16 @@ export async function generateBatchProof(
   // inclusion check via `enabled = 0` (SOLID-SEC-029), but we still
   // need PATH-SHAPED garbage to hand snarkjs; any zero-filled path
   // works because the MerkleInclusion template short-circuits.
-  const ISSUER_TREE_DEPTH = 16; // matches batch_credential_query.circom's
-                                 // main-component param
-  const zeroSiblings = Array.from({ length: ISSUER_TREE_DEPTH }, () => '0');
-  const zeroPathIndices = Array.from({ length: ISSUER_TREE_DEPTH }, () => 0);
-
   const issuerProofs = await Promise.all(
     sortedCredentials.map(async (c) => {
       // Padding slot?  schemaHash == 0 is the circuit's active-flag
       // sentinel; return a placeholder proof shape that the circuit
       // will ignore.
-      const isPadding = Buffer.from(c.schemaHash).every((b) => b === 0);
-      if (isPadding) {
+      if (isPaddingSlot(c)) {
         return {
           leaf: new Uint8Array(32),
-          siblings: zeroSiblings,
-          pathIndices: zeroPathIndices,
+          siblings: zeroSiblingsIssuer,
+          pathIndices: zeroPathIssuer,
           root: options.issuerTreeRoot,
         };
       }
@@ -489,7 +618,11 @@ export async function generateBatchProof(
     masterIdentityKey: bufToDecimal(masterPrivateKey),
     revocationNonce: revocationNonce.toString(),
     // Per-credential global-tree siblings/pathIndices.
-    globalSiblings: globalProofs.map(p => p.siblings),
+    // Convert Uint8Array[] siblings to decimal strings; padding slots
+    // already supply string[] (zero-filled), so the conversion is idempotent.
+    globalSiblings: globalProofs.map(p =>
+      p.siblings.map((s: any) => (s instanceof Uint8Array ? bufToDecimal(s) : s)),
+    ),
     globalPathIndices: globalProofs.map(p => p.pathIndices),
 
     data: sortedCredentials.map(c => c.attestationData.map(d => d.toString())),
@@ -499,7 +632,9 @@ export async function generateBatchProof(
     issuerSigSs: sortedCredentials.map(c => bufToDecimal(c.issuerSignature.s)),
     issuerPubKeyAxs: sortedCredentials.map(c => bufToDecimal(c.issuerPubKeyX)),
     issuerPubKeyAys: sortedCredentials.map(c => bufToDecimal(c.issuerPubKeyY)),
-    merkleSiblings: credentialProofs.map((p: any) => p.siblings),
+    merkleSiblings: credentialProofs.map((p: any) =>
+      p.siblings.map((s: any) => (s instanceof Uint8Array ? bufToDecimal(s) : s)),
+    ),
     merklePathIndices: credentialProofs.map((p: any) => p.pathIndices),
     expirationTimestamps: sortedCredentials.map(c => c.expirationTimestamp),
 
@@ -521,7 +656,9 @@ export async function generateBatchProof(
         ? '0'
         : c.issuerRevocationNonce.toString(),
     ),
-    issuerSiblings: issuerProofs.map(p => p.siblings),
+    issuerSiblings: issuerProofs.map(p =>
+      p.siblings.map((s: any) => (s instanceof Uint8Array ? bufToDecimal(s) : s)),
+    ),
     issuerPathIndices: issuerProofs.map(p => p.pathIndices),
   };
 
@@ -540,6 +677,11 @@ export async function generateBatchProof(
 
   // 4. Run SnarkJS
   console.log('Generating Batch Groth16 proof (N=4)...');
+  if (process.env.SOLID_DEBUG_CIRCUIT_INPUT) {
+    const fs = await import('fs');
+    fs.writeFileSync('/tmp/solid-circuit-input.json', JSON.stringify(circuitInput, null, 2));
+    console.log('[debug] dumped circuit input -> /tmp/solid-circuit-input.json');
+  }
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
     circuitPaths.wasmPath,

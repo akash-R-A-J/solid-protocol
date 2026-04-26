@@ -167,7 +167,11 @@ async function main() {
   const startTs = Date.now();
   const proofResult = await generateBatchProof(
     query,
-    [credential, credential, credential, credential].slice(0, 1), // pad-on-slot-0 is acceptable
+    // Holder SDK contract (docs/MODULE_CONTRACTS.md §generateBatchProof):
+    // 1..NUM_CREDS=4 active credentials; padding to 4 is performed
+    // internally with sentinel slots (schemaHash == 0), which the
+    // circuit gates off via `anchors[i].enabled = 0`.
+    [credential],
     holderMasterPriv,
     {
       x: Uint8Array.from(state.holderMaster.public_key_x),

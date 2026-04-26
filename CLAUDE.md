@@ -131,6 +131,14 @@ The rust pin is enforced two ways now:
   `!.vscode/settings.json`) because the wiring is project-wide, not
   personal.
 
+- `crates/solid-core/src/babyjubjub.rs` pins BabyJubJub / isomorphism
+  field constants with `Fq::from_le_bytes_mod_order` over `const [u8;32]`
+  rather than `ark_ff::MontFp!`.  The literals are byte-identical to the
+  old macro-expanded values; the change exists because `MontFp!` can
+  still make rust-analyzer report `proc-macro panicked: could not parse`
+  when the IDE's proc-macro server drifts from the workspace toolchain,
+  even after the `rust-toolchain.toml` + `.vscode/settings.json` wiring above.
+
 Recent cargo versions (1.95+) work for host tests but anchor build still
 wants the pinned rust-toolchain.
 

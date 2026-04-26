@@ -124,7 +124,11 @@ async function main() {
       // to `register_schema`.
       schemaName: state.schemaName,
       schemaVersion: state.schemaVersion,
-      extraSigners: [wallet], // wallet pays fees if issuerAuthority is unfunded
+      // The bootstrap_issuer-generated `issuerAuthority` is an unfunded
+      // ephemeral key; the local wallet fronts lamports for the
+      // append-leaf CPI.  The SDK binds this to tx.feePayer and signs
+      // with both keys.
+      feePayer: wallet,
     },
   );
   console.log(`   commitment: ${Buffer.from(credential.commitment).toString('hex')}`);
