@@ -49,11 +49,23 @@ scripts/e2e_state.*.json
 scripts/.secrets/
 ~/.solid-protocol/
 
-# Program-deploy keypairs (localnet/devnet). These are the secret material
-# behind the canonical declare_id! values; deployments/*.json carries only
-# the public keys. Never commit. README.md inside keys/ is also untracked
-# because the directory itself is ignored.
-keys/
+# Program-deploy keypairs.
+#
+# `keys/localnet/` IS tracked — those keypairs back the canonical
+# declare_id! values that Anchor.toml, every program crate, and
+# deployments/devnet.json all agree on (CI: scripts/check_program_ids.py).
+# Without them, `anchor build` silently regenerates fresh IDs on every
+# clean checkout and breaks the whole owner-check / issuer-tree-binding
+# invariant. They are localnet/devnet test material with no economic
+# value; rotating them is harmless. See keys/localnet/README.md for the
+# rationale and the devnet-rollout caveat.
+#
+# Anything else under `keys/` (devnet-rotated sets, mainnet upgrade
+# authority, ad-hoc operator keys) MUST stay untracked. The patterns
+# below allow only `keys/localnet/` and ignore everything else.
+keys/*
+!keys/localnet/
+!keys/localnet/**
 
 # Trusted-setup ceremony artefacts. .ptau files are large (>100 MB) and
 # deterministic from snarkjs; regenerate via circuits/scripts/setup.js.
