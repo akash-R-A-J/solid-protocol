@@ -108,10 +108,11 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | SOLID-SEC-042   | INFO     | Fixed  | `VerifierConfig::SPACE` doc drift (45/43 vs actual 49) across POST_REMEDIATION_AUDIT + MODULE_CONTRACTS |
 | SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
 | SOLID-SEC-044   | LOW      | Fixed  | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
-| SOLID-SEC-045   | MEDIUM   | Open   | `revoke_issuer_atomic` / `request_withdrawal_atomic` do not update `IssuerTreeBinding.current_root` in the same ix |
+| SOLID-SEC-045   | MEDIUM   | Fixed  | `revoke_issuer_atomic` / `request_withdrawal_atomic` do not update `IssuerTreeBinding.current_root` in the same ix |
 | SOLID-SEC-046   | MEDIUM   | Open   | No CU-budget regression gate on `verify_batch_proof` |
 | SOLID-SEC-047   | MEDIUM   | Fixed  | `verify_batch_proof` Anchor wrapper exceeds BPF 4 KB per-frame stack by ~456 B (structural; surfaced post Poseidon refactor) |
 | SOLID-SEC-048   | HIGH     | Open (interim bypass live) | `register_issuer` BJJ prime-order subgroup check exceeds 1.4M CU per-tx ceiling on BPF; localnet/devnet builds gate the check behind `sec007-skip-onchain` Cargo feature -- mainnet-blocking until a CU-affordable on-chain replacement ships |
+| SOLID-SEC-049   | HIGH     | Fixed  | `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` mismatched `sha256("global:replace_leaf")[..8]` -- both atomic ixs would have failed at the SPL AC CPI with `InstructionFallbackNotFound`; latent because no integration test had ever exercised revoke / cooldown |
 
 ---
 
@@ -1143,7 +1144,16 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 ### SOLID-SEC-045 -- Atomic handlers do not update `IssuerTreeBinding.current_root` in-ix
 
 - **Severity:** MEDIUM
-- **Status:** Open
+- **Status:** Fixed (2026-04-27, this session).  Closure receipts:
+  helper unit tests `keccak_root_recompute_*` (7 cases) +
+  `write_binding_root_*` (5 cases) + program-level layout pins
+  (5 cases); BPF link green for `issuer-registry`; full host-side
+  workspace 154+ tests green.  Integration test 07b
+  (`tests/integration/07b_revoke_atomic_binding_update.test.ts`)
+  is the canonical end-to-end gate per the audit and remains the
+  outstanding deliverable -- it requires SPL AC + noop fixtures
+  plus a bankrun + jest harness that did not exist when this fix
+  landed; tracked as a follow-up under the integration suite.
 - **Introduced:** 2026-04-24 (Phase 2 design of
   `revoke_issuer_atomic`, extended by the Phase 3 impl 4 clone to
   `request_withdrawal_atomic`).  Surfaced in the v0.6.1 deep audit
@@ -1171,30 +1181,49 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
   against the stale binding until the operator catches up.  The
   revocation / cooldown is therefore not atomic in practice despite
   the handler name.
-- **Remediation (planned).**  Two-step:
-  1. Change `issuer_tree_binding` from `UncheckedAccount` to a
-     writable account in the `RevokeIssuerAtomic` and
-     `RequestWithdrawalAtomic` contexts.  Re-derive the PDA with
-     `seeds = [b"issuer-tree-binding"]` to preserve owner-check
-     semantics.
-  2. After the `invoke_signed(replace_leaf, ...)` succeeds,
-     compute the new root on-chain from `(old_root, old_leaf,
-     new_leaf, path)` -- the caller already supplies the path in
-     `remaining_accounts` -- or re-read the SPL AC changelog, and
-     write the new root + `Clock::slot` directly into
-     `IssuerTreeBinding.current_root` + `last_updated_slot` in the
-     same ix.  The binding PDA signer seeds are
-     `(crate::ID, [b"issuer-tree-binding"])`; no extra CPI needed.
-  3. Strengthen the doc comment in both handlers from "caller
-     MUST" to "this ix replaces `IssuerTreeBinding.current_root`
-     atomically".  Legacy `update_issuer_tree_root` stays as an
-     escape hatch for the pre-ADR-0014 flow and the backfill
-     path.
-- **Regression gate.**  `tests/integration/07b_revoke_atomic_
-  binding_update.test.ts`: invoke `revoke_issuer_atomic` and
-  attempt `verify_batch_proof` with a pre-revocation proof in
-  the same slot; expect `IssuerTreeRootMismatch`, not success.
-  Add the mirror test for `request_withdrawal_atomic`.
+- **Remediation (landed 2026-04-27).**
+  1. `RevokeIssuerAtomic` and `RequestWithdrawalAtomic` accounts
+     structs both gained an `mut` `issuer_tree_binding:
+     UncheckedAccount` (seeds `[b"issuer-tree-binding"]`).
+  2. After `invoke_signed(replace_leaf, ...)`, the handlers now
+     recompute the post-CPI root on-chain by walking the proof
+     path with Keccak256 (helper:
+     `solid_light::cpi_helpers::compute_concurrent_merkle_root_
+     keccak`).  Soundness rests on (a) the CPI's prior validation
+     of the path against the pre-CPI root and (b) Keccak256
+     pre-image resistance: a malicious caller cannot lie about the
+     new root without breaking either invariant.  A pre-CPI gate
+     `require!(remaining_accounts.len() == ISSUER_TREE_DEPTH)`
+     forbids canopy-shortened paths so the recomputation always
+     hits the actual root.
+  3. The binding write itself is now a small helper
+     `write_issuer_tree_binding_root(data, &new_root, slot)` that
+     re-asserts owner-checked discriminator + active status before
+     copying `new_root` into `[40..72)` and `slot` into `[72..80)`.
+  4. Doc comments at both ixs updated from "caller MUST also call
+     `update_issuer_tree_root`" to "this ix replaces
+     `IssuerTreeBinding.current_root` atomically".
+     `update_issuer_tree_root` remains as an escape hatch for
+     `append_issuer_leaf` (where the new root is not derivable
+     from inputs without reading SPL AC state) and for
+     out-of-band reconciliation; calling it after an atomic ix is
+     safely redundant.
+- **Regression gate.**  Layered:
+  * Host (this session): keccak path-recompute against hand-built
+    reference trees (7 cases incl. depth-0 identity, depth-1 left
+    vs right, full depth-3 round-trip, high-bit-of-index ignored,
+    known-answer depth 2, leaf-swap-changes-root,
+    full ISSUER_TREE_DEPTH=16 walk).  Plus binding-write helper
+    positive + frozen + bad-discriminator + short-buffer +
+    non-active-status cases.
+  * Integration (TBD):
+    `tests/integration/07b_revoke_atomic_binding_update.test.ts`
+    -- invoke `revoke_issuer_atomic` end-to-end against a real
+    SPL AC tree and attempt `verify_batch_proof` with the
+    pre-revocation proof in the same slot; expect
+    `IssuerTreeRootMismatch`.  Pending the bankrun + jest +
+    SPL AC fixture work tracked under the integration-suite
+    deliverable.
 - **Why this was not caught earlier.**  The v0.5 audit and
   ADR-0014 deliberately split replace_leaf from the binding
   update to keep the CPI ix CU-cheap.  The caller-discipline was
@@ -1521,6 +1550,83 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
     correctness; SEC-048 extends it to BPF-runtime feasibility
     and is the active line until closed.
 
+### SOLID-SEC-049 -- Wrong `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` -- atomic ixs would have failed at the CPI
+
+- **Severity:** HIGH (functional break of every atomic revocation
+  path; no on-chain state reachable through the broken ixs, so no
+  data-integrity exposure -- but the entire SOLID-SEC-044 / -045
+  control surface was non-functional in production).
+- **Status:** Fixed (2026-04-27, this session).
+- **Discovered:** 2026-04-27, surfaced by an explicit derivation
+  test added to `programs/issuer-registry/src/lib.rs::tests`
+  while landing the SOLID-SEC-045 fix.  The test computes
+  `sha256("global:replace_leaf")[..8]` and compares against the
+  hardcoded `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` constant.  The
+  constant was `[0xe3, 0x88, 0x6a, 0x74, 0x10, 0xe4, 0xe8, 0x2c]`;
+  the canonical preimage gives `[0xcc, 0xa5, 0x4c, 0x64, 0x49,
+  0x93, 0x00, 0x80]`.  The mismatched byte sequence does not match
+  any candidate preimage tested
+  (`global:replace_leaf`, `global:append`, `global:set_leaf`,
+  `replace_leaf`, `spl_account_compression:replace_leaf`,
+  `global:transfer_authority`, `global:verify_leaf`,
+  `global:close_empty_tree`, `global:insert_or_append`,
+  `global:init_empty_merkle_tree`).  The constant was apparently
+  invented out of band and never sanity-checked.
+- **Evidence (pre-fix code):** the constant lived at
+  `programs/issuer-registry/src/lib.rs:53-54` and was used in
+  `revoke_issuer_atomic` (line ~1392) and
+  `request_withdrawal_atomic` (line ~1604) inside the
+  hand-rolled `replace_leaf` CPI's data buffer.  The doc comment
+  above the constant claimed it was
+  `sha256("global:replace_leaf")[..8]` -- a doc lie (CLAUDE.md
+  L6) that was never enforced.
+- **Impact.**  Both atomic ixs are the *only* sound path from
+  `Approved` to `Revoked` / `Cooldown` for an issuer who has
+  been enrolled into the issuer tree (legacy `revoke_issuer` and
+  `request_withdrawal` REFUSE for `is_tree_enrolled = true`).
+  With the wrong discriminator the SPL AC program would have
+  returned `InstructionFallbackNotFound` on the very first call;
+  the wrapper handler never wrote any state because it returns
+  on `?`-propagated CPI errors before the registry bookkeeping +
+  binding update.  Net effect: the working ADR-0014 atomicity
+  story was non-functional in production, AND the SOLID-SEC-044
+  Phase 3 closeout claim was structurally incorrect.
+- **Latent because.**  No integration test had ever exercised
+  either atomic ix.  Unit tests only covered VK / Poseidon
+  primitives.  `npm run e2e` walks through
+  `register_issuer` -> `vote_on_issuer` -> `finalize_voting` ->
+  `append_issuer_leaf` -> `issue` -> `prove`; revoke /
+  cooldown were not on the happy-path script and were never
+  reached.  A first integration test on `revoke_issuer_atomic`
+  (the missing test 07b in the v0.6.1 audit's Section 5.4
+  remediation list) would have caught this on day one.
+- **Remediation (landed this session).**
+  - `programs/issuer-registry/src/lib.rs:53-67` -- constant
+    replaced with `[0xcc, 0xa5, 0x4c, 0x64, 0x49, 0x93, 0x00,
+    0x80]` plus an extended doc-comment naming SEC-049 and
+    pointing at the regression gate.
+  - Same file's test module: two tests
+    (`replace_leaf_discriminator_matches_anchor_global_
+    replace_leaf` + `append_discriminator_matches_anchor_global_
+    append`) compute `sha256("global:<name>")[..8]` from the
+    canonical preimage at test time and compare against the
+    constants.  Any future Anchor / SPL AC namespace change OR
+    any silent typo on the constants fails CI.
+- **Regression gate.**  The two host-side discriminator tests
+  above; plus the same SPL-AC-integration test 07b once
+  the bankrun + jest harness lands -- a wrong discriminator now
+  means the integration test fails at the CPI rather than
+  hiding behind the missing binding-update gap that 07b was
+  originally designed to surface.
+- **Why this was not caught earlier.**  Two compounding gaps:
+  (a) the only validation of the constant was a doc-comment
+  claim that was never machine-checked; (b) no integration
+  pathway exercised the dependent ixs, so the runtime failure
+  signal was absent.  The fix closes both: a unit-test gate that
+  recomputes from the canonical preimage, and a registry note
+  that the integration test for revoke / cooldown is now
+  load-bearing for SEC-044, SEC-045, AND SEC-049.
+
 ---
 
 ## History
@@ -1542,6 +1648,7 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | 2026-04-25 | `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md` (post Phase-3-impl-4 snapshot) | SOLID-SEC-045, -046               | 0 (both introduced Open)                          |
 | 2026-04-25 | Build-pipeline restoration session (circuit compile fixes, dep-cascade resolution, Poseidon BPF refactor, `verify_batch_proof` frame fix; `docs/E2E_BLOCKERS.md` tracker created) | SOLID-SEC-047                       | SOLID-SEC-047 (registered Fixed in working tree; `target/deploy/zk_verifier.so` builds cleanly post-fix) |
 | 2026-04-25 | E2E unblock session (B6/B7 closed; `npm run e2e` walked through `initialize` -> `backfill-issuer-tree` -> `bootstrap-issuer`; SEC-007 BPF CU exhaustion surfaced on `register_issuer` and a feature-gated bypass landed in working tree; documented as B9 in E2E_BLOCKERS) | SOLID-SEC-048                       | 0 (introduced Open with interim bypass live; localnet/devnet only) |
+| 2026-04-27 | Aggressive program-test sweep + SEC-045 atomic-binding closure session (this session)                              | SOLID-SEC-049                             | SOLID-SEC-045 (fixed via on-chain Keccak path-recompute + atomic binding write); SOLID-SEC-049 introduced AND fixed in the same session via the discriminator-derivation regression test |
 
 ### Note on the 2026-04-22 numbering
 

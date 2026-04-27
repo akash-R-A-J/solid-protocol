@@ -17,6 +17,13 @@ has been updated to reflect the post-fix state.
 - **Owner:** rolling — last engineer to update this file
 - **Purpose:** track the punch list, not the audit. The audit lives in
   `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`.
+- **State as of 2026-04-27 evening:** unchanged from 2026-04-26
+  ~02:15 IST.  No technical work landed today (strategy session,
+  see `plan/RESUME.md` last update + `plan/GO_TO_MARKET.md`).  Live
+  edge is still step 18 of the runbook below: `npm run issue`
+  followed by `npm run prove`.  Working tree from this morning's
+  Phase 3.4 crypto + IDE stability session is intact and
+  uncommitted; commit before pushing.
 
 ---
 

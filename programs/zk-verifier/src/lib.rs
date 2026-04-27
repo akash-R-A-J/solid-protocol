@@ -1258,4 +1258,140 @@ mod tests {
         let twice = negate_g1_point(&once).expect("negate twice");
         assert_eq!(point, twice, "double negation is identity");
     }
+
+    // ─── ADR-0014 public-input layout pins ────────────────────────────────
+    //
+    // The on-chain handler reads three specific slots of `public_inputs[]`
+    // by hardcoded index.  A reshuffle of the circuit's IO without
+    // matching changes here silently breaks every proof verification;
+    // these tests are the source-level regression gate.
+
+    #[test]
+    fn public_input_count_is_32() {
+        // Post ADR-0014 (issuerTreeRoot added at slot 10).
+        assert_eq!(NR_PUBLIC_INPUTS, 32);
+    }
+
+    #[test]
+    fn max_ic_is_public_inputs_plus_one() {
+        // Groth16's IC has length NR_PUBLIC_INPUTS + 1 by construction.
+        assert_eq!(MAX_IC, NR_PUBLIC_INPUTS + 1);
+    }
+
+    #[test]
+    fn public_input_indices_are_distinct_and_in_bounds() {
+        // The three load-bearing indices must be unique and inside
+        // 0..NR_PUBLIC_INPUTS.  A duplicate would silently let one
+        // public-input slot stand in for another in the on-chain
+        // gates.
+        for &idx in &[
+            ISSUER_TREE_ROOT_INPUT_INDEX,
+            VERIFIER_ADDRESS_INPUT_INDEX,
+            CURRENT_TIMESTAMP_INPUT_INDEX,
+        ] {
+            assert!(idx < NR_PUBLIC_INPUTS, "idx {} out of bounds", idx);
+        }
+        assert_ne!(ISSUER_TREE_ROOT_INPUT_INDEX, VERIFIER_ADDRESS_INPUT_INDEX);
+        assert_ne!(ISSUER_TREE_ROOT_INPUT_INDEX, CURRENT_TIMESTAMP_INPUT_INDEX);
+        assert_ne!(VERIFIER_ADDRESS_INPUT_INDEX, CURRENT_TIMESTAMP_INPUT_INDEX);
+    }
+
+    #[test]
+    fn public_input_indices_are_at_documented_slots() {
+        // The doc-comment header at the top of this file documents:
+        //   slot 10  = issuerTreeRoot
+        //   slot 29  = verifierAddress
+        //   slot 31  = currentTimestamp
+        // If anyone bumps these constants without updating the
+        // doc-comment + circuit, this test forces a conscious change.
+        assert_eq!(ISSUER_TREE_ROOT_INPUT_INDEX, 10);
+        assert_eq!(VERIFIER_ADDRESS_INPUT_INDEX, 29);
+        assert_eq!(CURRENT_TIMESTAMP_INPUT_INDEX, 31);
+    }
+
+    // ─── SOLID-SEC-005 timestamp-skew constants ───────────────────────────
+
+    #[test]
+    fn default_timestamp_skew_is_ten_minutes() {
+        assert_eq!(DEFAULT_TIMESTAMP_SKEW_SECONDS, 600);
+    }
+
+    #[test]
+    fn max_timestamp_skew_is_one_hour() {
+        assert_eq!(MAX_TIMESTAMP_SKEW_SECONDS, 3_600);
+    }
+
+    #[test]
+    fn default_skew_within_max_window() {
+        // Sanity: the on-chain handler must accept the default at init
+        // time.  If MAX is ever lowered below DEFAULT, every fresh
+        // initialize would fail at `set_timestamp_skew`'s bounds check.
+        assert!(DEFAULT_TIMESTAMP_SKEW_SECONDS <= MAX_TIMESTAMP_SKEW_SECONDS);
+    }
+
+    // ─── Constant integrity ───────────────────────────────────────────────
+
+    #[test]
+    fn nullifier_seed_is_null_literal() {
+        assert_eq!(NULLIFIER_SEED, b"null");
+    }
+
+    #[test]
+    fn cross_program_ids_match_canonical() {
+        // The owner-checks at lib.rs:446-450 / :467-471 / :523-527
+        // dereference these constants directly.  A drift would silently
+        // re-open the forged-trust-root attack surface (P0-2 / SEC-004).
+        assert_eq!(
+            SCHEMA_REGISTRY_ID.to_string(),
+            "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
+        );
+        assert_eq!(
+            ISSUER_REGISTRY_ID.to_string(),
+            "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
+        );
+    }
+
+    #[test]
+    fn zk_verifier_program_id_is_canonical() {
+        // Drift gate: ID literal matches CLAUDE.md's canonical list.
+        assert_eq!(
+            crate::ID.to_string(),
+            "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+        );
+    }
+
+    // ─── Negate-G1 known-answer ───────────────────────────────────────────
+
+    #[test]
+    fn negate_g1_known_answer_y_one() {
+        // X = 0, Y = 1 (BE).  P - 1 (BE) is BN254_FQ - 1.
+        // BN254_FQ in hex (BE):
+        //   0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
+        // P - 1 = ...d46 (last byte: 0x47 - 0x01 = 0x46).
+        let mut point = [0u8; 64];
+        point[63] = 0x01; // Y = 1 in big-endian
+        let out = negate_g1_point(&point).expect("negate");
+        // X must be unchanged.
+        assert_eq!(&out[..32], &[0u8; 32]);
+        // Y must be P - 1 (BE).  Last byte of P is 0x47 -> P-1 ends 0x46.
+        assert_eq!(out[63], 0x46);
+        // High byte of Y must be 0x30 (matches BN254_FQ first byte).
+        assert_eq!(out[32], 0x30);
+    }
+
+    #[test]
+    fn negate_g1_zero_zero_no_panic() {
+        // The (0, 0) "infinity sentinel" must not panic.  groth16-solana
+        // canonicalises before use; whatever bytes we produce, the
+        // pairing layer must accept or reject without us crashing.
+        let point = [0u8; 64];
+        let out = negate_g1_point(&point).expect("negate (0,0)");
+        // X is unchanged.
+        assert_eq!(&out[..32], &[0u8; 32]);
+        // Y becomes P - 0 = P.
+        // (Documenting expected output, not asserting equality with a
+        // canonical "infinity"; the pairing crate handles canonicalisation.)
+        assert_eq!(out[32], 0x30);
+        assert_eq!(out[63], 0x47);
+    }
 }

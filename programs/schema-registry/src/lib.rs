@@ -73,6 +73,145 @@ pub const SCHEMA_ACCOUNT_SPACE: usize = 32
     + 8
     + 8;
 
+// ─── Host-testable raw-bytes write helpers ─────────────────────────────────
+//
+// These helpers encapsulate the byte-level write contract for the two
+// custom-layout PDAs (`SchemaTreeBinding`, `GlobalStateBinding`) so the
+// inline ix bodies stay short AND so the layout checks can be unit-
+// tested with synthetic buffers.  The handler is responsible for the
+// owner-check on the AccountInfo BEFORE calling these (the byte-level
+// helpers cannot prove provenance).
+
+/// Apply a new root + current slot to a `SchemaTreeBinding` raw buffer.
+/// Caller must already have asserted `account.owner == crate::ID`.
+pub fn apply_schema_tree_root_update(
+    data: &mut [u8],
+    expected_schema_hash: &[u8; 32],
+    signer_pubkey: &[u8; 32],
+    new_root: &[u8; 32],
+    now_slot: u64,
+) -> Result<()> {
+    require!(
+        data.len() >= SCHEMA_TREE_BINDING_SIZE,
+        ErrorCode::MalformedBinding
+    );
+    require!(
+        data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
+        ErrorCode::MalformedBinding
+    );
+    require!(
+        &data[8..40] == expected_schema_hash.as_slice(),
+        ErrorCode::SchemaHashMismatch
+    );
+    require!(data[112] == STATUS_ACTIVE, ErrorCode::BindingFrozen);
+    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    require!(
+        &stored_authority == signer_pubkey,
+        ErrorCode::UnauthorizedTreeBinding
+    );
+    let last_slot_bytes: [u8; 8] = data[104..112].try_into().unwrap();
+    let last_slot = u64::from_le_bytes(last_slot_bytes);
+    require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
+
+    data[72..104].copy_from_slice(new_root);
+    data[104..112].copy_from_slice(&now_slot.to_le_bytes());
+    Ok(())
+}
+
+/// Apply a status byte to a `SchemaTreeBinding` raw buffer.  Caller
+/// must owner-check first.
+pub fn apply_schema_tree_status_update(
+    data: &mut [u8],
+    signer_pubkey: &[u8; 32],
+    new_status: u8,
+) -> Result<()> {
+    require!(
+        new_status == STATUS_ACTIVE || new_status == STATUS_FROZEN,
+        ErrorCode::InvalidStatus
+    );
+    require!(
+        data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
+        ErrorCode::MalformedBinding
+    );
+    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    require!(
+        &stored_authority == signer_pubkey,
+        ErrorCode::UnauthorizedTreeBinding
+    );
+    data[112] = new_status;
+    Ok(())
+}
+
+/// Rotate authority on a `SchemaTreeBinding` raw buffer.  Caller must
+/// owner-check first.
+pub fn apply_schema_tree_authority_rotation(
+    data: &mut [u8],
+    signer_pubkey: &[u8; 32],
+    new_authority: &[u8; 32],
+) -> Result<()> {
+    require!(
+        data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
+        ErrorCode::MalformedBinding
+    );
+    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    require!(
+        &stored_authority == signer_pubkey,
+        ErrorCode::UnauthorizedTreeBinding
+    );
+    data[113..145].copy_from_slice(new_authority);
+    Ok(())
+}
+
+/// Apply a new root + current slot to the singleton `GlobalStateBinding`
+/// raw buffer.  Caller must owner-check first.
+pub fn apply_global_root_update(
+    data: &mut [u8],
+    signer_pubkey: &[u8; 32],
+    new_root: &[u8; 32],
+    now_slot: u64,
+) -> Result<()> {
+    require!(
+        data.len() >= GLOBAL_STATE_BINDING_SIZE,
+        ErrorCode::MalformedBinding
+    );
+    require!(
+        data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
+        ErrorCode::MalformedBinding
+    );
+    let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
+    require!(
+        &stored_authority == signer_pubkey,
+        ErrorCode::UnauthorizedTreeBinding
+    );
+    let last_slot_bytes: [u8; 8] = data[40..48].try_into().unwrap();
+    let last_slot = u64::from_le_bytes(last_slot_bytes);
+    require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
+
+    data[8..40].copy_from_slice(new_root);
+    data[40..48].copy_from_slice(&now_slot.to_le_bytes());
+    Ok(())
+}
+
+/// Rotate authority on the singleton `GlobalStateBinding` raw buffer.
+/// Caller must owner-check first.
+pub fn apply_global_authority_rotation(
+    data: &mut [u8],
+    signer_pubkey: &[u8; 32],
+    new_authority: &[u8; 32],
+) -> Result<()> {
+    require!(
+        data.len() >= GLOBAL_STATE_BINDING_SIZE && data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
+        ErrorCode::MalformedBinding
+    );
+    let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
+    require!(
+        &stored_authority == signer_pubkey,
+        ErrorCode::UnauthorizedTreeBinding
+    );
+    data[48..80].copy_from_slice(new_authority);
+    Ok(())
+}
+
 /// Schema Registry — modular schema management + credential-tree bindings.
 #[program]
 pub mod schema_registry {
@@ -272,40 +411,14 @@ pub mod schema_registry {
             ErrorCode::InvalidBindingOwner
         );
         let mut data = binding_info.try_borrow_mut_data()?;
-        require!(
-            data.len() >= SCHEMA_TREE_BINDING_SIZE,
-            ErrorCode::MalformedBinding
-        );
-        require!(
-            data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
-            ErrorCode::MalformedBinding
-        );
-        // Schema-hash sanity — prevents refreshing the wrong binding.
-        require!(
-            &data[8..40] == schema_hash.as_slice(),
-            ErrorCode::SchemaHashMismatch
-        );
-        // Status must be active.
-        require!(data[112] == STATUS_ACTIVE, ErrorCode::BindingFrozen);
-        // Authority gate.
-        let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
-        require!(
-            stored_authority == ctx.accounts.authority.key().to_bytes(),
-            ErrorCode::UnauthorizedTreeBinding
-        );
-
-        // Monotonicity: a binding's root may only advance in slot time.
-        // Without this, a compromised authority (or a replayed tx) could
-        // regress the root back to a value that predates a revocation,
-        // allowing a revoked credential's inclusion proof to pass again.
-        let last_slot_bytes: [u8; 8] = data[104..112].try_into().unwrap();
-        let last_slot = u64::from_le_bytes(last_slot_bytes);
-        let now_slot = Clock::get()?.slot;
-        require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
-
-        data[72..104].copy_from_slice(&new_root);
-        data[104..112].copy_from_slice(&now_slot.to_le_bytes());
-        Ok(())
+        let signer_bytes = ctx.accounts.authority.key().to_bytes();
+        apply_schema_tree_root_update(
+            &mut data,
+            &schema_hash,
+            &signer_bytes,
+            &new_root,
+            Clock::get()?.slot,
+        )
     }
 
     /// Allow the authority to freeze the binding (emergency stop).  A frozen
@@ -316,10 +429,6 @@ pub mod schema_registry {
         _schema_hash: [u8; 32],
         status: u8,
     ) -> Result<()> {
-        require!(
-            status == STATUS_ACTIVE || status == STATUS_FROZEN,
-            ErrorCode::InvalidStatus
-        );
         let binding_info = ctx.accounts.schema_tree_binding.to_account_info();
         require_keys_eq!(
             *binding_info.owner,
@@ -327,17 +436,8 @@ pub mod schema_registry {
             ErrorCode::InvalidBindingOwner
         );
         let mut data = binding_info.try_borrow_mut_data()?;
-        require!(
-            data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
-            ErrorCode::MalformedBinding
-        );
-        let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
-        require!(
-            stored_authority == ctx.accounts.authority.key().to_bytes(),
-            ErrorCode::UnauthorizedTreeBinding
-        );
-        data[112] = status;
-        Ok(())
+        let signer_bytes = ctx.accounts.authority.key().to_bytes();
+        apply_schema_tree_status_update(&mut data, &signer_bytes, status)
     }
 
     /// Allocate and initialize the singleton `GlobalStateBinding` PDA.
@@ -387,29 +487,8 @@ pub mod schema_registry {
             ErrorCode::InvalidBindingOwner
         );
         let mut data = binding_info.try_borrow_mut_data()?;
-        require!(
-            data.len() >= GLOBAL_STATE_BINDING_SIZE,
-            ErrorCode::MalformedBinding
-        );
-        require!(
-            data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
-            ErrorCode::MalformedBinding
-        );
-        let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
-        require!(
-            stored_authority == ctx.accounts.authority.key().to_bytes(),
-            ErrorCode::UnauthorizedTreeBinding
-        );
-
-        // Same monotonicity guarantee as update_tree_root.
-        let last_slot_bytes: [u8; 8] = data[40..48].try_into().unwrap();
-        let last_slot = u64::from_le_bytes(last_slot_bytes);
-        let now_slot = Clock::get()?.slot;
-        require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
-
-        data[8..40].copy_from_slice(&new_root);
-        data[40..48].copy_from_slice(&now_slot.to_le_bytes());
-        Ok(())
+        let signer_bytes = ctx.accounts.authority.key().to_bytes();
+        apply_global_root_update(&mut data, &signer_bytes, &new_root, Clock::get()?.slot)
     }
 
     /// Transfer `authority` on a `SchemaTreeBinding` PDA to a new Pubkey.
@@ -429,16 +508,8 @@ pub mod schema_registry {
             ErrorCode::InvalidBindingOwner
         );
         let mut data = binding_info.try_borrow_mut_data()?;
-        require!(
-            data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
-            ErrorCode::MalformedBinding
-        );
-        let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
-        require!(
-            stored_authority == ctx.accounts.authority.key().to_bytes(),
-            ErrorCode::UnauthorizedTreeBinding
-        );
-        data[113..145].copy_from_slice(&new_authority.to_bytes());
+        let signer_bytes = ctx.accounts.authority.key().to_bytes();
+        apply_schema_tree_authority_rotation(&mut data, &signer_bytes, &new_authority.to_bytes())?;
         msg!("SchemaTreeBinding authority rotated to {}", new_authority);
         Ok(())
     }
@@ -455,16 +526,8 @@ pub mod schema_registry {
             ErrorCode::InvalidBindingOwner
         );
         let mut data = binding_info.try_borrow_mut_data()?;
-        require!(
-            data.len() >= GLOBAL_STATE_BINDING_SIZE && data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
-            ErrorCode::MalformedBinding
-        );
-        let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
-        require!(
-            stored_authority == ctx.accounts.authority.key().to_bytes(),
-            ErrorCode::UnauthorizedTreeBinding
-        );
-        data[48..80].copy_from_slice(&new_authority.to_bytes());
+        let signer_bytes = ctx.accounts.authority.key().to_bytes();
+        apply_global_authority_rotation(&mut data, &signer_bytes, &new_authority.to_bytes())?;
         msg!("GlobalStateBinding authority rotated to {}", new_authority);
         Ok(())
     }
@@ -596,4 +659,381 @@ pub enum ErrorCode {
     MetadataTooLong,
     #[msg("On-chain Poseidon evaluation failed")]
     PoseidonFailed,
+}
+
+// ─── Host-side tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anchor_error_code(err: anchor_lang::error::Error) -> u32 {
+        match err {
+            anchor_lang::error::Error::AnchorError(ae) => ae.error_code_number,
+            other => panic!("expected AnchorError, got: {:?}", other),
+        }
+    }
+
+    /// Disambiguates `ErrorCode -> u32` (Anchor's `error_code` macro
+    /// generates `From<ErrorCode>` for `u32`, `ProgramError`, and
+    /// `anchor_lang::error::Error`, so an inline `.into()` won't infer).
+    fn ec(code: ErrorCode) -> u32 {
+        code.into()
+    }
+
+    fn make_schema_tree_binding(
+        schema_hash: [u8; 32],
+        tree_pubkey: [u8; 32],
+        root: [u8; 32],
+        slot: u64,
+        status: u8,
+        authority: [u8; 32],
+    ) -> Vec<u8> {
+        let mut v = Vec::with_capacity(SCHEMA_TREE_BINDING_SIZE);
+        v.extend_from_slice(&SCHEMA_TREE_DISCRIMINATOR);
+        v.extend_from_slice(&schema_hash);
+        v.extend_from_slice(&tree_pubkey);
+        v.extend_from_slice(&root);
+        v.extend_from_slice(&slot.to_le_bytes());
+        v.push(status);
+        v.extend_from_slice(&authority);
+        assert_eq!(v.len(), SCHEMA_TREE_BINDING_SIZE);
+        v
+    }
+
+    fn make_global_binding(root: [u8; 32], slot: u64, authority: [u8; 32]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(GLOBAL_STATE_BINDING_SIZE);
+        v.extend_from_slice(&GLOBAL_ROOT_DISCRIMINATOR);
+        v.extend_from_slice(&root);
+        v.extend_from_slice(&slot.to_le_bytes());
+        v.extend_from_slice(&authority);
+        assert_eq!(v.len(), GLOBAL_STATE_BINDING_SIZE);
+        v
+    }
+
+    // ─── Layout invariants ─────────────────────────────────────────────────
+
+    #[test]
+    fn schema_tree_binding_size_is_145() {
+        assert_eq!(SCHEMA_TREE_BINDING_SIZE, 145);
+    }
+
+    #[test]
+    fn schema_tree_discriminator_is_schmtree() {
+        assert_eq!(SCHEMA_TREE_DISCRIMINATOR, *b"schmtree");
+    }
+
+    #[test]
+    fn global_state_binding_size_is_80() {
+        assert_eq!(GLOBAL_STATE_BINDING_SIZE, 80);
+    }
+
+    #[test]
+    fn global_root_discriminator_is_globroot() {
+        assert_eq!(GLOBAL_ROOT_DISCRIMINATOR, *b"globroot");
+    }
+
+    #[test]
+    fn status_constants_are_distinct_and_zero_active() {
+        assert_eq!(STATUS_ACTIVE, 0);
+        assert_eq!(STATUS_FROZEN, 1);
+        assert_ne!(STATUS_ACTIVE, STATUS_FROZEN);
+    }
+
+    #[test]
+    fn schema_account_space_is_borsh_consistent() {
+        // 32 + 4+64 + 1 + 4+64 + 4 + 8*(4+32) + 32 + 1 + 8 + 8 = 510.
+        assert_eq!(SCHEMA_ACCOUNT_SPACE, 510);
+    }
+
+    // ─── apply_schema_tree_root_update: positive paths ─────────────────────
+
+    #[test]
+    fn schema_tree_root_update_happy_path() {
+        let schema = [7u8; 32];
+        let auth = [3u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        let new_root = [9u8; 32];
+        apply_schema_tree_root_update(&mut buf, &schema, &auth, &new_root, 200).unwrap();
+        assert_eq!(&buf[72..104], &new_root[..]);
+        assert_eq!(u64::from_le_bytes(buf[104..112].try_into().unwrap()), 200);
+        assert_eq!(&buf[8..40], &schema[..]);
+        assert_eq!(buf[112], STATUS_ACTIVE);
+        assert_eq!(&buf[113..145], &auth[..]);
+    }
+
+    // ─── apply_schema_tree_root_update: negative paths ─────────────────────
+
+    #[test]
+    fn schema_tree_root_update_rejects_short_buffer() {
+        let mut buf = vec![0u8; SCHEMA_TREE_BINDING_SIZE - 1];
+        buf[0..8].copy_from_slice(&SCHEMA_TREE_DISCRIMINATOR);
+        let err = apply_schema_tree_root_update(&mut buf, &[0u8; 32], &[0u8; 32], &[1u8; 32], 1)
+            .unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_bad_discriminator() {
+        let auth = [3u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        buf[0..8].copy_from_slice(b"globroot");
+        let err = apply_schema_tree_root_update(&mut buf, &[0u8; 32], &auth, &[1u8; 32], 200)
+            .unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_schema_mismatch() {
+        let auth = [3u8; 32];
+        let real_schema = [7u8; 32];
+        let wrong_schema = [8u8; 32];
+        let mut buf = make_schema_tree_binding(
+            real_schema,
+            [0u8; 32],
+            [0u8; 32],
+            100,
+            STATUS_ACTIVE,
+            auth,
+        );
+        let err = apply_schema_tree_root_update(&mut buf, &wrong_schema, &auth, &[1u8; 32], 200)
+            .unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::SchemaHashMismatch));
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_frozen() {
+        let auth = [3u8; 32];
+        let schema = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 100, STATUS_FROZEN, auth);
+        let err =
+            apply_schema_tree_root_update(&mut buf, &schema, &auth, &[1u8; 32], 200).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::BindingFrozen));
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_wrong_authority() {
+        let auth = [3u8; 32];
+        let imposter = [9u8; 32];
+        let schema = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        let err = apply_schema_tree_root_update(&mut buf, &schema, &imposter, &[1u8; 32], 200)
+            .unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_non_monotonic_slot_equal() {
+        let auth = [3u8; 32];
+        let schema = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        let err =
+            apply_schema_tree_root_update(&mut buf, &schema, &auth, &[1u8; 32], 100).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::RootSlotNotMonotonic));
+    }
+
+    #[test]
+    fn schema_tree_root_update_rejects_non_monotonic_slot_lesser() {
+        let auth = [3u8; 32];
+        let schema = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        let err =
+            apply_schema_tree_root_update(&mut buf, &schema, &auth, &[1u8; 32], 50).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::RootSlotNotMonotonic));
+    }
+
+    // ─── apply_schema_tree_status_update ──────────────────────────────────
+
+    #[test]
+    fn schema_tree_status_update_freeze_then_unfreeze() {
+        let auth = [3u8; 32];
+        let schema = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding(schema, [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, auth);
+        apply_schema_tree_status_update(&mut buf, &auth, STATUS_FROZEN).unwrap();
+        assert_eq!(buf[112], STATUS_FROZEN);
+        apply_schema_tree_status_update(&mut buf, &auth, STATUS_ACTIVE).unwrap();
+        assert_eq!(buf[112], STATUS_ACTIVE);
+    }
+
+    #[test]
+    fn schema_tree_status_update_rejects_invalid_status_byte() {
+        let auth = [3u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, auth);
+        for bad in [2u8, 0xFF, 0x10] {
+            let err = apply_schema_tree_status_update(&mut buf, &auth, bad).unwrap_err();
+            assert_eq!(
+                anchor_error_code(err),
+                ec(ErrorCode::InvalidStatus),
+                "status byte {} must be rejected",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn schema_tree_status_update_rejects_imposter_authority() {
+        let auth = [3u8; 32];
+        let imposter = [9u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, auth);
+        let err = apply_schema_tree_status_update(&mut buf, &imposter, STATUS_FROZEN).unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+        assert_eq!(buf[112], STATUS_ACTIVE);
+    }
+
+    // ─── apply_schema_tree_authority_rotation ─────────────────────────────
+
+    #[test]
+    fn schema_tree_authority_rotation_happy_path() {
+        let old_auth = [3u8; 32];
+        let new_auth = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, old_auth);
+        apply_schema_tree_authority_rotation(&mut buf, &old_auth, &new_auth).unwrap();
+        assert_eq!(&buf[113..145], &new_auth[..]);
+    }
+
+    #[test]
+    fn schema_tree_authority_rotation_rejects_imposter() {
+        let old_auth = [3u8; 32];
+        let imposter = [9u8; 32];
+        let new_auth = [7u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, old_auth);
+        let err =
+            apply_schema_tree_authority_rotation(&mut buf, &imposter, &new_auth).unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+        assert_eq!(&buf[113..145], &old_auth[..]);
+    }
+
+    #[test]
+    fn schema_tree_authority_rotation_then_old_signer_loses_access() {
+        let old_auth = [3u8; 32];
+        let new_auth = [7u8; 32];
+        let third = [11u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, old_auth);
+        apply_schema_tree_authority_rotation(&mut buf, &old_auth, &new_auth).unwrap();
+        let err = apply_schema_tree_authority_rotation(&mut buf, &old_auth, &third).unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+        apply_schema_tree_authority_rotation(&mut buf, &new_auth, &third).unwrap();
+        assert_eq!(&buf[113..145], &third[..]);
+    }
+
+    // ─── apply_global_root_update ─────────────────────────────────────────
+
+    #[test]
+    fn global_root_update_happy_path() {
+        let auth = [3u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, auth);
+        let new_root = [42u8; 32];
+        apply_global_root_update(&mut buf, &auth, &new_root, 200).unwrap();
+        assert_eq!(&buf[8..40], &new_root[..]);
+        assert_eq!(u64::from_le_bytes(buf[40..48].try_into().unwrap()), 200);
+        assert_eq!(&buf[48..80], &auth[..]);
+    }
+
+    #[test]
+    fn global_root_update_rejects_short_buffer() {
+        let mut buf = vec![0u8; GLOBAL_STATE_BINDING_SIZE - 1];
+        buf[0..8].copy_from_slice(&GLOBAL_ROOT_DISCRIMINATOR);
+        let err = apply_global_root_update(&mut buf, &[0u8; 32], &[1u8; 32], 200).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+    }
+
+    #[test]
+    fn global_root_update_rejects_bad_discriminator() {
+        let auth = [3u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, auth);
+        buf[0..8].copy_from_slice(b"schmtree");
+        let err = apply_global_root_update(&mut buf, &auth, &[1u8; 32], 200).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+    }
+
+    #[test]
+    fn global_root_update_rejects_imposter() {
+        let auth = [3u8; 32];
+        let imposter = [9u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, auth);
+        let err = apply_global_root_update(&mut buf, &imposter, &[1u8; 32], 200).unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+    }
+
+    #[test]
+    fn global_root_update_rejects_non_monotonic_slot() {
+        let auth = [3u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, auth);
+        let err = apply_global_root_update(&mut buf, &auth, &[1u8; 32], 100).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::RootSlotNotMonotonic));
+    }
+
+    // ─── apply_global_authority_rotation ──────────────────────────────────
+
+    #[test]
+    fn global_authority_rotation_happy_path() {
+        let old_auth = [3u8; 32];
+        let new_auth = [7u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, old_auth);
+        apply_global_authority_rotation(&mut buf, &old_auth, &new_auth).unwrap();
+        assert_eq!(&buf[48..80], &new_auth[..]);
+    }
+
+    #[test]
+    fn global_authority_rotation_rejects_imposter() {
+        let old_auth = [3u8; 32];
+        let imposter = [9u8; 32];
+        let new_auth = [7u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, old_auth);
+        let err = apply_global_authority_rotation(&mut buf, &imposter, &new_auth).unwrap_err();
+        assert_eq!(
+            anchor_error_code(err),
+            ec(ErrorCode::UnauthorizedTreeBinding)
+        );
+        assert_eq!(&buf[48..80], &old_auth[..]);
+    }
+
+    // ─── Cross-pollution sanity ───────────────────────────────────────────
+
+    #[test]
+    fn schema_helpers_reject_global_layout() {
+        let auth = [3u8; 32];
+        let mut buf = make_global_binding([0u8; 32], 100, auth);
+        let err = apply_schema_tree_root_update(&mut buf, &[0u8; 32], &auth, &[1u8; 32], 200)
+            .unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+        let err2 = apply_schema_tree_status_update(&mut buf, &auth, STATUS_FROZEN).unwrap_err();
+        assert_eq!(anchor_error_code(err2), ec(ErrorCode::MalformedBinding));
+    }
+
+    #[test]
+    fn global_helpers_reject_schema_layout() {
+        let auth = [3u8; 32];
+        let mut buf =
+            make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
+        let err = apply_global_root_update(&mut buf, &auth, &[1u8; 32], 200).unwrap_err();
+        assert_eq!(anchor_error_code(err), ec(ErrorCode::MalformedBinding));
+    }
 }

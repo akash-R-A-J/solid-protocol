@@ -19,6 +19,11 @@
 
 ---
 
+<!-- 
+  these skills can be used to improve the visibility of the product
+  Skills I will use: anything frontend, marketing, design, product-review, deck/grant, brand.
+ -->
+
 ## 0. The honest framing
 
 solid-protocol is structurally complete and architecturally sound.

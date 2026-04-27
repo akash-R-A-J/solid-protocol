@@ -479,6 +479,73 @@ pub fn verify_issuer_tree_binding_for_proof(
     Ok(())
 }
 
+// ─── SPL AC concurrent-merkle root recomputation (SOLID-SEC-045) ──────────
+//
+// `revoke_issuer_atomic` and `request_withdrawal_atomic` both perform a
+// `replace_leaf` CPI into SPL Account Compression and then need to write
+// the post-CPI root into `IssuerTreeBinding.current_root` in the same
+// instruction.  Pre-fix, the binding was updated by a separate
+// `update_issuer_tree_root` call enforced only by doc comment (NEW-01,
+// 2026-04-25 audit).  Post-fix, the atomic handlers recompute the new
+// root on-chain from the inputs the CPI just validated.
+
+/// SPL Account Compression issuer-tree depth.  Matches
+/// `scripts/backfill_issuer_tree.ts` (default 16, override via
+/// `SOLID_ISSUER_TREE_DEPTH`).  The atomic-binding-update path
+/// (SOLID-SEC-045) requires the proof path supplied as
+/// `remaining_accounts` to have exactly this many siblings; the
+/// issuer tree is also configured with canopy depth 0 so the full
+/// path is always on-wire.
+pub const ISSUER_TREE_DEPTH: usize = 16;
+
+/// Recompute a SPL Account Compression concurrent-merkle-tree root
+/// from a leaf, its index, and the full proof path of sibling hashes.
+///
+/// SPL AC hashes with Keccak256.  Concatenation order matches SPL AC's
+/// `concurrent_merkle_tree::hash_pair`:
+///
+/// ```text
+///   bit_i = (index >> i) & 1
+///   if bit_i == 0:  node = H(node, sibling)   // node is LEFT child
+///   if bit_i == 1:  node = H(sibling, node)   // node is RIGHT child
+/// ```
+///
+/// `proof_path[i]` is the sibling at level `i` (level 0 = leaf level).
+///
+/// Soundness argument for SOLID-SEC-045: in
+/// `revoke_issuer_atomic` / `request_withdrawal_atomic`, the
+/// `replace_leaf` CPI immediately preceding this call has already
+/// validated the proof against the SPL AC tree's pre-CPI root.  That
+/// proves `proof_path` is the authentic Merkle authentication path
+/// for `leaf_index` in the live tree.  Re-running the same path with
+/// `new_leaf` therefore yields the actual post-CPI root SPL AC just
+/// committed to -- a malicious caller cannot lie about it without
+/// either (a) breaking pre-image resistance of Keccak256, or
+/// (b) getting `replace_leaf` to accept a false proof.
+///
+/// Caller is responsible for asserting `proof_path.len() ==
+/// ISSUER_TREE_DEPTH` -- a too-short path returns a mid-tree node,
+/// a too-long path hashes past the root.
+pub fn compute_concurrent_merkle_root_keccak(
+    leaf: &[u8; 32],
+    leaf_index: u32,
+    proof_path: &[[u8; 32]],
+) -> [u8; 32] {
+    let mut node: [u8; 32] = *leaf;
+    let mut idx: u32 = leaf_index;
+    for sibling in proof_path.iter() {
+        let bit = idx & 1;
+        let hash = if bit == 0 {
+            anchor_lang::solana_program::keccak::hashv(&[&node[..], &sibling[..]])
+        } else {
+            anchor_lang::solana_program::keccak::hashv(&[&sibling[..], &node[..]])
+        };
+        node = hash.to_bytes();
+        idx >>= 1;
+    }
+    node
+}
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 #[error_code]
@@ -761,5 +828,180 @@ mod tests {
             verify_issuer_tree_binding_for_proof(&data, &[0u8; 32]),
             Err(LightError::InvalidIssuerTreeBinding)
         ));
+    }
+
+    // ─── SOLID-SEC-045 keccak path-recompute tests ────────────────────────
+    //
+    // The atomic-binding-update path recomputes the SPL AC tree's
+    // post-CPI root in-handler.  These tests pin:
+    //   - byte-equivalence with hand-built reference roots at small depths
+    //   - left vs right child semantics (bit-i of index)
+    //   - empty-path behaviour (root = leaf)
+    //   - that high bits of leaf_index past the path length do not
+    //     contaminate the computed root (idx >>= 1 over `depth` levels
+    //     consumes only the bottom `depth` bits)
+    //   - byte-stable known-answer test against a fixed input vector
+
+    fn keccak(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+        anchor_lang::solana_program::keccak::hashv(&[&left[..], &right[..]]).to_bytes()
+    }
+
+    #[test]
+    fn keccak_root_recompute_depth_0_is_identity() {
+        // Empty proof path -> leaf IS the root.
+        let leaf: [u8; 32] = [42u8; 32];
+        assert_eq!(
+            compute_concurrent_merkle_root_keccak(&leaf, 0, &[]),
+            leaf,
+            "empty path must return the leaf unchanged"
+        );
+        // leaf_index value must not matter when there is no path to walk.
+        assert_eq!(
+            compute_concurrent_merkle_root_keccak(&leaf, u32::MAX, &[]),
+            leaf
+        );
+    }
+
+    #[test]
+    fn keccak_root_recompute_depth_1_left_vs_right() {
+        let leaf: [u8; 32] = [1u8; 32];
+        let sibling: [u8; 32] = [2u8; 32];
+        let path = [sibling];
+
+        // Index 0: leaf is LEFT child -> H(leaf, sibling).
+        let computed_left = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
+        assert_eq!(computed_left, keccak(&leaf, &sibling));
+
+        // Index 1: leaf is RIGHT child -> H(sibling, leaf).
+        let computed_right = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
+        assert_eq!(computed_right, keccak(&sibling, &leaf));
+
+        // Sanity: left and right should differ.
+        assert_ne!(computed_left, computed_right);
+    }
+
+    #[test]
+    fn keccak_root_recompute_depth_3_full_tree() {
+        // Build a full 8-leaf depth-3 tree and verify the helper
+        // recomputes the same root for every leaf index.
+        let leaves: Vec<[u8; 32]> = (0..8u8).map(|i| [i; 32]).collect();
+
+        // Layer 1 (4 nodes, each a hash of two leaves)
+        let mut layer1 = Vec::new();
+        for i in 0..4 {
+            layer1.push(keccak(&leaves[2 * i], &leaves[2 * i + 1]));
+        }
+        // Layer 2 (2 nodes)
+        let mut layer2 = Vec::new();
+        for i in 0..2 {
+            layer2.push(keccak(&layer1[2 * i], &layer1[2 * i + 1]));
+        }
+        // Root
+        let expected_root = keccak(&layer2[0], &layer2[1]);
+
+        for i in 0..8usize {
+            let leaf = leaves[i];
+            let path = [
+                leaves[i ^ 1],
+                layer1[(i / 2) ^ 1],
+                layer2[(i / 4) ^ 1],
+            ];
+            let computed = compute_concurrent_merkle_root_keccak(&leaf, i as u32, &path);
+            assert_eq!(
+                computed, expected_root,
+                "recomputed root mismatch at leaf index {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn keccak_root_recompute_high_bits_of_index_ignored() {
+        // For depth=2 the helper consumes only 2 bits of leaf_index.
+        // Index 0 (00) and index 4 (100) must produce the same root --
+        // both have bit_0 = bit_1 = 0; bit_2 is past the path.
+        let leaf: [u8; 32] = [7u8; 32];
+        let path = [[3u8; 32], [4u8; 32]];
+
+        let r0 = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
+        let r4 = compute_concurrent_merkle_root_keccak(&leaf, 4, &path);
+        assert_eq!(r0, r4);
+
+        // Index 1 (01) and 5 (101) must also agree (same bottom 2 bits).
+        let r1 = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
+        let r5 = compute_concurrent_merkle_root_keccak(&leaf, 5, &path);
+        assert_eq!(r1, r5);
+
+        // But indexes with different bottom-2 bits must differ.
+        assert_ne!(r0, r1);
+    }
+
+    #[test]
+    fn keccak_root_recompute_known_answer_depth_2() {
+        // Byte-stable known-answer test.  A future change to keccak
+        // semantics or hash-pair concatenation order would shift this
+        // value; the test then forces an explicit re-baseline +
+        // cross-language-vector regen.
+        let leaf: [u8; 32] = {
+            let mut b = [0u8; 32];
+            b[31] = 1;
+            b
+        };
+        let sib0: [u8; 32] = {
+            let mut b = [0u8; 32];
+            b[31] = 2;
+            b
+        };
+        let sib1: [u8; 32] = {
+            let mut b = [0u8; 32];
+            b[31] = 3;
+            b
+        };
+        // Index 1 -> bit_0 = 1 (RIGHT at leaf), bit_1 = 0 (LEFT at level 1)
+        // L1_node = H(sib0, leaf)
+        // root    = H(L1_node, sib1)
+        let expected_l1 = keccak(&sib0, &leaf);
+        let expected_root = keccak(&expected_l1, &sib1);
+
+        let path = [sib0, sib1];
+        let computed = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
+        assert_eq!(computed, expected_root);
+    }
+
+    #[test]
+    fn keccak_root_recompute_changing_leaf_changes_root() {
+        // The whole point of SOLID-SEC-045 is that swapping leaf at
+        // a fixed index produces a different root.  This is the
+        // host-side regression gate for that property.
+        let leaf_old: [u8; 32] = [0xAA; 32];
+        let leaf_new: [u8; 32] = [0xBB; 32];
+        let path: Vec<[u8; 32]> = (0..ISSUER_TREE_DEPTH)
+            .map(|i| {
+                let mut b = [0u8; 32];
+                b[0] = i as u8;
+                b
+            })
+            .collect();
+
+        let root_old = compute_concurrent_merkle_root_keccak(&leaf_old, 12345, &path);
+        let root_new = compute_concurrent_merkle_root_keccak(&leaf_new, 12345, &path);
+        assert_ne!(
+            root_old, root_new,
+            "different leaf preimage at the same index must yield different roots"
+        );
+    }
+
+    #[test]
+    fn keccak_root_recompute_full_issuer_tree_depth_runs() {
+        // Depth-16 path runs to completion in host tests (no panic on
+        // bounds, no runaway).  Outputs a 32-byte root.
+        let leaf: [u8; 32] = [0xCC; 32];
+        let path: Vec<[u8; 32]> = (0..ISSUER_TREE_DEPTH)
+            .map(|i| [i as u8; 32])
+            .collect();
+        let root = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
+        // Just check it ran and produced a non-zero, non-leaf output.
+        assert_ne!(root, [0u8; 32]);
+        assert_ne!(root, leaf);
     }
 }

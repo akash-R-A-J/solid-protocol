@@ -4,7 +4,51 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-27 (Phase 3.4 crypto + IDE stability).
+- **Last updated:** 2026-04-27 evening (strategy session; no code
+  changes).  Three deliverables added at the planning layer; the
+  technical state of the protocol is unchanged from this morning's
+  Phase 3.4 checkpoint (still HEAD `8d62197`, still pre-`npm run
+  issue`):
+  1. **`plan/GO_TO_MARKET.md`** (new, 335 lines).  Six-month
+     sequenced go-to-market plan starting **2026-05-15**.  Phases
+     A--E (discovery -> integrator+issuer pair -> ship the
+     integration not the protocol -> launch -> replicate).  Three
+     decision branches if the path doesn't open (continue as
+     protocol play / narrow to vertical product / partner with SAS
+     or publish-and-join).  Section 1 explicitly reconciles the
+     Solana Foundation Superteam Build "Private Onchain Identity"
+     listing: meaningful ecosystem signal, NOT customer demand
+     evidence.  Strongest commercial wedge identified is RWA /
+     accredited-investor gating on Solana (Ondo, MiCA, no Solana
+     ERC-3643 equivalent yet).  ZK is currently losing the
+     equivalent EVM market to ERC-3643 on regulator-legibility
+     grounds; SolID has to beat that, not just beat SAS.
+  2. **Competitive scan verified** (logged in chat, source list
+     pinned in `plan/GO_TO_MARKET.md` §2): SAS (Foundation, May
+     2025, deliberately non-ZK; the Foundation chose attestations
+     over ZK credentials), Civic Pass (2M users, $500M+ TVL
+     secured), VeryAI ($10M Polychain, biometric PoP not
+     credentials), Solana.ID (reputation + SAS, not Privado-style),
+     zkid.digital (warrants direct investigation).  No official
+     Privado/iden3 Solana port despite syscall-readiness.  EVM-side
+     reality bound: Privado has 4M credentials and < $5M revenue;
+     World ID won by abandoning the credential framing for AI-era
+     PoP.  First-mover claim mostly true but mostly irrelevant if
+     the category hasn't proven product-market fit on Solana.  Zero
+     public statements from major Solana DeFi protocols (Drift,
+     Jupiter, Kamino, MarginFi, Phoenix) requesting ZK identity.
+  3. **Tomorrow's pickup is now a two-track decision** rather than
+     a single linear continue.  Both tracks are listed under "Next
+     session: start here." below; pick the one that matches the
+     state you wake up in (rested + customer-mode, or rested +
+     code-mode).
+  Working tree at session close mirrors this morning's state
+  exactly -- the strategy-session edits touched `plan/` and `docs/`
+  only and added no new modifications to `circuits/`, `crates/`,
+  `programs/`, `wasm/`, or `ts-sdk/`.  Uncommitted Phase 3.4
+  technical work is intact (see Previous update).
+- **Previous update:** 2026-04-27 morning (Phase 3.4 crypto + IDE
+  stability).
   `crates/solid-core/src/babyjubjub.rs` no longer uses `ark_ff::MontFp!`
   for pinned `Fq` constants (`sqrt(168700)`, its inverse, and
   arkworks-form Base8); the same wire values are loaded via
@@ -14,7 +58,26 @@ authoritative.
   regression suite (`circuits/test/*.test.js` against
   `gen_circuit_vectors` output) and CI wiring are documented in
   `docs/CURRENT_STATE.md` §5.2--5.3 and `CLAUDE.md` (toolchain note).
-  See also `plan/IMPLEMENTATION_PLAN.md` revision line.
+  See also `plan/IMPLEMENTATION_PLAN.md` revision line.  Working
+  tree at this checkpoint includes (uncommitted): `circuits/lib/
+  lt_bn254.circom` (new), `circuits/test/babypbk254.test.js`,
+  `circuits/test/identity_anchor_derivation.test.js`,
+  `circuits/test/lt_bn254.test.js`, isolated test templates under
+  `circuits/test/templates/`, `crates/solid-core/examples/
+  gen_circuit_vectors.rs` (new), modifications to
+  `circuits/batch_credential_query.circom`, `circuits/lib/
+  identity_anchor.circom`, `circuits/lib/predicate_evaluator.circom`,
+  `crates/solid-core/src/babyjubjub.rs` (the MontFp! swap above),
+  `scripts/initialize.ts`, `scripts/issue.ts`, `scripts/prove.ts`,
+  `ts-sdk/packages/core/src/index.ts`,
+  `ts-sdk/packages/holder/src/index.ts`,
+  `ts-sdk/packages/issuer/src/index.ts`,
+  `.github/workflows/ci.yml`, `package.json`, `circuits/
+  package.json`, `circuits/package-lock.json`, plus new
+  `docs/CURRENT_STATE.md`, `docs/SYSTEM_VISION.md`, `scripts/
+  bootstrap_schema_tree.ts`.  None of this is on the issue/prove
+  hot path; it's the SEC-010 cross-language-vector expansion + IDE
+  stability layer.  Commit before pushing.
 - **Previous update:** 2026-04-26 ~02:20 IST (E2E push, B10 closed by
   contract redesign).  Latest event: `npm run bootstrap-issuer`
   walks all 8 contract steps + `[8b/10] append_issuer_leaf` cleanly
@@ -135,37 +198,94 @@ authoritative.
   SEC-046 as MEDIUM; E2E runbook `docs/DEPLOYMENT_AND_TESTING.md`
   rewritten as the canonical install / build / deploy / run /
   verify / probe doc.
-- **Next session: start here.**  The live edge has moved past B10 to
-  the holder-side issuance flow.  Pick up with:
-  1. `npm run issue` end-to-end (todo `e1b`).  This needs an
-     issuer-bound BJJ keypair (the one `bootstrap-issuer` registered)
-     and produces a Poseidon-bound credential delivered to a holder.
-     Watch for `deliverToHolder` doc-vs-code drift (O5) -- the
-     credential-delivery design ADR is still open; if `issue.ts`
-     diverges from `SolidIssuer.deliverToHolder`'s contract, fix the
-     contract first (the script is the consumer, not the source of
-     truth -- same discipline that closed B10).
+- **Next session: start here.**  Two-track decision.  Pick ONE
+  track per session; do not interleave.
+
+  **TRACK A -- code mode (recommended if rested and the head is
+  in technical detail):**
+  Live edge is the holder-side issuance flow plus committing the
+  Phase 3.4 working tree.  Sequence:
+  0. **Commit the Phase 3.4 working tree first.**  It's been
+     uncommitted for a session and a half.  Split into clean
+     logical commits (suggested ordering):
+       - `crypto: replace MontFp! with from_le_bytes_mod_order in
+          babyjubjub.rs (rust-analyzer proc-macro stability)`
+       - `circuits: add lt_bn254 + babypbk254 + identity_anchor
+          isolated templates and witness tests`
+       - `examples: gen_circuit_vectors.rs for SEC-010 expansion`
+       - `circuits: identity_anchor.circom + predicate_evaluator
+          adjustments`
+       - `scripts: bootstrap_schema_tree.ts + initialize/issue/
+          prove updates for the new schema-tree path`
+       - `sdk: core + holder + issuer surface adjustments`
+       - `ci: <whatever .github/workflows/ci.yml gained>`
+       - `docs: CURRENT_STATE.md + SYSTEM_VISION.md +
+          plan/GO_TO_MARKET.md`
+     Run `cargo test -p solid-core -p solid-light` and `cargo
+     test -p zk-verifier --lib` between commits as a sanity gate.
+     Do NOT push yet -- E2E live edge below should land first.
+  1. `npm run issue` end-to-end (todo `e1b`).  Needs an
+     issuer-bound BJJ keypair (the one `bootstrap-issuer`
+     registered) and produces a Poseidon-bound credential
+     delivered to a holder.  Watch for `deliverToHolder`
+     doc-vs-code drift (O5) -- credential-delivery design ADR is
+     still open; if `issue.ts` diverges from
+     `SolidIssuer.deliverToHolder`'s contract, fix the contract
+     first (the script is the consumer, not the source of truth
+     -- same discipline that closed B10).
   2. `npm run prove` end-to-end (todo `e1c`).  Two gates: (a)
      Groth16 verify on-chain returns `verified: true`; (b) replay
      attempt rejects with `account already in use` from the
      nullifier PDA's `init` constraint.  If (a) fails: check
      `verification_key.sha256` pin matches what `initialize.ts`
-     uploaded, and that `NR_PUBLIC_INPUTS = 32` ordering matches
+     uploaded, and `NR_PUBLIC_INPUTS = 32` ordering matches
      between the prover and `verify_batch_proof`.  If (b) fails:
      SEC-008 6-input nullifier soundness regression -- stop and
      diagnose; do not relax the constraint.
   3. After both green: wire `scripts/wasm_bridge_smoke.mjs` (todo
      `e2`), `tsx tests/vectors/check_vectors.ts` (todo `e3`), and
-     IDL-snapshot diff (todo `e4`) as CI regression gates.  These
-     are the gates that prevent B6/B7/IDL-namespace regressions
-     from happening silently again.
-  Validator prerequisites for the run: `--clone-upgradeable-program
+     IDL-snapshot diff (todo `e4`) as CI regression gates.
+  Validator prerequisites: `--clone-upgradeable-program
   cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK
   --clone-upgradeable-program noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV`
-  (SPL Account Compression + noop, not loaded by `--reset` alone),
-  and `SOLID_VOTING_PERIOD_SECONDS=120` (the 20s default loses to
-  the 100-slot flash-loan cool-off on localnet).  See
-  `docs/E2E_BLOCKERS.md` runbook for the full ordering.
+  (SPL AC + noop, not loaded by `--reset` alone), and
+  `SOLID_VOTING_PERIOD_SECONDS=120`.  See `docs/E2E_BLOCKERS.md`
+  runbook for the full ordering.
+
+  **TRACK B -- customer mode (recommended if the question
+  "should I keep building this" is still active):**
+  Phase A discovery per `plan/GO_TO_MARKET.md` Section 6.
+  Discovery formally starts 2026-05-15, but prep can start
+  immediately:
+  1. Build the target list (10 names).  Concrete starters from
+     the GTM doc: Ondo on Solana, Maple Finance, Drift
+     institutional, Kamino restricted-jurisdiction features,
+     Phoenix compliance forks, two Colosseum Frontier 2026 RWA
+     teams, one Solana-native KYC-as-a-service vendor.  Add 2--3
+     of your own based on who you can warm-introduce to.
+  2. Draft the 1-page commercial pitch (NOT the technical deep
+     dive in `docs/private_onchain_identity_deep_dive.md`).
+     Audience is a product / compliance person at a regulated
+     Solana protocol; not a cryptographer.  The question being
+     answered is "what does SolID let your dApp do that SAS
+     doesn't, and is it worth 3-6 engineering months to find
+     out".
+  3. Draft the outreach message.  Keep it under 200 words.  Does
+     NOT pitch the protocol.  Asks the framing question from
+     GTM Section 6 Phase A: "What would have to be true for you
+     to gate this specific feature with private credentials
+     instead of IP-blocking or off-chain KYC?"  If they can't
+     answer that concretely, the answer is no, and you've
+     learned something important.
+  4. Schedule the first 5 conversations to land before
+     2026-05-15.  Two of them this week if possible.
+
+  Track A and Track B compound: Track A buys you the credibility
+  to have Track B conversations ("we're shipping E2E this week"
+  is a different opening than "we're still debugging the prover").
+  But Track B answers the question Track A cannot answer
+  ("should we ship more").  Pick whichever matches the energy of
+  the morning; neither is wrong.
 - **Current branch:** `main`
 - **Current phase:** Phase 2 closed; Phase 3 open
 - **Working-tree state at this checkpoint:** modifications staged

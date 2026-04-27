@@ -7,7 +7,8 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use solid_light::cpi_helpers::{
-    verify_schema_tree_binding_for_issue, LightError, SCHEMA_REGISTRY_ID,
+    compute_concurrent_merkle_root_keccak, verify_schema_tree_binding_for_issue, LightError,
+    ISSUER_TREE_DEPTH, SCHEMA_REGISTRY_ID,
 };
 // SOLID-SEC-003: bring in the typed `SchemaAccount` from schema-registry
 // so Anchor auto-verifies the PDA's discriminator, owner program, and
@@ -48,9 +49,21 @@ pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] = [0x95, 0x78, 0x12, 0xde, 0xec, 
 
 /// Anchor discriminator for `spl_account_compression::replace_leaf`:
 /// `sha256("global:replace_leaf")[..8]`.  Used by
-/// `revoke_issuer_atomic` (ADR-0014).
+/// `revoke_issuer_atomic` and `request_withdrawal_atomic` (ADR-0014).
+///
+/// Discovered 2026-04-27 (SOLID-SEC-049): the prior literal
+/// `[0xe3, 0x88, 0x6a, 0x74, 0x10, 0xe4, 0xe8, 0x2c]` did NOT match
+/// `sha256("global:replace_leaf")[..8]` and never matched any
+/// candidate ix-name preimage.  Because neither atomic ix had been
+/// exercised end-to-end before integration tests 02-11 landed, every
+/// `replace_leaf` CPI from this program would have failed at SPL AC's
+/// instruction dispatch with `InstructionFallbackNotFound` (the SPL
+/// AC program has no handler for the wrong 8-byte prefix).  The
+/// regression gate is `replace_leaf_discriminator_matches_anchor_global_replace_leaf`
+/// in this file's test module; it computes the discriminator from
+/// the canonical preimage at test time so any future drift fails CI.
 pub const SPL_AC_REPLACE_LEAF_DISCRIMINATOR: [u8; 8] =
-    [0xe3, 0x88, 0x6a, 0x74, 0x10, 0xe4, 0xe8, 0x2c];
+    [0xcc, 0xa5, 0x4c, 0x64, 0x49, 0x93, 0x00, 0x80];
 
 /// Compute the ADR-0014 issuer-tree leaf for a given `IssuerAccount`:
 /// `Poseidon(5)(authority, bjj_x, bjj_y, status_epoch, revocation_nonce)`.
@@ -80,6 +93,38 @@ fn compute_issuer_leaf_bytes(issuer: &IssuerAccount) -> Result<[u8; 32]> {
 /// The PDA is unique per (schema_hash): one authority per tree.  This means
 /// a single schema's tree cannot be appended to by arbitrary callers.
 pub const TREE_AUTHORITY_SEED: &[u8] = b"tree-authority";
+
+/// SOLID-SEC-045 helper: write `new_root` + current slot into the
+/// `IssuerTreeBinding` raw bytes.  The caller MUST have already
+/// owner-checked the binding account against `crate::ID`.
+///
+/// This helper:
+///   * asserts the buffer is at least `ISSUER_TREE_BINDING_SIZE`
+///     bytes and carries the canonical `ISSUER_TREE_DISCRIMINATOR`,
+///   * asserts the binding is in the active state (status byte 0),
+///   * writes `new_root` into [40..72) and the slot into [72..80).
+///
+/// Extracted so the same write contract can be host-tested with
+/// synthetic buffers and so the two atomic ixs share a single
+/// definition of "what an atomic binding update means".
+fn write_issuer_tree_binding_root(
+    binding_data: &mut [u8],
+    new_root: &[u8; 32],
+    slot: u64,
+) -> Result<()> {
+    require!(
+        binding_data.len() >= ISSUER_TREE_BINDING_SIZE
+            && binding_data[0..8] == ISSUER_TREE_DISCRIMINATOR,
+        ErrorCode::InvalidIssuerTreeBinding
+    );
+    require!(
+        binding_data[80] == ISSUER_TREE_STATUS_ACTIVE,
+        ErrorCode::IssuerTreeBindingFrozen
+    );
+    binding_data[40..72].copy_from_slice(new_root);
+    binding_data[72..80].copy_from_slice(&slot.to_le_bytes());
+    Ok(())
+}
 
 // ─── Issuer-tree binding (ADR-0014; SEC-004 setup) ─────────────────────────
 //
@@ -1135,6 +1180,20 @@ pub mod issuer_registry {
     // AND be accepted by `verify_batch_proof` (which reads the stale
     // root from `IssuerTreeBinding.current_root`).  Atomicity closes the
     // window to zero txs.
+    //
+    // SOLID-SEC-045 (closed 2026-04-27): the atomic ixs ALSO write the
+    // post-CPI tree root into `IssuerTreeBinding.current_root` in the
+    // same instruction.  Pre-fix, the binding update was a separate
+    // `update_issuer_tree_root` ix enforced only by doc comment; if the
+    // caller forgot it, `verify_batch_proof` continued to accept
+    // pre-revocation proofs against the stale binding root.  Post-fix,
+    // the new root is recomputed on-chain from
+    // `(new_leaf, leaf_index, full proof path)` via Keccak256 and
+    // committed to the binding before the handler returns.  The
+    // `update_issuer_tree_root` ix remains for the `append_issuer_leaf`
+    // path (where the new root is not derivable from inputs alone) and
+    // for any out-of-band root reconciliation; calling it after an
+    // atomic ix is safely redundant.
 
     /// First-time enrolment of an issuer into the singleton issuer tree.
     ///
@@ -1365,6 +1424,15 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
+        // SOLID-SEC-045 pre-CPI gate: enforce full proof path so the
+        // on-chain root recomputation below is sound.  SPL AC accepts a
+        // shorter path (canopy fills the rest), but a shorter path makes
+        // our recomputation diverge from the real post-CPI root.
+        require!(
+            ctx.remaining_accounts.len() == ISSUER_TREE_DEPTH,
+            ErrorCode::InvalidProofPathLength
+        );
+
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
@@ -1377,7 +1445,43 @@ pub mod issuer_registry {
         }
         invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
 
-        // (6) Registry bookkeeping.
+        // (6) SOLID-SEC-045 / NEW-01.  Atomic binding update.
+        //
+        // The CPI succeeded, which means SPL AC validated the proof
+        // against the live tree.  Recompute the new root with `new_leaf`
+        // along the same authenticated path -- by Keccak256 collision
+        // resistance + `replace_leaf`'s pre-image gate, this MUST equal
+        // the root SPL AC just committed to.  Write it directly into
+        // `IssuerTreeBinding.current_root` so `verify_batch_proof`
+        // immediately sees the post-revoke tree state.  No follow-up
+        // `update_issuer_tree_root` call is required.
+        let proof_path_keys: Vec<[u8; 32]> = ctx
+            .remaining_accounts
+            .iter()
+            .map(|a| a.key().to_bytes())
+            .collect();
+        let computed_new_root = compute_concurrent_merkle_root_keccak(
+            &new_leaf,
+            leaf_index_u32,
+            &proof_path_keys,
+        );
+
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        {
+            let mut binding_data = binding_info.try_borrow_mut_data()?;
+            write_issuer_tree_binding_root(
+                &mut binding_data,
+                &computed_new_root,
+                Clock::get()?.slot,
+            )?;
+        }
+
+        // (7) Registry bookkeeping.
         let config = &mut ctx.accounts.registry_config;
         if config.active_issuers > 0 {
             config.active_issuers = config.active_issuers - 1;
@@ -1430,12 +1534,16 @@ pub mod issuer_registry {
     ///   5. CPI `spl_account_compression::replace_leaf` (caller
     ///      supplies proof nodes in `remaining_accounts`).
     ///
-    /// The caller MUST also invoke `update_issuer_tree_root` in the
-    /// same tx so `IssuerTreeBinding.current_root` reflects the
-    /// post-replace root; otherwise the zk-verifier's gate reads the
-    /// old root and the cooldown is invisible to proof verification.
-    /// This is the same discipline the Phase 2 `revoke_issuer_
-    /// atomic` already requires.
+    /// SOLID-SEC-045 (closed 2026-04-27): this ix writes the post-CPI
+    /// tree root into `IssuerTreeBinding.current_root` atomically.  No
+    /// separate `update_issuer_tree_root` follow-up is required for the
+    /// cooldown to be observable by `verify_batch_proof`; the binding is
+    /// up-to-date the moment this handler returns successfully.  The
+    /// new root is recomputed on-chain from
+    /// `(new_leaf, leaf_index, full proof path)` via the same
+    /// Keccak256 hashing SPL AC uses internally; soundness rests on the
+    /// CPI's prior validation of the path against the pre-CPI tree
+    /// root, plus pre-image resistance of Keccak256.
     pub fn request_withdrawal_atomic<'info>(
         ctx: Context<'_, '_, '_, 'info, RequestWithdrawalAtomic<'info>>,
         old_root: [u8; 32],
@@ -1526,6 +1634,12 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
+        // SOLID-SEC-045 pre-CPI gate (mirrors revoke_issuer_atomic).
+        require!(
+            ctx.remaining_accounts.len() == ISSUER_TREE_DEPTH,
+            ErrorCode::InvalidProofPathLength
+        );
+
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
@@ -1537,6 +1651,35 @@ pub mod issuer_registry {
             invoke_accounts.push(proof_node.clone());
         }
         invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
+
+        // SOLID-SEC-045 / NEW-01.  Atomic binding update; mirrors
+        // revoke_issuer_atomic.  See the sibling handler for the full
+        // soundness argument.
+        let proof_path_keys: Vec<[u8; 32]> = ctx
+            .remaining_accounts
+            .iter()
+            .map(|a| a.key().to_bytes())
+            .collect();
+        let computed_new_root = compute_concurrent_merkle_root_keccak(
+            &new_leaf,
+            leaf_index_u32,
+            &proof_path_keys,
+        );
+
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        {
+            let mut binding_data = binding_info.try_borrow_mut_data()?;
+            write_issuer_tree_binding_root(
+                &mut binding_data,
+                &computed_new_root,
+                Clock::get()?.slot,
+            )?;
+        }
 
         // Note: registry_config.active_issuers is NOT decremented
         // here -- a Cooldown issuer is still "active" for bookkeeping
@@ -2022,6 +2165,14 @@ pub struct RevokeIssuerAtomic<'info> {
     /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
     pub compression_program: UncheckedAccount<'info>,
 
+    /// SOLID-SEC-045.  Singleton `IssuerTreeBinding` (113-byte custom
+    /// layout); written atomically inside this ix to reflect the
+    /// post-CPI tree root.  Owner-checked + discriminator-checked +
+    /// status-checked in-handler.  Must be writable.
+    /// CHECK: parsed + owner-verified in-handler against `crate::ID`.
+    #[account(mut, seeds = [ISSUER_TREE_BINDING_SEED], bump)]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
+
     pub authority: Signer<'info>,
 }
 
@@ -2199,6 +2350,14 @@ pub struct RequestWithdrawalAtomic<'info> {
 
     /// CHECK: Must be `spl_account_compression_id::ID`; validated in-handler.
     pub compression_program: UncheckedAccount<'info>,
+
+    /// SOLID-SEC-045.  Singleton `IssuerTreeBinding` (113-byte custom
+    /// layout); written atomically inside this ix to reflect the
+    /// post-CPI tree root.  Owner-checked + discriminator-checked +
+    /// status-checked in-handler.  Must be writable.
+    /// CHECK: parsed + owner-verified in-handler against `crate::ID`.
+    #[account(mut, seeds = [ISSUER_TREE_BINDING_SEED], bump)]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
 
     #[account(mut)]
     pub issuer_authority: Signer<'info>,
@@ -2467,6 +2626,8 @@ pub enum ErrorCode {
     PoseidonFailed,
     #[msg("BJJ public key is not in the prime-order subgroup; cofactor-8 torsion rejected (SOLID-SEC-007)")]
     InvalidBJJPubKey,
+    #[msg("Proof path length does not match ISSUER_TREE_DEPTH; full path required, no canopy reliance (SOLID-SEC-045)")]
+    InvalidProofPathLength,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -2602,4 +2763,192 @@ pub enum RevokeReason {
     /// revocation_nonce bump ensures the tree state still differs from
     /// the pre-cooldown leaf.
     CooldownRequested,
+}
+
+// ─── Host-side tests (SOLID-SEC-045 + supporting layout invariants) ────────
+//
+// These tests exercise pure helpers (`write_issuer_tree_binding_root`,
+// layout constants).  Anything that needs the Anchor runtime
+// (Account<T>, Context, Signer, CPI) is covered by the bankrun
+// integration suite under `tests/integration/`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Extract the numeric `error_code_number` from an
+    /// `anchor_lang::error::Error`.  Panics if the error is not an
+    /// `AnchorError` variant -- in our handler code paths every
+    /// `require!` / `require_keys_eq!` produces one.
+    fn anchor_error_code(err: anchor_lang::error::Error) -> u32 {
+        match err {
+            anchor_lang::error::Error::AnchorError(ae) => ae.error_code_number,
+            other => panic!("expected AnchorError, got: {:?}", other),
+        }
+    }
+
+    /// Build a 113-byte IssuerTreeBinding buffer with the canonical
+    /// discriminator + tree_pubkey + root + slot + status + authority.
+    fn make_binding(
+        tree_pubkey: [u8; 32],
+        root: [u8; 32],
+        slot: u64,
+        status: u8,
+        authority: [u8; 32],
+    ) -> Vec<u8> {
+        let mut v = Vec::with_capacity(ISSUER_TREE_BINDING_SIZE);
+        v.extend_from_slice(&ISSUER_TREE_DISCRIMINATOR);
+        v.extend_from_slice(&tree_pubkey);
+        v.extend_from_slice(&root);
+        v.extend_from_slice(&slot.to_le_bytes());
+        v.push(status);
+        v.extend_from_slice(&authority);
+        assert_eq!(v.len(), ISSUER_TREE_BINDING_SIZE);
+        v
+    }
+
+    // ─── write_issuer_tree_binding_root: positive paths ────────────────────
+
+    #[test]
+    fn write_binding_root_happy_path_overwrites_root_and_slot() {
+        let old_root = [0xAAu8; 32];
+        let new_root = [0xBBu8; 32];
+        let mut buf = make_binding([1u8; 32], old_root, 100, ISSUER_TREE_STATUS_ACTIVE, [9u8; 32]);
+
+        write_issuer_tree_binding_root(&mut buf, &new_root, 250).unwrap();
+
+        // Root field changed.
+        assert_eq!(&buf[40..72], &new_root[..]);
+        // Slot field updated to the supplied value.
+        let slot = u64::from_le_bytes(buf[72..80].try_into().unwrap());
+        assert_eq!(slot, 250);
+        // Discriminator + tree_pubkey + status + authority untouched.
+        assert_eq!(&buf[0..8], &ISSUER_TREE_DISCRIMINATOR);
+        assert_eq!(&buf[8..40], &[1u8; 32]);
+        assert_eq!(buf[80], ISSUER_TREE_STATUS_ACTIVE);
+        assert_eq!(&buf[81..113], &[9u8; 32]);
+    }
+
+    #[test]
+    fn write_binding_root_accepts_slot_zero() {
+        // slot=0 is unusual but legal; helper must not reject.
+        let mut buf = make_binding([0u8; 32], [0u8; 32], 0, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        let new_root = [0xCDu8; 32];
+        write_issuer_tree_binding_root(&mut buf, &new_root, 0).unwrap();
+        assert_eq!(&buf[40..72], &new_root[..]);
+        assert_eq!(u64::from_le_bytes(buf[72..80].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn write_binding_root_does_not_require_root_change() {
+        // Idempotent write of the same root + same slot succeeds.
+        // The helper does not enforce monotonicity (that's the caller's
+        // responsibility in `update_issuer_tree_root`); inside the
+        // atomic ixs the root will always advance because the leaf
+        // changes preimage.
+        let same_root = [0x77u8; 32];
+        let mut buf = make_binding([0u8; 32], same_root, 50, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        write_issuer_tree_binding_root(&mut buf, &same_root, 50).unwrap();
+        assert_eq!(&buf[40..72], &same_root[..]);
+    }
+
+    // ─── write_issuer_tree_binding_root: negative paths ────────────────────
+
+    #[test]
+    fn write_binding_root_rejects_buffer_too_short() {
+        let mut buf = vec![0u8; ISSUER_TREE_BINDING_SIZE - 1];
+        buf[0..8].copy_from_slice(&ISSUER_TREE_DISCRIMINATOR);
+        let err = write_issuer_tree_binding_root(&mut buf, &[1u8; 32], 1).unwrap_err();
+        let expected: u32 = ErrorCode::InvalidIssuerTreeBinding.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn write_binding_root_rejects_bad_discriminator() {
+        let mut buf = make_binding([0u8; 32], [0u8; 32], 1, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        // Corrupt discriminator (e.g., to schmtree, the schema-tree one).
+        buf[0..8].copy_from_slice(b"schmtree");
+        let err = write_issuer_tree_binding_root(&mut buf, &[1u8; 32], 1).unwrap_err();
+        let expected: u32 = ErrorCode::InvalidIssuerTreeBinding.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn write_binding_root_rejects_frozen_binding() {
+        let mut buf = make_binding(
+            [0u8; 32],
+            [0u8; 32],
+            1,
+            ISSUER_TREE_STATUS_FROZEN,
+            [0u8; 32],
+        );
+        let err = write_issuer_tree_binding_root(&mut buf, &[1u8; 32], 1).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeBindingFrozen.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn write_binding_root_rejects_invalid_status_byte() {
+        // status byte that is neither 0 (active) nor 1 (frozen) is
+        // already rejected as "not active" by the helper's frozen-gate
+        // (it requires status == 0).  Pin that here.
+        let mut buf = make_binding([0u8; 32], [0u8; 32], 1, 7, [0u8; 32]);
+        let err = write_issuer_tree_binding_root(&mut buf, &[1u8; 32], 1).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeBindingFrozen.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    // ─── Layout / discriminator invariants ─────────────────────────────────
+
+    #[test]
+    fn issuer_tree_binding_size_is_113() {
+        assert_eq!(ISSUER_TREE_BINDING_SIZE, 113);
+    }
+
+    #[test]
+    fn issuer_tree_discriminator_is_issrtree() {
+        assert_eq!(ISSUER_TREE_DISCRIMINATOR, *b"issrtree");
+    }
+
+    #[test]
+    fn issuer_tree_binding_seed_matches_solid_light() {
+        // Seed literal must agree with what the SDK derives off-chain.
+        // Drift here silently breaks every script that re-derives the
+        // singleton binding PDA.
+        assert_eq!(ISSUER_TREE_BINDING_SEED, b"issuer-tree-binding");
+    }
+
+    #[test]
+    fn issuer_tree_status_constants_are_distinct() {
+        assert_ne!(ISSUER_TREE_STATUS_ACTIVE, ISSUER_TREE_STATUS_FROZEN);
+        assert_eq!(ISSUER_TREE_STATUS_ACTIVE, 0);
+        assert_eq!(ISSUER_TREE_STATUS_FROZEN, 1);
+    }
+
+    #[test]
+    fn spl_ac_program_ids_match_canonical() {
+        // Drift gate: if an Anchor or solana SDK update silently
+        // re-derives the SPL AC / noop program IDs, this test fires.
+        assert_eq!(
+            spl_account_compression_id::ID.to_string(),
+            "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
+        );
+        assert_eq!(
+            spl_noop_id::ID.to_string(),
+            "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
+        );
+    }
+
+    #[test]
+    fn replace_leaf_discriminator_matches_anchor_global_replace_leaf() {
+        // sha256("global:replace_leaf")[..8].
+        let computed = anchor_lang::solana_program::hash::hash(b"global:replace_leaf").to_bytes();
+        assert_eq!(&SPL_AC_REPLACE_LEAF_DISCRIMINATOR, &computed[..8]);
+    }
+
+    #[test]
+    fn append_discriminator_matches_anchor_global_append() {
+        let computed = anchor_lang::solana_program::hash::hash(b"global:append").to_bytes();
+        assert_eq!(&SPL_AC_APPEND_DISCRIMINATOR, &computed[..8]);
+    }
 }
