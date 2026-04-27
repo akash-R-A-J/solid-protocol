@@ -459,13 +459,25 @@ pub fn derive_key(master_key: &[u8; 32], context: &[u8; 32]) -> Result<[u8; 32]>
 
 /// Sign a message (field element as bytes) using EdDSA-Poseidon.
 ///
-/// Algorithm matches circomlib's `eddsaposeidon.circom` verification:
+/// Algorithm matches circomlib's `eddsaposeidon.circom` verification
+/// EXACTLY, including the cofactor-8 scaling on the right-hand side
+/// (SOLID-SEC-053, 2026-04-28 fix):
 ///   1. r = deterministic_nonce(sk, msg)
 ///   2. R8 = r * Base8
 ///   3. h = Poseidon(R8.x_circ, R8.y, A.x_circ, A.y, msg) reduced to BJJ scalar
-///   4. S = r + h * sk
+///   4. S = r + h * 8 * sk          <-- 8x cofactor matches circomlib
 ///
-/// The circuit verifies: S · Base8 == R8 + h · A
+/// The circuit verifies: S · Base8 == R8 + h · 8 · A.  Without the 8x
+/// factor on `S`, off-chain `sign()` and the in-circuit
+/// `EdDSAPoseidonVerifier` produce inconsistent equations: host
+/// `verify()` agrees with sign (both omit the 8) and accepts every
+/// signature trivially, but the Groth16 witness rejects every
+/// signature inside `CredentialAtom`.  This was the root cause of
+/// the 2026-04-28 e2e bring-up failure at `npm run prove`
+/// (`ForceEqualIfEnabled_324:56` inside `EdDSAPoseidonVerifier`).
+/// Reference: `node_modules/circomlib/circuits/eddsaposeidon.circom`
+/// lines 66-78 (`dbl1/dbl2/dbl3` do `8 * A` via three doublings,
+/// `mulAny` multiplies by `h`, then RHS = R8 + h*8*A).
 ///
 /// **Coord form note.**  Curve arithmetic happens in arkworks-normalized
 /// form, but all four BJJ coordinates fed to Poseidon as well as the
@@ -510,8 +522,13 @@ pub fn sign(private_key: &[u8; 32], message: &[u8; 32]) -> Result<EdDSASignature
     // Reduce hash to BJJ scalar field (Fq > Fr, need mod reduction)
     let h = fq_to_fr(&h_fq);
 
-    // S = r + h * sk (mod BJJ subgroup order)
-    let s = r + h * sk;
+    // S = r + h * 8 * sk (mod BJJ subgroup order).  The 8x factor is
+    // circomlib EdDSA-Poseidon's cofactor scaling; matching it here is
+    // required for the resulting signature to verify inside the ZK
+    // circuit's `EdDSAPoseidonVerifier`.  See the docstring above and
+    // SOLID-SEC-053.
+    let h_scaled = h * Fr::from(8u64);
+    let s = r + h_scaled * sk;
 
     Ok(EdDSASignature {
         r8_x: fq_to_bytes(&r8_x_circ),
@@ -571,8 +588,12 @@ pub fn verify(
     let b8 = base8();
     let lhs = b8.mul_bigint(s.into_bigint()).into_affine();
 
-    // RHS: R8 + h · A
-    let h_a = pk_point.mul_bigint(h.into_bigint());
+    // RHS: R8 + h · 8 · A.  The 8x factor matches circomlib's
+    // EdDSA-Poseidon verifier (cofactor clearing); see
+    // `node_modules/circomlib/circuits/eddsaposeidon.circom` lines
+    // 66-78.  SOLID-SEC-053 fix.
+    let h_scaled = h * Fr::from(8u64);
+    let h_a = pk_point.mul_bigint(h_scaled.into_bigint());
     let rhs = (EdwardsProjective::from(r8_point) + h_a).into_affine();
 
     Ok(lhs == rhs)
@@ -714,6 +735,234 @@ mod tests {
         assert_ne!(kp.private_key, [0u8; 32]);
         assert_ne!(kp.public_key.x, [0u8; 32]);
         assert_ne!(kp.public_key.y, [0u8; 32]);
+    }
+
+    /// SOLID-SEC-053 regression gate.  EdDSA-Poseidon sign + verify
+    /// must use the cofactor-8 scaling on the right-hand side to match
+    /// circomlib's `EdDSAPoseidonVerifier.circom` (which does
+    /// `dbl3 = 8*A` then `mulAny = h * 8*A`).  Without the 8x, host
+    /// sign + host verify still agree internally (both omit the 8) but
+    /// every signature gets rejected by the in-circuit verifier --
+    /// that was the live e2e failure surfaced 2026-04-28.
+    ///
+    /// This test asserts that a freshly-generated signature passes
+    /// host `verify`, AND that flipping the 8x convention (i.e.
+    /// computing S without the 8 multiplier) is rejected by the
+    /// fixed `verify`.  The first half exercises sign+verify
+    /// self-consistency under the new convention; the second half
+    /// catches a future regression that re-introduces the old bug.
+    #[test]
+    fn sec_053_eddsa_cofactor_8_round_trip() {
+        let kp = generate_keypair().unwrap();
+        let msg = poseidon::fr_to_bytes_le(&ark_bn254::Fr::from(0xDEADBEEFu64));
+
+        // Forward: sign with the new (8x) convention -> verify accepts.
+        let sig = sign(&kp.private_key, &msg).unwrap();
+        assert!(
+            verify(&kp.public_key, &msg, &sig).unwrap(),
+            "Fresh signature must verify under the matching cofactor-8 convention"
+        );
+
+        // Negative: hand-craft a signature that would have been valid
+        // under the old (no-8) convention and confirm verify rejects it.
+        let sk = bytes_to_fr(&kp.private_key);
+        let mut hasher = blake2::Blake2b512::new();
+        use blake2::Digest;
+        hasher.update(kp.private_key);
+        hasher.update(msg);
+        let nonce_hash = hasher.finalize();
+        // `Fr` here is `ark_ed_on_bn254::Fr` per the module-level import,
+        // i.e. the BJJ scalar field (mod r ~ 2^251) -- the right type for
+        // an EdDSA scalar.  Don't reach for `ark_bn254::Fr`; that's the
+        // BN254 scalar field and won't add to BJJ's `sk`.
+        let r = Fr::from_le_bytes_mod_order(&nonce_hash[..]);
+        let b8 = base8();
+        let pk_point = b8.mul_bigint(sk.into_bigint()).into_affine();
+        let r8_point = b8.mul_bigint(r.into_bigint()).into_affine();
+        let (r8_x_circ, r8_y_circ) = affine_to_circomlib_xy(&r8_point);
+        let (pk_x_circ, pk_y_circ) = affine_to_circomlib_xy(&pk_point);
+        let msg_fq = bytes_to_fq(&msg);
+        let h_fq = poseidon::hash_fr(&[r8_x_circ, r8_y_circ, pk_x_circ, pk_y_circ, msg_fq]).unwrap();
+        let h = fq_to_fr(&h_fq);
+        // Old (broken) convention: S = r + h*sk (no 8x).
+        let s_old = r + h * sk;
+        let sig_old = EdDSASignature {
+            r8_x: fq_to_bytes(&r8_x_circ),
+            r8_y: fq_to_bytes(&r8_y_circ),
+            s: fr_to_bytes(&s_old),
+        };
+        assert!(
+            !verify(&kp.public_key, &msg, &sig_old).unwrap(),
+            "Old-convention signature (S=r+h*sk, no 8x) MUST be rejected -- if this assertion fires, the 8x cofactor regression is back."
+        );
+    }
+
+    /// SOLID-SEC-052 regression gate (formerly the B12 live-state
+    /// diagnostic).  Captures a synthetic full credential round trip
+    /// in one host-side test: derive holder per-schema key from a
+    /// master + schemaHash, derive issuer pubkey from a fresh issuer
+    /// keypair, compute the attestation commitment, sign it, verify
+    /// host-side.  If any of (a) holder-pubkey derivation,
+    /// (b) commit ordering, (c) sign/verify cofactor convention
+    /// drifts, this test fires.  Replaces the brittle "snapshot the
+    /// live state file" form with a self-contained pair so the
+    /// regression remains valid across future e2e runs.
+    #[test]
+    fn sec_052_full_credential_round_trip() {
+        use crate::commitment::compute_attestation_commitment;
+
+        // Stable, reproducible inputs.
+        let holder_master_priv: [u8; 32] = [
+            54, 29, 120, 164, 223, 183, 201, 222, 22, 124, 78, 80, 112, 60, 90, 102, 52, 193, 121,
+            177, 114, 138, 15, 192, 239, 99, 223, 227, 53, 85, 41, 0,
+        ];
+        let schema_hash: [u8; 32] = [
+            234, 94, 118, 23, 213, 107, 111, 81, 64, 230, 146, 173, 30, 217, 59, 157, 98, 112, 137,
+            79, 145, 192, 156, 219, 177, 224, 99, 203, 94, 123, 107, 39,
+        ];
+        let salt: [u8; 32] = [
+            45, 193, 5, 202, 36, 37, 90, 61, 140, 31, 78, 25, 235, 82, 8, 96, 25, 166, 232, 95, 38,
+            3, 185, 28, 180, 127, 153, 231, 62, 133, 142, 65,
+        ];
+        let data_fields: Vec<u64> = vec![25, 840, 1, 0, 2, 1777318884, 840, 0];
+
+        // Holder derives per-schema keypair (matches `derive_credential_key`).
+        let holder_priv =
+            poseidon::hash_bytes(&[holder_master_priv, schema_hash]).expect("Poseidon");
+        let holder_pk = derive_public_key(&holder_priv).expect("derive holder");
+
+        // Issuer is a fresh keypair generated this run.
+        let issuer_kp = generate_keypair().unwrap();
+
+        // Compute commitment + sign with the new (8x) convention.
+        let commitment =
+            compute_attestation_commitment(&data_fields, &schema_hash, &holder_pk, &salt)
+                .expect("commit");
+        let sig = sign(&issuer_kp.private_key, &commitment).expect("sign");
+        assert!(
+            verify(&issuer_kp.public_key, &commitment, &sig).unwrap(),
+            "Issuer signature on the recomputed commitment must verify host-side after SEC-052/053 fixes"
+        );
+
+        // Bonus: holder pubkey is byte-stable for the fixed input.  Pins
+        // the SEC-052 (a/b) closure -- if circomlib<->arkworks coord-form
+        // alignment regresses, this assertion fires.
+        let expected_holder_x_hex = "23247a9e3f6c9c6d547fb0d4efbe82d34383c608c7da5191758f96ee6dfeeb69";
+        let expected_holder_y_hex = "2dc9fbaaabd04ea364b60d03f5bc62bcc120770baa87c86454355887b8fda94e";
+        let mut x_be = holder_pk.x;
+        x_be.reverse();
+        let mut y_be = holder_pk.y;
+        y_be.reverse();
+        assert_eq!(
+            hex::encode(x_be),
+            expected_holder_x_hex,
+            "holder pubkey X drift -- circomlib<->arkworks coord-form alignment regressed"
+        );
+        assert_eq!(hex::encode(y_be), expected_holder_y_hex);
+    }
+
+    /// Original B12 diagnostic, retained as `#[ignore]` so the captured
+    /// live-state values remain in tree as documentation but don't run
+    /// in CI (they were generated under the pre-SEC-053 sign convention
+    /// and therefore fail under the fixed `verify`).
+    #[test]
+    #[ignore = "captured under pre-SEC-053 (no-8x) sign convention; kept for forensic reference"]
+    fn b12_diagnostic_e2e_session_signature_verifies_host_side() {
+        use crate::commitment::compute_attestation_commitment;
+        // Captured 2026-04-28 from the live e2e state file.
+        let holder_master_priv: [u8; 32] = [
+            54, 29, 120, 164, 223, 183, 201, 222, 22, 124, 78, 80, 112, 60, 90, 102, 52, 193, 121,
+            177, 114, 138, 15, 192, 239, 99, 223, 227, 53, 85, 41, 0,
+        ];
+        let schema_hash: [u8; 32] = [
+            234, 94, 118, 23, 213, 107, 111, 81, 64, 230, 146, 173, 30, 217, 59, 157, 98, 112, 137,
+            79, 145, 192, 156, 219, 177, 224, 99, 203, 94, 123, 107, 39,
+        ];
+        let holder_pub_x: [u8; 32] = [
+            105, 235, 254, 109, 238, 150, 143, 117, 145, 81, 218, 199, 8, 198, 131, 67, 211, 130,
+            190, 239, 212, 176, 127, 84, 109, 156, 108, 63, 158, 122, 36, 35,
+        ];
+        let holder_pub_y: [u8; 32] = [
+            78, 169, 253, 184, 135, 88, 53, 84, 100, 200, 135, 170, 11, 119, 32, 193, 188, 98, 188,
+            245, 3, 13, 182, 100, 163, 78, 208, 171, 170, 251, 201, 45,
+        ];
+        let issuer_pub_x: [u8; 32] = [
+            239, 150, 223, 32, 187, 45, 84, 239, 22, 87, 182, 206, 219, 158, 107, 62, 208, 76, 221,
+            199, 96, 75, 36, 4, 177, 103, 81, 76, 110, 95, 248, 43,
+        ];
+        let issuer_pub_y: [u8; 32] = [
+            110, 198, 61, 92, 50, 227, 65, 245, 131, 229, 90, 77, 12, 231, 126, 130, 156, 56, 131,
+            127, 187, 210, 119, 211, 115, 76, 208, 103, 105, 120, 105, 20,
+        ];
+        let commitment: [u8; 32] = [
+            240, 217, 128, 246, 72, 146, 120, 130, 217, 254, 222, 168, 45, 242, 231, 200, 133, 173,
+            85, 252, 195, 148, 144, 78, 104, 69, 82, 250, 60, 230, 224, 44,
+        ];
+        let salt: [u8; 32] = [
+            45, 193, 5, 202, 36, 37, 90, 61, 140, 31, 78, 25, 235, 82, 8, 96, 25, 166, 232, 95, 38,
+            3, 185, 28, 180, 127, 153, 231, 62, 133, 142, 65,
+        ];
+        let sig_r8x: [u8; 32] = [
+            183, 13, 63, 67, 243, 120, 26, 182, 215, 69, 206, 114, 187, 180, 250, 134, 193, 229,
+            127, 18, 1, 217, 101, 9, 28, 12, 191, 60, 4, 19, 134, 6,
+        ];
+        let sig_r8y: [u8; 32] = [
+            53, 128, 30, 229, 163, 5, 120, 20, 117, 74, 207, 164, 52, 177, 132, 98, 162, 45, 103,
+            241, 163, 217, 240, 53, 248, 40, 202, 80, 43, 175, 244, 35,
+        ];
+        let sig_s: [u8; 32] = [
+            53, 210, 92, 185, 50, 81, 117, 243, 42, 223, 158, 230, 223, 250, 72, 242, 248, 108,
+            207, 14, 93, 209, 130, 203, 198, 163, 225, 186, 90, 203, 220, 4,
+        ];
+        let data_fields: Vec<u64> = vec![25, 840, 1, 0, 2, 1777318884, 840, 0];
+
+        // (A) Self-consistency of holder-pubkey derivation.
+        let derived_priv =
+            crate::poseidon::hash_bytes(&[holder_master_priv, schema_hash]).expect("Poseidon");
+        let derived_pk = derive_public_key(&derived_priv).expect("derive");
+        assert_eq!(
+            derived_pk.x, holder_pub_x,
+            "holder pubkey X drift: SDK derive_credential_key vs live state"
+        );
+        assert_eq!(
+            derived_pk.y, holder_pub_y,
+            "holder pubkey Y drift: SDK derive_credential_key vs live state"
+        );
+
+        // (B) Off-chain commitment recomputation matches what was signed.
+        let issuer_pk = BJJPublicKey {
+            x: issuer_pub_x,
+            y: issuer_pub_y,
+        };
+        let holder_pk = BJJPublicKey {
+            x: holder_pub_x,
+            y: holder_pub_y,
+        };
+        let recomputed_commit =
+            compute_attestation_commitment(&data_fields, &schema_hash, &holder_pk, &salt)
+                .expect("compute_attestation_commitment");
+        assert_eq!(
+            recomputed_commit, commitment,
+            "commitment drift: recomputed differs from credential.commitment"
+        );
+
+        // (C) Off-chain EdDSA verify on the signed bytes.  If this is
+        // true, the SDK is self-consistent and the bug is in the
+        // circuit's recomputation path -- meaning circuit's BabyPbk254
+        // produces a different (Ax, Ay) than off-chain
+        // derive_credential_key, OR the circuit's commit Poseidon
+        // input ordering disagrees with off-chain.
+        let sig = EdDSASignature {
+            r8_x: sig_r8x,
+            r8_y: sig_r8y,
+            s: sig_s,
+        };
+        let host_verify =
+            verify(&issuer_pk, &commitment, &sig).expect("verify must not error structurally");
+        assert!(
+            host_verify,
+            "Off-chain `verify` rejects the issuer's signature on its own commitment.  This is an SDK self-consistency bug, not a circuit-recomputation drift."
+        );
     }
 
     #[test]

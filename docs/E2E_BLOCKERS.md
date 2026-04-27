@@ -557,9 +557,21 @@ has been updated to reflect the post-fix state.
   Root cause: cff06c2 commit; missing CI gate for
   WASM<->on-chain wire alignment.
 
-### B12. EdDSA witness-gen drift inside `CredentialAtom` (live edge)
+### B12. EdDSA witness-gen drift inside `CredentialAtom`
 
-- **Status:** Open as of 2026-04-28.  Diagnosis WIP.
+- **Status:** **Closed (verified) 2026-04-28** as SOLID-SEC-053.
+  Root cause was a cofactor-8 mismatch between off-chain
+  `solid_core::babyjubjub::sign` (S = r + h * sk) and circomlib's
+  in-circuit `EdDSAPoseidonVerifier` (S * B == R8 + h * 8 * A).
+  Self-consistent on host (sign + verify pair both omitted the
+  8) but always rejected by the Groth16 witness.  Fixed:
+  S = r + h * 8 * sk; verify mirrors with rhs = R8 + h * 8 * A.
+  WASM bridge re-emitted; TS SDK rebuilt; `npm run prove`
+  generates the witness in 5.09s and produces a valid Groth16
+  proof.  Live edge moved to B13 (legacy-tx wire size).
+- **Original symptom (pre-fix).**  `npm run prove` reaches step
+  `[3/4] Generating Groth16 batch proof...` and the
+  `circom_runtime` witness calculator throws:
 - **Symptom.**  `npm run prove` reaches step `[3/4] Generating
   Groth16 batch proof...` and the `circom_runtime` witness
   calculator throws:
@@ -625,6 +637,88 @@ has been updated to reflect the post-fix state.
   3. Fix at root cause; no workarounds.
 - **E2E impact.**  Yes -- this is the live edge.  Until B12 is
   closed, `npm run e2e` cannot reach `verified: true`.
+
+### B13. `verify_batch_proof` ix data exceeds 1232-byte legacy-tx wire size (live edge)
+
+- **Status:** Open as of 2026-04-28.  Architectural blocker for
+  the on-chain submission half of `npm run prove`.  The Groth16
+  proof itself generates fine post-SEC-053 (witness gen 5.09s on
+  localnet); the failure is in `Buffer.encode` of the
+  `verify_batch_proof` ix:
+  ```
+  RangeError [ERR_OUT_OF_RANGE]: The value of "offset" is out of
+    range. It must be >= 0 and <= 1231. Received 1232
+  ```
+  `@solana/web3.js` legacy-Transaction encoder hit
+  `PACKET_DATA_SIZE = 1232` on a single-byte write past the
+  buffer.
+- **Wire-size accounting.**  Hand-rolled `buildVerifyBatchProofIx`
+  in `ts-sdk/packages/verifier/src/index.ts:140-167` lays out:
+  ```
+    discriminator      8
+  + proof_a           64
+  + proof_b          128
+  + proof_c           64
+  + Vec<>  prefix      4
+  + public_inputs   1024  (32 * 32)
+  + nullifier         32
+  = 1324 bytes ix data
+  ```
+  Plus tx framing: 1 sig (~64) + ~11 account keys (~352) +
+  recent_blockhash (32) + headers (~5) + ix metas (~13).  Total
+  legacy-tx wire size: ~1790 bytes -- well past the 1232-byte
+  protocol cap.  Even with Address Lookup Tables (saving ~341
+  bytes by collapsing 11 pubkeys into 11 indices) the message
+  still overflows.
+- **Why it was never green before.**  `npm run prove` has been
+  the live edge of every prior session per `plan/RESUME.md` ---
+  the Groth16 witness was rejecting under the SEC-053 cofactor
+  drift, so the wire-size limit was masked.  With SEC-053 closed,
+  the wire-size wall is the next layer.  The pre-cff06c2
+  Phase 2 instantiations had `NR_PUBLIC_INPUTS = 31` (one fewer
+  by 32 bytes) which still exceeded 1232 bytes total, so this
+  has been latent since v0.5+.
+- **Remediation candidates** (in increasing soundness preference,
+  decreasing engineering cost):
+  1. **Reconstruct redundant public inputs on-chain.**  Of the
+     32 public inputs, 12 are derivable from accounts already
+     passed to the ix:
+       - `globalRoot` -> `global_tree` account body
+       - `merkleRoots[0..3]` -> `schema_tree_N` account bodies
+       - `schemaHashes[0..3]` -> `schema_tree_N` bindings
+       - `issuerTreeRoot` -> `issuer_tree_binding`
+       - `verifierAddress` -> `program_id.to_bytes()`
+       - `currentTimestamp` -> `Clock::unix_timestamp` (with
+         skew tolerance per SEC-005)
+     Removing these from the ix arg list saves 12 * 32 = 384
+     bytes of `public_inputs` body.  Remaining 20 inputs ->
+     640 bytes; total ix data shrinks from 1324 to 940 bytes
+     (well under 1232).  Handler reconstructs the full
+     `[u8; 32]; 32]` array internally and verifies Groth16
+     against it.  Trade-off: slightly more on-chain CU (~5K
+     extra for 12 byte copies); circuit unchanged.
+  2. **Buffer-account upload + verify-from-buffer.**  Add a
+     `init_proof_buffer(payer)` ix that allocates a scratch PDA
+     `[b"proof-buffer", payer]`; followed by `upload_proof_chunk`
+     ixs (each ix data << 1232 bytes) that fill the buffer with
+     `(proof_a, proof_b, proof_c, public_inputs, nullifier)`.
+     Final `verify_batch_proof_v2(buffer_pda)` reads from the
+     scratch PDA and runs the Groth16 verifier.  Adds 2-3 extra
+     transactions per proof but is unconditionally architecturally
+     clean.  Buffer PDA is closed at end of verify to refund
+     rent.
+  3. **Versioned-tx + ALT** (insufficient on its own; the ix
+     data alone is 1324 bytes).  Combine with (1) and the
+     numbers fit; ALT compression of the 11-account list saves
+     a further ~341 bytes of header overhead.
+- **Recommended path: (1) + (3).**  Cleanest single-tx
+  experience for the holder; minimal on-chain CU; no extra
+  ixs.  (2) is the fallback if the on-chain reconstruction
+  pushes verify_batch_proof's CU budget over the per-tx ceiling
+  (re-uses SEC-046 instrumentation).
+- **Tracking.**  No security-registry entry yet (this is a
+  protocol-shape issue, not a soundness gap).  Will register
+  as `SOLID-SEC-054` once the remediation choice is sanctioned.
 
 ### B10. `stake_tokens` access violation post-CPI (handler returns, runtime crashes on writeback)
 
