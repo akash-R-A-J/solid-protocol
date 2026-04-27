@@ -4,11 +4,49 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-27 evening (strategy session; no code
-  changes).  Three deliverables added at the planning layer; the
-  technical state of the protocol is unchanged from this morning's
-  Phase 3.4 checkpoint (still HEAD `8d62197`, still pre-`npm run
-  issue`):
+- **Last updated:** 2026-04-28 (post-cff06c2 e2e bring-up + program +
+  circuit audit + SEC-050 trusted-setup cycle).  Major code session;
+  see "2026-04-28 -- circuit/ZK audit + e2e bring-up" below for the
+  full receipts.  Quick state:
+  - **HEAD:** `59a85b3 added program tests` (this session's
+    program-tests + helpers commit) plus uncommitted SEC-050
+    circuit fix + SEC-052 babyjubjub.rs rewrite + new VK pin
+    `8385b82b...` + WASM bridge rebuild.
+  - **E2E status:** `npm run e2e` walks through `init-onchain ->
+    backfill-issuer-tree -> bootstrap-schema-tree ->
+    bootstrap-issuer -> issue` ALL GREEN.  Live edge is `npm run
+    prove`, blocked at B12 (EdDSA witness drift inside
+    `CredentialAtom`; see `docs/E2E_BLOCKERS.md` B12 for the
+    diagnostic plan).
+  - **Closures this session:**
+    - SOLID-SEC-045 (atomic binding update; helper +
+      keccak path-recompute + 7 unit tests + write-binding
+      regression suite).
+    - SOLID-SEC-049 NEW (wrong `replace_leaf` discriminator;
+      `0xe388...` -> `0xcca5...`).
+    - SOLID-SEC-050 NEW (schema-canonicality bypass via
+      interleaved padding; circuit constraint + 17 witness-
+      tester regressions; trusted-setup re-run).
+    - SOLID-SEC-052 NEW (BPF / cross-layer coord-form drift;
+      `is_on_curve` rewritten + WASM bridge rebuilt).
+    - `docs/E2E_BLOCKERS.md` O4 (padding_slot test) verified
+      green and closed.
+    - SOLID-SEC-041 confirmed in-code (VK sha256 pin
+      gated `initialize.ts`).
+  - **Open trackers introduced this session:** SOLID-SEC-051
+    (all-padding circuit; LOW; defer to next setup cycle), B11
+    (WASM rebuild gate; documented + process gate added), B12
+    (EdDSA witness drift; live e2e edge).
+  - **Workspace tests:** 167/167 cargo + 39/39 circuit witness-
+    tester (mocha) green.
+
+(The 2026-04-27 strategy-session notes below are preserved as
+historical context; they were unchanged technically from the
+Phase 3.4 checkpoint at the time, and the code state has now
+moved well past that point.)
+
+- **Strategy-session snapshot (2026-04-27 evening):** unchanged
+  technical state; three planning deliverables added.
   1. **`plan/GO_TO_MARKET.md`** (new, 335 lines).  Six-month
      sequenced go-to-market plan starting **2026-05-15**.  Phases
      A--E (discovery -> integrator+issuer pair -> ship the
@@ -942,3 +980,125 @@ reference:
 
 Phase 1 held to all six.  Phase 2 held to all six.  Phase 3 must
 too.
+
+---
+
+## 2026-04-28 -- circuit/ZK audit + e2e bring-up (this session)
+
+**Receipts (all verifiable from the working tree).**
+
+Program-side audit + closures (committed at HEAD `59a85b3`):
+- SEC-045 (MEDIUM, NEW-01) closed.  `revoke_issuer_atomic` and
+  `request_withdrawal_atomic` now write `IssuerTreeBinding.
+  current_root` atomically.  Helper
+  `solid_light::cpi_helpers::compute_concurrent_merkle_root_keccak`
+  walks the proof path with Solana's `keccak::hashv`; soundness
+  rests on the CPI's prior validation of the path against the
+  pre-CPI tree root + Keccak256 pre-image resistance.  The
+  `update_issuer_tree_root` doc lie is gone.  Helper unit tests
+  (7) + binding-write regression (5 negative cases) + 13
+  layout-invariant tests in issuer-registry.
+- SEC-049 (HIGH, NEW) closed.  `SPL_AC_REPLACE_LEAF_DISCRIMINATOR`
+  was `[0xe3,0x88,0x6a,0x74,...]` -- matches no SPL AC ix
+  preimage.  Correct `sha256("global:replace_leaf")[..8]` =
+  `[0xcc,0xa5,0x4c,0x64,0x49,0x93,0x00,0x80]`.  Latent because
+  no integration test covered revoke / cooldown.  Caught by the
+  discriminator-derivation regression test I added in the
+  test sweep.
+- SEC-044 (LOW) verified closed: pre-existing
+  `request_withdrawal_atomic` + the SEC-045 fix together close the
+  Cooldown-replay window.
+- 30 schema-registry layout + helper tests; 17 issuer-registry
+  layout + binding-write tests; 12 zk-verifier additions.
+  Workspace 167/167 cargo green.
+
+Circuit-side audit + closures (working tree, post-trusted-setup):
+- SEC-050 (MEDIUM, NEW) closed.  `batch_credential_query.circom`
+  schema-ordering canonicality bypass.  Strict-ascending check was
+  skipped when next slot was inactive, so `[A1, 0, A2, A3]` and
+  `[0, A1, 0, A2]` both passed and produced different
+  `queryContextHash` values for the same credential set --
+  defeats the verifier's per-claim nullifier rate-limit.  Fix:
+  one extra constraint per pair `isZero[i].out * (1 -
+  isZero[i+1].out) === 0`.  Trusted-setup re-run; new VK pin
+  `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`
+  written to `circuits/build/verification_key.sha256`.
+  17-case witness-tester regression at
+  `circuits/test/schema_ordering.test.js`.  Existing 22 circuit
+  tests + 17 new = 39/39.
+- SEC-051 (LOW, NEW) tracked.  All-padding `[0,0,0,0]` proofs are
+  admitted by the circuit and the on-chain handler skips zero-
+  schema slots at `programs/zk-verifier/src/lib.rs:500-502`.
+  Realistic queries fail on zero data, but "at least 1
+  credential" is not a circuit-level invariant.  Defer-with-
+  justification to next sanctioned trusted-setup cycle (bundles
+  with SEC-006 Part 2 + the predicate-operand range-checks).
+- SEC-052 (HIGH, NEW) closed (partial).  Two BPF-runtime /
+  cross-layer coord-form drifts surfaced during e2e bring-up:
+    (a) `is_on_curve` and `is_identity` rewritten in
+    `crates/solid-core/src/babyjubjub.rs` to evaluate the
+    circomlib-native curve equation directly using only `Fq * Fq`
+    and `Fq + Fq` -- avoids the BPF-incompat
+    `EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).
+    is_on_curve()` path that rejects valid points on BPF.  Host
+    test `test_keygen_passes_on_chain_consolation_gate` pins the
+    new contract.
+    (b) WASM bridge `solid_wasm_bg.wasm` was stale (Apr 25 21:59,
+    pre-cff06c2 "circuit update") -- produced arkworks-form bytes
+    while on-chain code expected circomlib-native form.  Rebuilt
+    via `wasm-pack build wasm/`; both sides aligned.  Process
+    gate added at `docs/E2E_BLOCKERS.md` B11.
+
+E2E pipeline run:
+- Validator killed and restarted with `--reset
+  --clone-upgradeable-program <SPL AC> --clone-upgradeable-program
+  <noop>`.
+- All three programs redeployed (issuer-registry with
+  `--features sec007-skip-onchain`; program-data account extended
+  via `solana program extend ... 200000` to fit the larger .so).
+- `npm run init-onchain` -> uploads new VK pin (3 chunks, 2564
+  bytes); RegistryConfig + GlobalStateBinding + VerifierConfig
+  initialised.
+- `npm run backfill-issuer-tree` -> issuer SPL AC tree at
+  `6oxgd4f1pXPXU3n5b6sy889pBw82dU7h4sor3PgprvMR`,
+  `IssuerTreeBinding` at
+  `ExJ2PLDf8qrDxYsYRJbuKNTJ38xPxt1USJpe7cdfgL6h`.
+- `npm run bootstrap-schema-tree` -> schema SPL AC tree at
+  `9kEpm21BLknx54D7h4Vz83FVMvfZWpvZsX2tiN1QzDbU`,
+  `SchemaTreeBinding` at
+  `bM7C5RPo6mAZPa4agZgEACJYdcY1FJbNFZKW5UXp4YM`.
+- `SOLID_VOTING_PERIOD_SECONDS=120 npm run bootstrap-issuer`
+  -> [3/8] `register_issuer` ok (issuer
+  `FT28CPrQ1RU3aydXJyBxErYMRR33kc7zbC6eRyoBhwd2`); [4/8]
+  `stake_tokens` ok; [6/8] `vote_on_issuer` ok; [8/8]
+  `finalize_voting`; [8b/10] `append_issuer_leaf` ok (binding
+  root `0x47165b08fd77ac91...`).
+- `npm run issue` -> credential committed
+  (commitment `f0d980f648927882d9fedea82df2e7c885ad55fcc394904e684552fa3ce6e02c`).
+- `npm run prove` -> blocked at B12 (EdDSA witness drift inside
+  `CredentialAtom`).  Diagnostic plan at
+  `docs/E2E_BLOCKERS.md` B12.
+
+**Learnings (running log).**
+- L7. **Off-chain WASM byte format must be CI-gated against
+  on-chain expectations.**  cff06c2 changed the wire byte format
+  (arkworks -> circomlib-native) without rebuilding
+  `solid_wasm_bg.wasm`; host tests pass on both sides
+  independently because they exercise their own runtime, but the
+  cross-layer wire contract was never asserted.  Pattern:
+  "dual-target-link is not dual-target-runtime" (sibling of the
+  SEC-048 receipt).  Fix: a CI smoke test that runs
+  `wasm-pack build wasm/` -> `node scripts/wasm_bridge_smoke.mjs`
+  -> assert byte-equal round-trip with on-chain `is_on_curve` for
+  a freshly-generated keypair.  Promote any contract-bearing wire
+  format change in `babyjubjub.rs` (or any `crates/solid-core/`
+  byte-format helper) to also touch CI.  L6 lesson reinforced:
+  doc claims of "rust + ts byte-equal" must be enforced
+  end-to-end, not just at the Poseidon vector layer.
+- L8. **Audit depth-first vs cross-layer.**  This session's circuit
+  + program audits found SEC-049 + SEC-050 + reinforced SEC-051
+  cleanly, but missed SEC-052 because each layer was reviewed in
+  isolation.  Add a "wire format" audit pass to the playbook:
+  for every coord-form / byte-format change, walk the producer
+  (off-chain SDK) and consumer (circuit + on-chain) and assert
+  they share the documented invariant.

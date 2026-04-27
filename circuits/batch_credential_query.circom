@@ -220,6 +220,25 @@ template BatchCredentialQuerySolana(TREE_DEPTH, GLOBAL_DEPTH, ISSUER_TREE_DEPTH,
 
         orderingNextNotZero[i] <== 1 - isZero[i+1].out;
         orderingNextNotZero[i] * (1 - orderingV2[i].out) === 0;
+
+        // SOLID-SEC-050: padding canonicality.  Once a slot is inactive
+        // (schemaHash == 0), every following slot MUST also be inactive.
+        // Without this, a prover holding {C1, C2} could encode the batch
+        // as either [C1, C2, 0, 0] or [C1, 0, C2, 0] (both pass the
+        // strict-ascending check above because the inactive slot breaks
+        // the chain), point queryCredentialIndices at the differing
+        // active positions, and produce TWO distinct queryContextHashes
+        // and therefore TWO distinct nullifiers for the same logical
+        // claim.  That bypasses the verifier's nullifier-PDA rate
+        // limit ("one proof per (holder, verifier, query, epoch)").
+        // Combined with the strict-ascending constraint immediately
+        // above, this forces the canonical layout
+        //     [A1 < A2 < ... < AK, 0, 0, ..., 0]
+        // so each credential set has exactly one valid encoding (modulo
+        // the prover's choice of which credentials to include).
+        // Constraint reads: "if slot i is inactive, slot i+1 must also
+        // be inactive" -- isZero[i].out * (1 - isZero[i+1].out) === 0.
+        isZero[i].out * (1 - isZero[i+1].out) === 0;
     }
 
     // ========================================================================

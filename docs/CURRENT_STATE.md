@@ -315,3 +315,37 @@ Whenever a row in §1, §2, or §5 changes status, update this file in
 the same PR.  CLAUDE.md treats `IMPROVEMENTS_ROADMAP.md` as the
 issue-level backlog; this document is the component-level mirror of
 the vision and should never disagree with the deployed reality.
+
+# 9. Session deltas (2026-04-28)
+
+- **Circuit revision.**  `batch_credential_query.circom` gained
+  the SEC-050 padding-canonicality constraint
+  `isZero[i].out * (1 - isZero[i+1].out) === 0`.  Trusted-setup
+  re-run; new VK pin
+  `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`
+  (the prior pin `debca4c0...` is stale).
+- **`crates/solid-core/src/babyjubjub.rs::is_on_curve` and
+  `is_identity`** rewritten to evaluate the circomlib-native
+  twisted-Edwards equation directly (`a*x^2 + y^2 == 1 +
+  d*x^2*y^2`, `a = 168700, d = 168696`).  Pure `Fq * Fq` /
+  `Fq + Fq` so behaviour matches host and BPF byte-for-byte.
+  Tracked as SOLID-SEC-052.
+- **WASM bridge rebuilt** (`wasm-pack build wasm/`).  Required
+  on any commit that touches the byte-format helpers in
+  `crates/solid-core/src/babyjubjub.rs`; cff06c2 missed this
+  step and silently broke the off-chain<->on-chain wire contract.
+  Process gate added at `docs/E2E_BLOCKERS.md` B11.
+- **Program-side closures.**  SEC-045 (atomic binding update),
+  SEC-049 (replace_leaf discriminator), SEC-044 (verified).
+  See `plan/RESUME.md` §"2026-04-28" and
+  `sec/SECURITY_REGISTRY.md` for receipts.
+- **Open trackers introduced.**  SEC-051 (all-padding circuit;
+  defer to next setup cycle), B11 (WASM rebuild gate), B12
+  (EdDSA witness drift in `CredentialAtom`; live e2e edge --
+  `npm run prove` rejects).
+- **Test counts.**  Workspace 167/167 cargo + 39/39 circuit
+  witness-tester (mocha) green.
+- **E2E status.**  Steps 1-17 of the runbook + `init-onchain`
+  + `backfill-issuer-tree` + `bootstrap-schema-tree` +
+  `bootstrap-issuer` + `issue` all green.  Live edge:
+  `npm run prove`.

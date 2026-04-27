@@ -339,9 +339,37 @@ pub fn is_in_prime_order_subgroup(pk: &BJJPublicKey) -> bool {
 /// substitute for the full subgroup check, only a coarse sanity
 /// filter against off-curve garbage.
 pub fn is_on_curve(pk: &BJJPublicKey) -> bool {
-    let x_circ = bytes_to_fq(&pk.x);
+    // SOLID-SEC-052 (BPF-runtime regression closeout, 2026-04-28).
+    //
+    // The previous implementation went through the circomlib<->arkworks
+    // iso `EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).is_on_curve()`,
+    // which on host x86 evaluates correctly but on the Solana BPF
+    // target rejects valid points emitted by `generate_keypair()` (and
+    // any honest off-chain caller of the WASM bridge that passed
+    // `isInPrimeOrderSubgroup`).  Surfaced 2026-04-28 during e2e
+    // bring-up: `bootstrap_issuer.ts -> register_issuer` consistently
+    // failed at the consolation gate even though the off-chain
+    // predicate accepted the same bytes.  Host test
+    // `test_keygen_passes_on_chain_consolation_gate` passes; the
+    // regression is BPF-only.
+    //
+    // Fix: evaluate the circomlib NATIVE twisted Edwards equation
+    //   a * x^2 + y^2  ==  1 + d * x^2 * y^2     (a = 168700, d = 168696)
+    // directly in `Fq` using only field add / mul, no iso transform,
+    // no `EdwardsAffine` constructor, no arkworks `is_on_curve()` call.
+    // This is the same equation circomlib's `babyjub.circom` enforces,
+    // so a key that lies on the circomlib curve passes here AND in the
+    // circuit.  All operations are plain `Fq * Fq` and `Fq + Fq` which
+    // arkworks BN254 fields handle identically on host and BPF.
+    let x = bytes_to_fq(&pk.x);
     let y = bytes_to_fq(&pk.y);
-    EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).is_on_curve()
+    let xx = x * x;
+    let yy = y * y;
+    let a = Fq::from(168700u64);
+    let d = Fq::from(168696u64);
+    let lhs = a * xx + yy;
+    let rhs = Fq::from(1u64) + d * xx * yy;
+    lhs == rhs
 }
 
 /// Cheap on-chain predicate: is `pk` (circomlib-form bytes) the
@@ -355,9 +383,15 @@ pub fn is_on_curve(pk: &BJJPublicKey) -> bool {
 /// it for symmetry, so any future change to the transform doesn't
 /// silently bypass this gate.
 pub fn is_identity(pk: &BJJPublicKey) -> bool {
-    let x_circ = bytes_to_fq(&pk.x);
+    // SOLID-SEC-052 sibling fix: same BPF-incompat reason as
+    // `is_on_curve` above.  In circomlib-native form the Edwards
+    // neutral element is `(x = 0, y = 1)` (the iso preserves it
+    // because `sqrt(a) * 0 == 0`), so a direct equality check on
+    // canonicalised `Fq` values is sufficient and avoids the
+    // BPF-broken arkworks constructor path.
+    let x = bytes_to_fq(&pk.x);
     let y = bytes_to_fq(&pk.y);
-    EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).is_zero()
+    x == Fq::from(0u64) && y == Fq::from(1u64)
 }
 
 /// Fail-closed form of `is_in_prime_order_subgroup`.  Use this at
@@ -680,6 +714,36 @@ mod tests {
         assert_ne!(kp.private_key, [0u8; 32]);
         assert_ne!(kp.public_key.x, [0u8; 32]);
         assert_ne!(kp.public_key.y, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_keygen_passes_on_chain_consolation_gate() {
+        // Mirror of the on-chain `register_issuer` consolation gate
+        // under `sec007-skip-onchain`: every freshly generated keypair
+        // MUST satisfy `is_on_curve(pk) && !is_identity(pk)` AND the
+        // stricter `is_in_prime_order_subgroup(pk)`.  Regression gate
+        // for the e2e bootstrap_issuer failure 2026-04-28: on-chain
+        // is_on_curve was rejecting WASM-generated keys that off-chain
+        // isInPrimeOrderSubgroup accepted -- if this host test passes,
+        // the regression is BPF-specific (arkworks compilation), not
+        // a logic bug.
+        for _ in 0..16 {
+            let kp = generate_keypair().unwrap();
+            assert!(
+                is_on_curve(&kp.public_key),
+                "is_on_curve must accept generated key (x={:?}, y={:?})",
+                hex::encode(kp.public_key.x),
+                hex::encode(kp.public_key.y),
+            );
+            assert!(
+                !is_identity(&kp.public_key),
+                "is_identity must reject generated key"
+            );
+            assert!(
+                is_in_prime_order_subgroup(&kp.public_key),
+                "is_in_prime_order_subgroup must accept generated key"
+            );
+        }
     }
 
     #[test]

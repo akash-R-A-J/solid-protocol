@@ -25,6 +25,29 @@ has been updated to reflect the post-fix state.
   Phase 3.4 crypto + IDE stability session is intact and
   uncommitted; commit before pushing.
 
+- **State as of 2026-04-28 (this session):** much further down the
+  runbook.  Steps 1-17 + `npm run init-onchain`, `npm run
+  backfill-issuer-tree`, `npm run bootstrap-schema-tree`, `npm run
+  bootstrap-issuer`, `npm run issue` ALL green.  Live edge is now
+  `npm run prove` (Groth16 witness-gen) which rejects at
+  `EdDSAPoseidonVerifier_325 line: 117` inside `CredentialAtom`.
+  Three gates fell during this session:
+    - **SEC-050** schema-canonicality bypass closed in-circuit;
+      trusted-setup re-run produced a new VK (sha256
+      `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`);
+      tests 39/39.
+    - **SEC-049** `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` corrected
+      from `0xe388...` to `0xcca5...` (sha256("global:replace_leaf")[..8]).
+      Was a doc-lie that nothing called -- so latent until a future
+      revoke / cooldown integration test.
+    - **SEC-052 (NEW)** Two BPF-runtime / cross-layer coord-form
+      drifts: (a) `is_on_curve` rewritten to evaluate the
+      circomlib-native curve equation directly (avoids BPF-incompat
+      arkworks `EdwardsAffine::is_on_curve()`); (b) the WASM bridge
+      was stale (Apr 25, pre-cff06c2 "circuit update") -- rebuilt
+      and aligned on-chain + off-chain to circomlib-native form.
+      See B11 below for the rebuild gate.
+
 ---
 
 ## Status legend
@@ -448,6 +471,161 @@ has been updated to reflect the post-fix state.
     off by default. Localnet/devnet runs that need to clear E2E set
     the feature and accept the documented soundness regression.
 
+### B11. Stale `solid_wasm_bg.wasm` after a `babyjubjub.rs` byte-format change
+
+- **Status:** Fixed (verified) 2026-04-28.
+- **Symptom (pre-fix).**  `npm run bootstrap-issuer` step `[3/8]
+  register_issuer` fails on every freshly-generated keypair with
+  on-chain `InvalidBJJPubKey` (program logs `Program log:
+  AnchorError thrown in programs/issuer-registry/src/lib.rs:303.
+  Error Code: InvalidBJJPubKey`), even though the off-chain pre-
+  submit gate `isInPrimeOrderSubgroup(pkX, pkY)` accepts the same
+  bytes.  Reproduces on a fresh validator + fresh state file +
+  `cargo build-sbf -p issuer-registry --features sec007-skip-onchain`
+  + freshly redeployed program.
+- **Root cause.**  `ts-sdk/packages/core/wasm/solid_wasm_bg.wasm`
+  is the WASM bridge that off-chain callers go through to invoke
+  `solid_core::babyjubjub::*`.  It is built by `wasm-pack build
+  wasm/`, NOT by `cargo` or `anchor build`, so it is NOT
+  regenerated when the in-tree babyjubjub source changes -- only
+  when an operator explicitly re-runs wasm-pack.  The `cff06c2`
+  commit (2026-04-27 "circuit update") rewrote
+  `crates/solid-core/src/babyjubjub.rs` to make `affine_to_pubkey`
+  emit **circomlib-native** coordinate-form bytes (instead of the
+  prior arkworks-form bytes) and updated every Poseidon /
+  signing / commitment call site to expect that form.  But
+  whoever ran `cff06c2` did NOT also re-run `wasm-pack build` --
+  the bridge stayed at its 2026-04-25 21:59 timestamp, still
+  emitting arkworks-form bytes.  Effect: off-chain SDK produces
+  bytes in arkworks form; on-chain code post-cff06c2 expects
+  circomlib-native form; on-chain `is_on_curve` correctly rejects
+  every fresh BJJ pubkey because the bytes are in the wrong
+  curve-form for the circomlib equation.
+- **Fix shape.**
+  - `wasm-pack build wasm/ --target nodejs --out-dir
+    ts-sdk/packages/core/wasm --release`
+    re-emits `solid_wasm_bg.wasm` (and its `.js` shim, `.d.ts`,
+    `package.json`) against the post-cff06c2 babyjubjub source.
+    Output bytes are now circomlib-native, agreeing with on-chain.
+  - `cd ts-sdk && npm run build` recompiles the typed
+    re-exports.  The `dist/` files do not encode coord form
+    semantics (they are TS shims around the WASM module loaded at
+    runtime), but rebuilding ensures version stamps line up so
+    `tsx` consumers see fresh code.
+  - `crates/solid-core/src/babyjubjub.rs::is_on_curve` AND
+    `is_identity` were ALSO rewritten this session (SEC-052) to
+    evaluate the circomlib-native curve equation directly instead
+    of going through `EdwardsAffine::new_unchecked +
+    x_circ_to_ark + ark_is_on_curve`.  The arkworks path is
+    suspected of differing between host and BPF for some valid
+    points; the direct circomlib equation is BPF-stable by
+    construction (only `Fq * Fq` and `Fq + Fq`).
+- **Verification gate observed (2026-04-28 ~01:13 IST).**
+  - Validator: localnet, fresh `--reset` with the SPL AC + noop
+    cloned programs.
+  - All three programs redeployed.  `issuer-registry` rebuilt
+    with `--features sec007-skip-onchain`.
+  - State file cleared (`rm -rf $TMPDIR/solid-e2e-$UID/`).
+  - `npm run init-onchain` -> uploads new VK
+    `8385b82b...` (post-SEC-050), 3 chunks, sha256 pin matches.
+  - `npm run backfill-issuer-tree` -> tree
+    `6oxgd4f1pXPXU3n5b6sy889pBw82dU7h4sor3PgprvMR` initialised.
+  - `npm run bootstrap-schema-tree` -> tree
+    `9kEpm21BLknx54D7h4Vz83FVMvfZWpvZsX2tiN1QzDbU` bound.
+  - `SOLID_VOTING_PERIOD_SECONDS=120 npm run bootstrap-issuer`
+    -> `[3/8] register_issuer ok (issuer=FT28...)` followed by
+    [4/8]..[8/8] + [8b/10] `append_issuer_leaf` all green.
+  - `npm run issue` -> credential committed
+    (commitment `f0d9...`).
+- **Process gate (durable).**  Runbook step 8.5 is now mandatory
+  on any commit that touches `crates/solid-core/src/babyjubjub.rs`
+  byte-format helpers (`affine_to_pubkey`, `pubkey_to_affine`,
+  `affine_to_circomlib_xy`, the SQRT_A_LE / BASE8_X_ARK_LE
+  constants) OR `wasm/src/lib.rs`:
+  ```
+  rm -rf ts-sdk/packages/core/wasm
+  PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ \
+    --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+  cd ts-sdk && npm ci && npm run build
+  ```
+  CI should also run `node scripts/wasm_bridge_smoke.mjs` against
+  the freshly-built bridge and assert that
+  `generateBJJKeypair() -> isBjjInPrimeOrderSubgroup(...)`
+  round-trips green; this would have surfaced cff06c2 as a
+  failing PR rather than a runtime regression.
+- **Tracking.**  Registry: `sec/SECURITY_REGISTRY.md` SOLID-SEC-052.
+  Root cause: cff06c2 commit; missing CI gate for
+  WASM<->on-chain wire alignment.
+
+### B12. EdDSA witness-gen drift inside `CredentialAtom` (live edge)
+
+- **Status:** Open as of 2026-04-28.  Diagnosis WIP.
+- **Symptom.**  `npm run prove` reaches step `[3/4] Generating
+  Groth16 batch proof...` and the `circom_runtime` witness
+  calculator throws:
+  ```
+  Error in template ForceEqualIfEnabled_324 line: 56
+  Error in template EdDSAPoseidonVerifier_325 line: 117
+  Error in template CredentialAtom_326 line: 70
+  Error in template BatchCredentialQuerySolana_485 line: 339
+  ```
+  i.e. the issuer's EdDSA-Poseidon signature on the recomputed
+  commitment fails verification inside the circuit.  This is
+  AFTER B11 was fixed -- the bytes the off-chain signer produces
+  and the bytes the circuit consumes are both in circomlib-native
+  form, so the prior layer-mismatch is already closed.
+- **Likely surfaces (in priority order).**
+  1. **Holder-pubkey derivation drift.**  The circuit recomputes
+     the holder per-schema pubkey via
+     `IdentityAnchor -> Poseidon(masterKey, schemaHash)
+     -> BabyPbk254`.  The off-chain SDK derives via WASM
+     `deriveCredentialKey` (Poseidon then `derive_public_key`,
+     which uses arkworks scalar mul + iso transform back to
+     circomlib-native).  Both paths are mathematically
+     equivalent IFF `Poseidon` agrees byte-for-byte AND
+     `priv * Base8` lands on the same point in either coord
+     form.  A 1-byte drift in either step cascades to a different
+     `holderPubKeyAx/Ay` which means the issuer signed
+     `Poseidon(dataHash, schemaHash, holderAx_offchain,
+     holderAy_offchain, salt)` while the circuit recomputes
+     `Poseidon(dataHash, schemaHash, holderAx_circuit,
+     holderAy_circuit, salt)` -- if `holderAx_offchain !=
+     holderAx_circuit`, the recomputed commitment differs from
+     what was signed and EdDSA fails.
+  2. **R8 coord-form drift.**  `solid_core::babyjubjub::sign`
+     returns `r8_x` / `r8_y` in circomlib-native form; circomlib's
+     `EdDSAPoseidonVerifier` expects circomlib-native; should
+     match.  Verify the bytes round-trip.
+  3. **Message hashing convention.**  Off-chain uses
+     `bytes_to_fq(message)` to lift the commitment bytes into
+     `Fq` before the challenge `h = Poseidon(R8x, R8y, Ax, Ay, M)`.
+     Circuit feeds the recomputed commitment as `M` directly (it
+     is already an `Fq` value).  Should match if the LE byte
+     encoding round-trips canonically; verify there is no
+     mod-reduction mismatch on the boundary.
+  4. **Salt / data ordering.**  Off-chain SDK and circuit must
+     agree on field order in the commitment Poseidon: `Poseidon5(
+     dataHash, schemaHash, holderAx, holderAy, salt)`.  A swap
+     between any two would silently produce different commitments.
+- **Diagnostic plan (next session).**
+  1. Capture circuit input dump:
+     `SOLID_DEBUG_CIRCUIT_INPUT=1 npm run prove` -> writes
+     `/tmp/solid-circuit-input.json`.
+  2. Add a host-only test that takes those exact values and runs
+     `solid_core::babyjubjub::verify(&pubkey, &commitment_bytes,
+     &signature)`.  If host-side verify rejects, the off-chain
+     SDK produced an invalid signature against its own commitment
+     (a crypto bug, not a contract drift).  If host-side verify
+     accepts, the circuit's recomputation of `commitment` differs
+     from what was signed -- next debug step is to compute
+     `expected_commitment = Poseidon5(dataHash_offchain,
+     schemaHash, holderAx_offchain, holderAy_offchain, salt)`
+     and compare to the circuit-recomputed value (would need a
+     witness inspection or a focused Circom test).
+  3. Fix at root cause; no workarounds.
+- **E2E impact.**  Yes -- this is the live edge.  Until B12 is
+  closed, `npm run e2e` cannot reach `verified: true`.
+
 ### B10. `stake_tokens` access violation post-CPI (handler returns, runtime crashes on writeback)
 
 - **Status:** Fixed (verified) 2026-04-26 ~02:15 IST via contract
@@ -809,15 +987,17 @@ has been updated to reflect the post-fix state.
 
 ### O4. `circuits/test/padding_slot.test.js` pre-existing failure
 
-- **Status:** open, pre-existing on `main` since Phase 1 (well before
-  this session). `BabyPbk → Num2Bits(253)` rejects when
-  `Poseidon(masterIdentityKey, schemaHash) >= 2^253`. Real circuit
-  edge case — not a test infrastructure bug.
-- **E2E impact:** none. The padding-slot regression gate is a
-  witness-tester unit test, not a runtime gate; it does not block
-  anchor build, deploy, or `npm run e2e`.
-- **Where to track for fix:** SEC-029 follow-up; consider promoting
-  to a separate registry line.
+- **Status:** **Closed (verified) 2026-04-27.**  Was already
+  resolved in code by the Phase 3.4 `BabyPbk254` introduction
+  (replaces the old `circomlib::BabyPbk()` whose internal
+  `Num2Bits(253)` rejected ~26 % of valid 254-bit Poseidon
+  outputs).  The doc entry was stale -- the test had been passing
+  since Phase 3.4 landed, but nobody verified after-the-fact.
+  Reproducer this session: `cd circuits && PATH="$PWD/../.toolchain/bin:$PATH" npm test`
+  -> 22/22 passing, including all three padding-slot cases
+  (`enabled=0` arbitrary siblings, `enabled=1` garbage globalRoot,
+  `enabled=2` bit-constraint).
+- **E2E impact:** none.
 
 ### O5. `docs/system_architecture.md:1198` aspirational `SolidIssuer.deliverToHolder()`
 

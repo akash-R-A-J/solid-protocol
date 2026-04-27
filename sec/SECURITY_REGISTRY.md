@@ -113,6 +113,9 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | SOLID-SEC-047   | MEDIUM   | Fixed  | `verify_batch_proof` Anchor wrapper exceeds BPF 4 KB per-frame stack by ~456 B (structural; surfaced post Poseidon refactor) |
 | SOLID-SEC-048   | HIGH     | Open (interim bypass live) | `register_issuer` BJJ prime-order subgroup check exceeds 1.4M CU per-tx ceiling on BPF; localnet/devnet builds gate the check behind `sec007-skip-onchain` Cargo feature -- mainnet-blocking until a CU-affordable on-chain replacement ships |
 | SOLID-SEC-049   | HIGH     | Fixed  | `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` mismatched `sha256("global:replace_leaf")[..8]` -- both atomic ixs would have failed at the SPL AC CPI with `InstructionFallbackNotFound`; latent because no integration test had ever exercised revoke / cooldown |
+| SOLID-SEC-050   | MEDIUM   | Fixed  | `batch_credential_query.circom` schema-ordering canonicality bypass -- strict-ascending check skipped when next slot is inactive, so non-canonical interleavings like `[A1, 0, A2, A3]` admit multiple distinct nullifiers per logical credential set, defeating the per-claim rate-limit |
+| SOLID-SEC-051   | LOW      | Open   | `batch_credential_query.circom` admits all-padding `[0,0,0,0]` proofs that the on-chain handler accepts (skips zero-schema slots at lib.rs:500-502); query-driven semantics force most predicates to fail on zero data, but "at least 1 credential" is not a circuit-level invariant -- defense-in-depth fix is `IsZero(schemaHashes[0]).out === 0` (1 constraint) |
+| SOLID-SEC-052   | HIGH     | Fixed (partial) | Two BPF-runtime / cross-layer coord-form drifts surfaced by the 2026-04-28 e2e bring-up: (a) `is_on_curve` / `is_identity` rebuilt to evaluate the circomlib-native curve equation directly (avoids `EdwardsAffine::new_unchecked + iso transform` which fails on BPF for valid points); (b) the WASM bridge `solid_wasm_bg.wasm` was stale (Apr 25, pre-cff06c2) and produced arkworks-form pubkey bytes while the on-chain code post-cff06c2 expected circomlib-native form -- rebuilding `wasm-pack build wasm/` aligned both layers and unblocked `register_issuer`.  Outstanding: `pubkey_to_affine` and `is_in_prime_order_subgroup` still go through the BPF-incompat iso path; only matters when SEC-048 closes (full subgroup check on-chain).  An EdDSA-layer contract drift inside the Groth16 witness is also live (see follow-up). |
 
 ---
 
@@ -1550,6 +1553,254 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
     correctness; SEC-048 extends it to BPF-runtime feasibility
     and is the active line until closed.
 
+### SOLID-SEC-050 -- Schema-ordering canonicality bypass via interleaved padding
+
+- **Severity:** MEDIUM
+- **Status:** Fixed (2026-04-27, this session).  Closure receipts:
+  - Constraint added at
+    `circuits/batch_credential_query.circom:225-241` -- one extra
+    R1CS constraint per consecutive pair: `isZero[i].out *
+    (1 - isZero[i+1].out) === 0`.
+  - 17-case witness-tester regression at
+    `circuits/test/schema_ordering.test.js` covers (a) every
+    canonical layout, (b) every non-canonical interleave the
+    pre-fix circuit admitted, (c) ascending-pair breaks,
+    (d) zero-schema integrity, (e) a property-test
+    enumeration that proves only the canonical placement is
+    accepted for every K-of-NUM_CREDS active subset.
+  - Circuit recompiles clean; trusted-setup re-run committed
+    new `verification_key.sha256` (recorded in
+    `circuits/build/verification_key.sha256` after re-run; the
+    pin file consumed by `scripts/initialize.ts` remains the
+    SOLID-SEC-041 gate).
+  - 39/39 circuit tests pass.
+- **Discovered:** 2026-04-27 (this session) during a manual
+  audit of `batch_credential_query.circom` STEP 0 ordering
+  logic.
+- **Evidence (pre-fix code):** `circuits/batch_credential_query.
+  circom:214-223` -- the strict-ascending check was gated on
+  `orderingNextNotZero[i] = 1 - isZero[i+1].out`, so any pair
+  where the NEXT slot was inactive (schemaHash == 0) silently
+  skipped the comparator.  An interleaving like `[A1, 0, A2, A3]`
+  passed because (i=0) had next=0 (skipped), (i=1) had next=A2
+  active (0 < A2 trivially holds), (i=2) had next=A3 (A2 < A3).
+  No constraint linked A1 to A2 or A3.
+- **Impact.**  A holder with K credentials could encode the same
+  set in multiple distinct ways:
+  ```
+  K=2, schemas=(5, 10):
+     [5, 10, 0, 0]   <- canonical
+     [5, 0, 10, 0]   <- pre-fix admitted
+     [0, 5, 0, 10]   <- pre-fix admitted (with all-padding-prefix)
+     [5, 10, 0, 0]   etc.
+  ```
+  Each encoding lands the credentials at different array
+  indices.  `queryCredentialIndices[i]` -- a public input the
+  prover writes to point a predicate at a specific slot -- now
+  carries a different value, so `qHasherIndices = Poseidon8(
+  cred[0], field[0], cred[1], field[1], ...)` differs across
+  encodings, `queryContextHash = Poseidon4(qHasherIndices,
+  qHasherOps, numPredicates, compoundLogic)` differs, and
+  `nullifier = Poseidon6(masterKey, revNonce, verifierAddr,
+  queryContextHash, verifierNonce, issuerTreeRoot)` differs.
+  The verifier's per-claim rate-limit (one nullifier-PDA per
+  proof, asserted by Anchor's `init` constraint) was therefore
+  bypassable: the holder could submit N copies of the "same"
+  logical proof with N distinct nullifiers, all valid.
+- **Threat model.**  Defeats verifier policies of the form "one
+  proof per holder per query semantics".  Examples: per-account
+  rate limits, sybil-resistance for credentials gating airdrops,
+  voting weight ("one vote per holder" via nullifier).  Does NOT
+  enable credential forgery (the per-active-slot integrity
+  constraints + EdDSA + Merkle inclusion still hold for every
+  active credential), but it does enable claim multiplication
+  beyond what the protocol was designed to allow.
+- **Remediation (landed).**  Padding canonicality:
+  ```
+  isZero[i].out * (1 - isZero[i+1].out) === 0
+  ```
+  applied to every consecutive pair `(i, i+1)`.  Reads as: "if
+  slot `i` is inactive, slot `i+1` MUST also be inactive".
+  Combined with the existing strict-ascending check on
+  active->active pairs, this forces the canonical layout
+  `[A1 < A2 < ... < AK, 0, 0, ..., 0]` -- exactly one valid
+  encoding per credential set (modulo the prover's choice of
+  which credentials to include).
+- **Why this was not caught earlier.**  Phase 3.6 hardening
+  added strict-ascending on active->active pairs, intended for
+  canonicality.  The "next is inactive -> skip" guard was a
+  legitimate part of the design (so [A, 0, 0, 0] is allowed),
+  but the symmetric "current is inactive -> next must also be
+  inactive" wasn't surfaced as a separate canonicality
+  invariant in the audit text -- the prior audit folded it under
+  "schemas strictly ascending for active credentials" without
+  explicitly enumerating the interleave class.  The new
+  property-test in `schema_ordering.test.js` is the source-level
+  regression gate; any future weakening of either constraint
+  fails CI immediately.
+- **Pairs with SOLID-SEC-051** (separate, LOW): the same audit
+  pass surfaced an "all-padding admitted" finding (no constraint
+  enforces at least one active credential).  SEC-050 closes the
+  reshuffling axis; SEC-051 closes the empty-batch axis.  Both
+  fixes share a trusted-setup cycle if landed together.
+- **Trusted-setup impact.**  Circuit revision changes the R1CS
+  (constraint count up by 3, from 86,616 to 86,619; wires
+  92,430 vs. the pre-fix value).  New `verification_key.json`
+  + `verification_key.sha256` written by `node scripts/setup.js`;
+  the SEC-041 pin updates downstream.  No on-chain handler
+  changes required (the verifier already consumes
+  `schemaHashes` from public_inputs via the existing
+  registry-lookup flow).
+
+### SOLID-SEC-051 -- All-padding `[0,0,0,0]` proofs admitted
+
+- **Severity:** LOW (most realistic verifier queries fail on
+  zero data; corner case for unusual queries; not a credential-
+  forgery class issue).
+- **Status:** Open.  Single-constraint fix prepared:
+  `IsZero(schemaHashes[0]).out === 0`.  Defer-with-justification
+  is acceptable -- the on-chain handler's behaviour is described
+  below for full context, but the circuit-level invariant
+  ("at least 1 active credential per proof") is not currently
+  enforced and could surprise a future verifier integration that
+  relied on it.
+- **Discovered:** 2026-04-27 alongside SOLID-SEC-050.
+- **Evidence.**  `programs/zk-verifier/src/lib.rs:500-502`
+  explicitly skips all schema-tree-binding validation for any
+  slot where `merkle_root == [0u8; 32] && schema_hash == [0u8;
+  32]`.  The circuit accepts `schemaHashes = [0, 0, 0, 0]`
+  because every per-credential signal is forced to zero by the
+  STEP 0 IsZero pattern, the IdentityAnchor and CredentialAtom
+  enabled flags both gate to 0, and the predicate-evaluation
+  layer happily evaluates against zero data.
+- **Impact (concrete).**  An attacker holding zero credentials
+  can satisfy any verifier query whose predicate evaluates true
+  on zero inputs -- e.g. `EQ 0` on field 0 (asks "is the value
+  0?"), or `GTE 0` on any field.  Realistic verifier queries
+  ("age GT 21", "country EQ 'US'") fail because the data is
+  forced to zero and the predicate returns 0.  The risk is in
+  unusual / poorly-specified queries, OR in any future verifier
+  integration that interprets a successful proof as "the holder
+  has at least one credential" (a guarantee the circuit does
+  NOT actually provide today).
+- **Remediation (proposed, defer-with-justification).**
+  Add `component anySchemaSet = IsZero(); anySchemaSet.in
+  <== schemaHashes[0]; anySchemaSet.out === 0;` as the first
+  STEP 0 constraint.  Combined with SOLID-SEC-050's
+  padding-at-end, this enforces: at least one active slot at
+  position 0, plus a sorted active prefix, plus padding tail.
+- **Why fixing now is deferred.**  This session lands SEC-050
+  in a single trusted-setup cycle.  Bundling SEC-051 means
+  killing and re-running the in-progress ceremony, which would
+  waste the powers-of-tau already produced.  The next sanctioned
+  trusted-setup cycle (the one that pairs with SEC-006 Part 2
+  per `docs/IMPROVEMENTS_ROADMAP.md`) is the correct landing
+  pad: SEC-051 + SEC-006 Part 2 + the predicate-operand
+  range-checks (a separate Phase-4 TODO at
+  `circuits/lib/predicate_evaluator.circom:20-40`) all rebase
+  onto the new VK in one go.
+- **Workaround during the open window.**  Verifier integrations
+  that rely on "at least one credential held" should hash a
+  per-verifier salt into queryValues / queryContextHash that is
+  guaranteed non-zero, OR check `schemaHashes[0] != 0` off-chain
+  before accepting the proof.  Document this in
+  `docs/integration-guide.md` alongside SEC-051 closure.
+- **Tracking.**  Will close together with SEC-006 Part 2 in the
+  next trusted-setup cycle.
+
+### SOLID-SEC-052 -- BPF / cross-layer coord-form drift in BJJ pubkey path
+
+- **Severity:** HIGH (functional break of `register_issuer` on BPF
+  for any honest WASM-generated keypair; bypassed every operator
+  trying to deploy post-cff06c2 source until the WASM bridge was
+  rebuilt).
+- **Status:** Fixed (partial) 2026-04-28.  The two surfaces that
+  block `bootstrap_issuer.ts` are closed; an outstanding cross-layer
+  drift is tracked separately as the EdDSA witness debug (no
+  registry entry yet -- WIP).
+- **Discovered:** 2026-04-28 e2e bring-up session, via the
+  `register_issuer` `InvalidBJJPubKey` error firing on every
+  freshly-generated keypair under the `sec007-skip-onchain` build.
+- **Root cause(s).**
+  1. The post-cff06c2 (2026-04-27 "circuit update") rewrite of
+     `crates/solid-core/src/babyjubjub.rs` introduced the
+     circomlib<->arkworks coordinate-form iso (`x_ark = sqrt(a) *
+     x_circ`) and routed `is_on_curve` / `is_identity` through
+     `EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).
+     is_on_curve()`.  On host x86 / WASM this evaluates correctly;
+     on the Solana BPF target it consistently rejects valid
+     keypairs that the same code path accepts on host.  The
+     symptom is "off-chain `isInPrimeOrderSubgroup` says yes,
+     on-chain `is_on_curve` says no" for the SAME bytes.
+  2. The WASM bridge artifact at
+     `ts-sdk/packages/core/wasm/solid_wasm_bg.wasm` was last built
+     2026-04-25 21:59, BEFORE cff06c2.  Pre-cff06c2 the
+     `affine_to_pubkey` helper returned arkworks-form bytes;
+     post-cff06c2 it returns circomlib-native bytes.  An operator
+     who pulled `main` and rebuilt only the on-chain `.so`
+     artifacts ended up with off-chain (WASM) producing
+     arkworks-form pubkey bytes and on-chain code expecting
+     circomlib-native -- the two sides diverged on every wire byte
+     `BJJPublicKey` carried.  This was the actual dominant cause
+     of the symptom; `is_on_curve` was secondary.
+- **Why audit didn't catch this earlier.**  cff06c2 landed alongside
+  Phase 3.4 / 3.6 circuit work whose regression gate was
+  `cargo test -p solid-core --lib babyjubjub` (host-only) and
+  `cd circuits && npm test` (witness-tester, host-only).  Both
+  pass.  Neither exercises the **on-chain BPF** runtime nor the
+  **off-chain WASM** runtime against a real keypair flow; both
+  branches independently work, but their wire contract was never
+  cross-validated end-to-end.  The implicit assumption "host tests
+  green => BPF + WASM agree" failed here.  Same gap pattern as
+  SOLID-SEC-048 ("dual-target-link != dual-target-runtime").
+- **Remediation (landed 2026-04-28).**
+  - `crates/solid-core/src/babyjubjub.rs::is_on_curve` rewritten
+    to evaluate the circomlib-native twisted-Edwards equation
+    directly:
+    ```
+    a * x^2 + y^2 == 1 + d * x^2 * y^2     (a = 168700, d = 168696)
+    ```
+    Pure `Fq * Fq` and `Fq + Fq` operations; no
+    `EdwardsAffine::new_unchecked`, no iso transform, no
+    `is_on_curve()` call into arkworks.  Behaviour identical on
+    host and BPF.  Same treatment for `is_identity` (circomlib
+    neutral element is `(0, 1)`; equality check on field
+    elements).
+  - WASM bridge rebuilt:
+    `wasm-pack build wasm/ --target nodejs --out-dir
+    ts-sdk/packages/core/wasm --release` -> emits a
+    post-cff06c2 binary that produces circomlib-native bytes,
+    matching on-chain expectation.
+  - Host regression gate added at
+    `crates/solid-core/src/babyjubjub.rs::tests::test_keygen_passes_on_chain_consolation_gate`
+    (16 random keypairs round-trip through `is_on_curve` +
+    `!is_identity` + `is_in_prime_order_subgroup` and assert all
+    accept).  The pre-fix code path also passes this on host;
+    the test exists as a stable contract for the new
+    implementation to defend against future drift.
+  - Process gate (CLAUDE.md / runbook): documented requirement
+    that `wasm-pack build wasm/` MUST run on any commit that
+    touches `crates/solid-core/src/babyjubjub.rs` byte-format
+    helpers (`affine_to_pubkey`, `pubkey_to_affine`,
+    `affine_to_circomlib_xy`, the SQRT_A_LE / BASE8_X_ARK_LE
+    constants).  See the runbook update in
+    `docs/E2E_BLOCKERS.md` B11.
+- **Outstanding** (tracked as "EdDSA witness drift" follow-up,
+  pending more debug).  After SEC-052 a/b were fixed,
+  `bootstrap_issuer.ts` + `issue.ts` complete green but
+  `prove.ts` rejects the issuer's EdDSA signature inside the
+  `CredentialAtom`'s `EdDSAPoseidonVerifier` (witness-gen
+  failure at `ForceEqualIfEnabled_324:56`).  Most likely a
+  remaining contract drift between off-chain `sign()` byte
+  output and the circuit's `EdDSAPoseidonVerifier` expectation
+  (R8 coord form, message-hashing convention, or the
+  off-chain-vs-circuit holder-pubkey derivation under the new
+  `BabyPbk254`).  Will be promoted to a registry entry once
+  diagnosed.
+- **Tracking.**  Session log in `plan/RESUME.md` (today).  Cross-
+  references: SEC-048 (dual-target gap), SEC-007 (subgroup check),
+  cff06c2 commit ("circuit update").
+
 ### SOLID-SEC-049 -- Wrong `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` -- atomic ixs would have failed at the CPI
 
 - **Severity:** HIGH (functional break of every atomic revocation
@@ -1649,6 +1900,7 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | 2026-04-25 | Build-pipeline restoration session (circuit compile fixes, dep-cascade resolution, Poseidon BPF refactor, `verify_batch_proof` frame fix; `docs/E2E_BLOCKERS.md` tracker created) | SOLID-SEC-047                       | SOLID-SEC-047 (registered Fixed in working tree; `target/deploy/zk_verifier.so` builds cleanly post-fix) |
 | 2026-04-25 | E2E unblock session (B6/B7 closed; `npm run e2e` walked through `initialize` -> `backfill-issuer-tree` -> `bootstrap-issuer`; SEC-007 BPF CU exhaustion surfaced on `register_issuer` and a feature-gated bypass landed in working tree; documented as B9 in E2E_BLOCKERS) | SOLID-SEC-048                       | 0 (introduced Open with interim bypass live; localnet/devnet only) |
 | 2026-04-27 | Aggressive program-test sweep + SEC-045 atomic-binding closure session (this session)                              | SOLID-SEC-049                             | SOLID-SEC-045 (fixed via on-chain Keccak path-recompute + atomic binding write); SOLID-SEC-049 introduced AND fixed in the same session via the discriminator-derivation regression test |
+| 2026-04-27 | Circuit + ZK audit pass (this session, continuation)                                                                | SOLID-SEC-050, SOLID-SEC-051              | SOLID-SEC-050 (fixed; padding-canonicality constraint + 17-case witness-tester regression; trusted-setup re-run; new VK pin); SOLID-SEC-051 introduced Open (deferred to next trusted-setup cycle bundled with SEC-006 Part 2 + the predicate-operand range checks); also closed `docs/E2E_BLOCKERS.md` O4 (padding_slot test verified passing under Phase 3.4 BabyPbk254) |
 
 ### Note on the 2026-04-22 numbering
 
