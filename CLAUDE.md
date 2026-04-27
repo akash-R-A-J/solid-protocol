@@ -160,32 +160,81 @@ Phase 1 (remediation set) and Phase 2 (ADR-0014 compressed issuer tree
 plus 6-input nullifier) are closed. Phase 3 is open and drives the
 external-audit-ready close-out.
 
+As of 2026-04-28 (post circuit/ZK audit + e2e bring-up): the
+following are **closed in code** and tracked in
+sec/SECURITY_REGISTRY.md:
+
+- SOLID-SEC-045 (MEDIUM, closed 2026-04-28). Atomic handlers
+  (revoke_issuer_atomic, request_withdrawal_atomic) now update
+  IssuerTreeBinding.current_root in the same ix via on-chain
+  Keccak path-recompute (helper at
+  solid_light::cpi_helpers::compute_concurrent_merkle_root_keccak).
+- SOLID-SEC-049 (HIGH, NEW + closed 2026-04-28). The
+  SPL_AC_REPLACE_LEAF_DISCRIMINATOR constant in
+  programs/issuer-registry/src/lib.rs:54 was wrong (no SPL AC
+  ix preimage matched it); both atomic ixs would have failed
+  at the SPL AC CPI. Fixed to sha256("global:replace_leaf")[..8].
+  Latent because no integration test had ever exercised
+  revoke / cooldown.
+- SOLID-SEC-050 (MEDIUM, NEW + closed 2026-04-28). Schema-
+  ordering canonicality bypass in batch_credential_query.circom.
+  Trusted-setup re-run; new VK pin
+  8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146.
+- SOLID-SEC-052 (HIGH, NEW + partial close 2026-04-28). BPF /
+  cross-layer coord-form drift; is_on_curve / is_identity
+  rewritten to evaluate the circomlib-native curve equation
+  directly; WASM bridge re-emitted. Process gate at
+  docs/E2E_BLOCKERS.md B11 is now load-bearing on any commit
+  that touches crates/solid-core/src/babyjubjub.rs byte-format
+  helpers OR wasm/src/lib.rs.
+- SOLID-SEC-053 (HIGH, NEW + closed 2026-04-28). EdDSA-Poseidon
+  cofactor-8 mismatch -- off-chain sign was producing
+  S = r + h*sk while circomlib's in-circuit
+  EdDSAPoseidonVerifier checks S*B == R8 + h*8*A. Fixed both
+  sides; regression gate at
+  babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip.
+
+Open Phase 3 / Phase 4 scope:
+
 - SOLID-SEC-006 Part 2 VK generation in public-input contract. Part
   1 landed 2026-04-25 (ADR-0015; on-chain freeze-gate + 48h rotation
   timelock). Part 2 binds vk_generation into the circuit's public
   inputs so cross-VK replay is impossible; it requires a circuit
   change and therefore batches with the next trusted-setup cycle.
-- SOLID-SEC-045 (MEDIUM). Atomic handlers (revoke_issuer_atomic,
-  request_withdrawal_atomic) do not update
-  IssuerTreeBinding.current_root in the same ix. Pre-transition
-  proofs remain replayable until update_issuer_tree_root is called
-  separately. Fix: write the new root directly into the binding
-  PDA inside the atomic ix. Surfaced in the v0.6.1 audit NEW-01.
 - SOLID-SEC-046 (MEDIUM). No CU-budget regression gate on
   verify_batch_proof. Future circuit changes can push the ix over
   Solana's per-tx CU ceiling without failing CI. Fix: add a CI job
   that measures CU against a baseline tracked in docs/CU_BUDGET.md.
-  Surfaced in the v0.6.1 audit NEW-02.
+  Surfaced in the v0.6.1 audit NEW-02. Pairs with B13 below since
+  the recommended remediation adds CU.
 - SOLID-SEC-010 cross-language vectors (HIGH). Extend gen_vectors.rs and
   check_vectors.ts from 3/10 to 10/10 primitives.
-- SOLID-SEC-041 content-addressed VK artifact. Commit
-  circuits/build/verification_key.sha256; fail initialize.ts on mismatch.
+- SOLID-SEC-041 content-addressed VK artifact. Already in code:
+  circuits/build/verification_key.sha256 exists, scripts/initialize.ts
+  enforces the pin. Closed.
 - SOLID-SEC-043 issuer_tree_operator single signer (MEDIUM). Gate
   behind Squads 3-of-5 or DAO threshold PDA before external audit.
-- SOLID-SEC-044 Cooldown does not replace issuer leaf (LOW). Add
-  request_withdrawal_atomic mirroring revoke_issuer_atomic.
+- SOLID-SEC-044 Cooldown does not replace issuer leaf (LOW).
+  Closed -- request_withdrawal_atomic exists and the SEC-045
+  binding fix together close the cooldown-replay window.
+- SOLID-SEC-051 (LOW, NEW). All-padding `[0,0,0,0]` proofs admitted
+  by the circuit and accepted by the on-chain handler at
+  programs/zk-verifier/src/lib.rs:500-502. Defer to the next
+  sanctioned trusted-setup cycle (batches with SEC-006 Part 2 +
+  predicate-operand range checks); one-constraint fix prepared.
+- **B13 (live edge, 2026-04-28).** verify_batch_proof ix data
+  is 1324 bytes which exceeds Solana's 1232-byte legacy-tx wire
+  size. Architectural blocker for the on-chain submission half
+  of `npm run prove`. The Groth16 proof itself generates fine.
+  Recommended remediation: reconstruct redundant public inputs
+  on-chain from accounts already passed to the ix (saves 384
+  bytes; total shrinks to 940 bytes). See docs/E2E_BLOCKERS.md
+  B13 + plan/IMPLEMENTATION_PLAN.md Appendix D for the next-
+  session pickup. Promotes to **SOLID-SEC-054** once the
+  remediation choice is sanctioned.
 - Integration test suite 02..11. Ten scenarios specified in
-  tests/integration/README.md, none implemented.
+  tests/integration/README.md, none implemented (bankrun + jest
+  harness not yet stood up).
 - Revocation v1 operator workflow. Circuit and on-chain support are in
   place. Still needs holder SDK helper, issuer SDK helper, and indexer
   event contract. See docs/REVOCATION_DESIGN.md.

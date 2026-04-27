@@ -6,7 +6,38 @@ acceptance. Every item references `SOLID-SEC-NNN` in
 
 - Protocol version in scope: v0.6.1 (Phase 3 impl 1-4 closed) ->
   v1.0 mainnet
-- Last revision: 2026-04-27 (Phase 3.4 circuit + SDK alignment).
+- Last revision: 2026-04-28 (circuit/ZK audit + e2e bring-up).
+  Five SEC findings landed in code: **SOLID-SEC-045** (atomic
+  binding update via on-chain Keccak path-recompute helper),
+  **SOLID-SEC-049 NEW** (`SPL_AC_REPLACE_LEAF_DISCRIMINATOR`
+  was wrong; latent because no integration test had ever
+  exercised revoke / cooldown -- caught by the discriminator-
+  derivation regression test added in the program test sweep),
+  **SOLID-SEC-050 NEW** (batch circuit schema-canonicality
+  bypass; circuit constraint added; trusted-setup re-run with
+  new VK pin
+  `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`),
+  **SOLID-SEC-052 NEW partial** (BPF / cross-layer coord-form
+  drift; `is_on_curve` rewritten + WASM bridge re-emitted +
+  process gate added at `docs/E2E_BLOCKERS.md` B11),
+  **SOLID-SEC-053 NEW** (EdDSA-Poseidon cofactor-8 mismatch
+  between off-chain `sign` and circomlib's in-circuit
+  `EdDSAPoseidonVerifier`; gate that unlocked Groth16
+  witness-gen during `npm run prove`).  Test counts:
+  169/169 cargo + 39/39 circuit witness-tester (mocha) +
+  1 host-side ignored forensic snapshot.  E2E pipeline
+  status: `init-onchain -> backfill-issuer-tree ->
+  bootstrap-schema-tree -> bootstrap-issuer -> issue ->
+  prove (Groth16 generated)` all green; live edge is **B13**
+  (`verify_batch_proof` ix data 1324 bytes exceeds Solana's
+  1232-byte legacy-tx wire size; architectural blocker for
+  on-chain submission).  See `plan/RESUME.md` "2026-04-28"
+  section for full receipts; next-session pickup is the
+  B13 remediation choice (recommended path: reconstruct
+  redundant public inputs on-chain from accounts already
+  passed to the ix; saves 384 bytes; total shrinks to 940
+  bytes).
+- Prior revision: 2026-04-27 (Phase 3.4 circuit + SDK alignment).
   Landed: `LessThanBN254` + `BabyPbk254` in circuits; Rust fixture
   generator `gen_circuit_vectors`; mocha harness under `circuits/test/`
   (lt / babypbk / identity anchor) wired into the
@@ -28,9 +59,13 @@ acceptance. Every item references `SOLID-SEC-NNN` in
   promoted to Phase 4 P0 in `docs/FORWARD_ROADMAP.md` and P0-7 in
   `docs/IMPROVEMENTS_ROADMAP.md`; tracked end-to-end in
   `docs/E2E_BLOCKERS.md` B9 + O7 and in this plan's §1.16 below).
-- Next revision trigger: P0 close-out per v0.6.1 Section 6.1
-  (SEC-045, SEC-046, SEC-010, integration suite 02..11, module
-  split, devnet deploy)
+- Next revision trigger: B13 (`verify_batch_proof` legacy-tx
+  wire size) close-out (recommended remediation: on-chain
+  reconstruction of redundant public inputs); SEC-046 CU gate
+  (pairs with B13 since on-chain reconstruction adds CU);
+  SEC-010 cross-language vectors 3->10; integration suite 02..11
+  bankrun harness stand-up; SEC-051 + SEC-006 Part 2 + predicate-
+  operand range checks (next sanctioned trusted-setup cycle).
 
 ---
 
@@ -821,6 +856,83 @@ See `adr/README.md`. New `adr/NNNN-title.md`, add to
    `sec/audits/<date>_<version>_<slug>.md`.
 4. Update this plan's status columns and the next-phase entry
    criteria.
+
+## Appendix D -- Next session pickup (2026-04-29)
+
+Live edge: **B13** -- `verify_batch_proof` ix data is 1324 bytes,
+exceeds Solana's 1232-byte legacy-tx wire size.  The Groth16
+proof itself generates fine post-SEC-053; the failure is at the
+on-chain submission step inside `npm run prove`.
+
+Recommended path (per `docs/E2E_BLOCKERS.md` B13 remediation
+analysis): **reconstruct redundant public inputs on-chain from
+accounts already passed to the ix.**
+
+  * 12 of the 32 public inputs are derivable from accounts the
+    ix already takes:
+      - `globalRoot` -> `global_tree` body
+      - `merkleRoots[0..3]` -> `schema_tree_N` bodies
+      - `schemaHashes[0..3]` -> `schema_tree_N` bindings
+      - `issuerTreeRoot` -> `issuer_tree_binding`
+      - `verifierAddress` -> `program_id.to_bytes()`
+      - `currentTimestamp` -> `Clock::unix_timestamp` (skew per
+        SEC-005)
+  * Removing them from the ix arg list saves 12 * 32 = 384
+    bytes of `public_inputs` body.  Remaining 20 inputs ->
+    640 bytes; total ix data shrinks from 1324 to 940 bytes
+    (well under 1232).
+  * Handler reconstructs the full `[[u8; 32]; 32]` array
+    internally before calling `verify_groth16_proof`.
+  * Trade-off: ~5K extra CU for 12 byte copies; pairs with
+    SOLID-SEC-046 since the new baseline must capture this.
+  * Circuit unchanged; trusted setup unchanged; off-chain SDK
+    unchanged (the witness still uses the full 32 inputs).
+    Only the wire-format from caller -> handler shrinks.
+
+Steps for the implementer:
+
+1. Update `programs/zk-verifier/src/lib.rs::verify_batch_proof`
+   args: drop the corresponding 12 `[u8; 32]` slots from
+   `public_inputs: Vec<[u8; 32]>`.  Have the handler read them
+   from the existing accounts (`global_tree`, `schema_tree_N`,
+   `issuer_tree_binding`, `program_id`, `Clock`) and stitch the
+   full 32-element array before Groth16.
+2. Update the SDK encoder
+   `ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`
+   to send only the 20-input subset.
+3. Promote the finding to **SOLID-SEC-054** in
+   `sec/SECURITY_REGISTRY.md` once the design is sanctioned.
+4. Add a regression gate: an integration test that submits a
+   proof with the wrong subset (e.g. wrong globalRoot reconstructed
+   from a forged account) and asserts the Groth16 verify
+   rejects.  Pair with the existing P0-2 owner-check tests.
+
+If the on-chain reconstruction pushes CU over budget,
+fallback is the buffer-account pattern (B13 remediation
+option 2): pre-stage the proof bytes via chunked uploads
+to a scratch PDA, then a slim `verify_batch_proof_v2(buffer)`
+reads from it.  More txs per proof but unconditionally
+fits within wire-size limits.
+
+Order of operations the next session:
+
+  1. Read `plan/RESUME.md` "2026-04-28" section for receipts.
+  2. Read `docs/E2E_BLOCKERS.md` B13 for the full analysis.
+  3. Read `programs/zk-verifier/src/lib.rs::verify_batch_proof`
+     (lines 370-588) to map the existing public-input layout.
+  4. Implement the on-chain reconstruction; add the regression
+     gate; redeploy + retry `npm run prove`; confirm
+     `verified: true` tail.
+  5. Promote to SEC-054 in the registry once green.
+
+After B13 closes, the immediate Phase 4 P0 backlog is:
+
+  - SOLID-SEC-046 (CU regression gate; pair with the new B13
+    baseline).
+  - SOLID-SEC-010 (cross-language vectors 3 -> 10).
+  - Integration suite 02..11 (bankrun + jest harness; SPL AC
+    + noop fixtures; 10 scenarios per `tests/integration/README.md`).
+  - SOLID-SEC-017 (`OsRng` in solid-prover; trivial).
 
 ---
 

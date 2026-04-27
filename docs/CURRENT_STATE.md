@@ -347,5 +347,22 @@ the vision and should never disagree with the deployed reality.
   witness-tester (mocha) green.
 - **E2E status.**  Steps 1-17 of the runbook + `init-onchain`
   + `backfill-issuer-tree` + `bootstrap-schema-tree` +
-  `bootstrap-issuer` + `issue` all green.  Live edge:
-  `npm run prove`.
+  `bootstrap-issuer` + `issue` all green.  Post-SEC-053
+  (EdDSA-Poseidon cofactor-8), `npm run prove` also generates
+  a valid Groth16 proof in ~5s; live edge is now the on-chain
+  submission half: **B13** (legacy-tx wire size --
+  `verify_batch_proof` ix data 1324 bytes exceeds Solana's
+  1232-byte cap).  See `docs/E2E_BLOCKERS.md` B13 for the
+  remediation analysis (recommended path: reconstruct redundant
+  public inputs on-chain from accounts already passed to the ix).
+
+- **SEC-053 (HIGH, NEW; closed 2026-04-28).**  EdDSA-Poseidon
+  cofactor-8 mismatch between off-chain
+  `solid_core::babyjubjub::sign` and circomlib's in-circuit
+  `EdDSAPoseidonVerifier`.  Off-chain computed `S = r + h * sk`;
+  circuit checks `S * Base8 == R8 + h * 8 * A`.  Self-consistent
+  on host (sign + verify both omitted the 8) but every signature
+  was rejected by the Groth16 witness inside `CredentialAtom`.
+  Doc-lie at the function header explicitly miswrote circomlib's
+  equation as the no-8 form (L6).  Fixed both sides; regression
+  gate at `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`.

@@ -1,13 +1,44 @@
 # Deployment, End-to-End Testing, and Verification
 
-v0.6 (Phase 3 impl 4 landed 2026-04-25). Canonical runbook for the
-complete development loop: install toolchain, build artifacts, deploy
-programs, run the E2E pipeline, and **verify** that each invariant
-actually holds (not just that the pipeline exited zero).
+v0.6.1 + post-2026-04-28 circuit/ZK audit close-out.  Canonical
+runbook for the complete development loop: install toolchain,
+build artifacts, deploy programs, run the E2E pipeline, and
+**verify** that each invariant actually holds (not just that the
+pipeline exited zero).
 
 This doc is the reference. Every command is expected to succeed as
 written. No workarounds. If a step fails, follow the
 `## Troubleshooting` section rather than improvising.
+
+**Mandatory process gate (added 2026-04-28; SOLID-SEC-052 / B11):**
+any commit that touches `crates/solid-core/src/babyjubjub.rs` byte-
+format helpers (`affine_to_pubkey`, `pubkey_to_affine`,
+`affine_to_circomlib_xy`, `SQRT_A_LE` / `BASE8_X_ARK_LE` constants)
+OR `wasm/src/lib.rs` MUST also re-emit the WASM bridge:
+
+```bash
+rm -rf ts-sdk/packages/core/wasm
+PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ \
+    --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+(cd ts-sdk && npm ci && npm run build)
+```
+
+Skipping this step silently breaks the off-chain<->on-chain wire
+contract -- the WASM bridge ships pre-fix bytes while the on-chain
+code expects post-fix bytes.  Reproducer: `npm run bootstrap-issuer`
+fails at `[3/8] register_issuer` with `InvalidBJJPubKey` because
+the on-chain consolation gate correctly rejects bytes in the
+wrong coordinate form.  See `docs/E2E_BLOCKERS.md` B11.
+
+**Live edge as of 2026-04-28:** B13 (`verify_batch_proof` ix data
+1324 bytes exceeds Solana's 1232-byte legacy-tx wire size).  The
+Groth16 proof itself generates in ~5s post-SEC-053; the failure
+is at the on-chain submission step.  Until B13 closes, the
+"Expected terminal tail" block below describes the **target**
+tail, not the achievable one on the current build.  See
+`docs/E2E_BLOCKERS.md` B13 for the remediation analysis
+(recommended path: reconstruct redundant public inputs on-chain
+from accounts already passed to the ix).
 
 ---
 

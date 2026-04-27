@@ -2,10 +2,18 @@
 
 > Forward-looking implementation plan from v0.6.1 (post-Phase-2,
 > post-Phase-3-Impl-1..4) through devnet v1, pre-mainnet hardening,
-> and ecosystem launch. Last refreshed: 2026-04-25 late-session for
-> v0.6.1 + the E2E-unblock SOLID-SEC-048 finding (BJJ subgroup BPF
-> CU exhaustion; mainnet deploy-blocker; promoted to top of Phase 4
-> P0 below).
+> and ecosystem launch.
+>
+> **Last refreshed: 2026-04-28 (post circuit/ZK audit + e2e bring-
+> up).**  Three SEC findings closed in code (SOLID-SEC-045,
+> SOLID-SEC-049 NEW, SOLID-SEC-050 NEW) plus two cross-layer fixes
+> (SOLID-SEC-052 NEW BPF coord-form + WASM bridge gate;
+> SOLID-SEC-053 NEW EdDSA cofactor-8).  The e2e pipeline now
+> reaches `npm run prove` and successfully generates a Groth16
+> proof; live edge has moved to **B13** (`verify_batch_proof` ix
+> data exceeds Solana's 1232-byte legacy-tx wire size).  See
+> `docs/E2E_BLOCKERS.md` B13 for the architectural-blocker
+> remediation analysis.
 
 This document is the canonical forward plan. Two related docs are
 deliberately not duplicated here:
@@ -75,17 +83,79 @@ Section 4, Days 1..10.
   - SOLID-SEC-017  Replace `ark_std::test_rng()` in tools/solid-prover.
                    Half-day fix; add a "two proofs over the same inputs
                    must produce different nullifiers" regression test.
-  - SOLID-SEC-045  Atomic `update_issuer_tree_root` inside
-                   `revoke_issuer_atomic` and
-                   `request_withdrawal_atomic`. Half-day fix; closes
-                   the half-revoked window.
+  - SOLID-SEC-045  **Closed (2026-04-28).**  Atomic binding
+                   update inside `revoke_issuer_atomic` and
+                   `request_withdrawal_atomic` via on-chain
+                   Keccak path-recompute (helper at
+                   `solid_light::cpi_helpers::compute_concurrent_merkle_root_keccak`).
+                   Receipts in `sec/SECURITY_REGISTRY.md` SEC-045
+                   detail entry; integration test 07b still
+                   pending the bankrun harness.
+  - SOLID-SEC-049  **Closed (2026-04-28; new finding caught in
+                   the test sweep).**  `SPL_AC_REPLACE_LEAF_DISCRIMINATOR`
+                   was wrong (`0xe388...` vs canonical
+                   `0xcca5...` = sha256("global:replace_leaf")[..8]).
+                   Latent because no integration covered revoke /
+                   cooldown.
+  - SOLID-SEC-050  **Closed (2026-04-28; new finding).**  Schema-
+                   ordering canonicality bypass in
+                   `batch_credential_query.circom` -- interleaved
+                   padding admitted multiple distinct nullifiers
+                   per credential set.  Fixed in-circuit;
+                   trusted-setup re-run; new VK pin
+                   `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`.
+  - SOLID-SEC-052  **Closed partial (2026-04-28; new finding).**
+                   Two BPF / cross-layer wire-format drifts:
+                   (a) `is_on_curve` / `is_identity` rebuilt to
+                   evaluate the circomlib-native curve equation
+                   directly; (b) WASM bridge stale post-cff06c2,
+                   re-emitted via `wasm-pack build wasm/`.
+                   Process gate added at `docs/E2E_BLOCKERS.md`
+                   B11.  Outstanding follow-up: same iso path
+                   exists in `pubkey_to_affine` /
+                   `is_in_prime_order_subgroup`; only matters
+                   when SEC-048 closes (full subgroup check
+                   on-chain).
+  - SOLID-SEC-053  **Closed (2026-04-28; new finding).**
+                   EdDSA-Poseidon cofactor-8 mismatch -- off-chain
+                   `sign` computed `S = r + h*sk`, circomlib's
+                   in-circuit verifier checks
+                   `S*B == R8 + h*8*A`.  Fixed both sides of the
+                   sign+verify pair; regression gate at
+                   `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`.
+                   This was the gate that unlocked `npm run prove`'s
+                   Groth16 witness; e2e is now at B13.
+  - **B13 (NEW live edge, 2026-04-28).**  `verify_batch_proof` ix
+                   data is 1324 bytes which exceeds Solana's
+                   1232-byte legacy-tx wire size.  Architectural
+                   blocker for the on-chain submission half of
+                   `npm run prove`.  Remediation analysis at
+                   `docs/E2E_BLOCKERS.md` B13 (recommended path:
+                   reconstruct redundant public inputs on-chain
+                   from accounts already passed to the ix; saves
+                   384 bytes; total shrinks to 940 bytes).
+                   Promotes to **SOLID-SEC-054** once the
+                   remediation choice is sanctioned.
   - SOLID-SEC-046  CI CU-budget regression gate on `verify_batch_proof`
                    plus `docs/CU_BUDGET.md` baseline. Half-day fix.
+                   **Open** (not landed this session; pairs with
+                   B13's CU envelope review since reconstructing
+                   public inputs adds CU).
   - SOLID-SEC-010  Cross-language vectors expanded from 3/10 to 10/10
-                   primitives. Required CI gate. Day 1.
+                   primitives. Required CI gate. **Open** (Day 1).
+  - SOLID-SEC-051  **New (2026-04-28; LOW; deferred).**  All-padding
+                   `[0,0,0,0]` proofs admitted by circuit; on-chain
+                   handler at `programs/zk-verifier/src/lib.rs:500-502`
+                   skips zero-schema slots.  Defer-with-justification
+                   to next sanctioned trusted-setup cycle (batches
+                   with SEC-006 Part 2 + the predicate-operand
+                   range checks); one-constraint fix prepared
+                   (`IsZero(schemaHashes[0]).out === 0`).
   - Integration suite 02..10 -- the eight tests named in the audit's
                    Day 2-3 schedule. Required to call the pipeline
-                   "behaviourally tested".
+                   "behaviourally tested". **Open** (bankrun + jest
+                   harness not yet stood up; tests/integration/01
+                   exists as the only example).
   - Devnet deploy of all three programs and `initialize.ts` run with
                    `SOLID_VK_SHA256` set. Day 5.
   - Reference verifier app deployed and able to prove + verify a

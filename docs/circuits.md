@@ -86,6 +86,32 @@ Canonical ordering and zero-schema integrity:
 - If schemaHashes[i] is zero then every per-credential private input for
   slot i must also be zero (merkleRoot, data, salt, issuer pubkey, issuer
   signature, expirationTimestamp).
+- **Padding canonicality (SOLID-SEC-050, added 2026-04-28).**  Once
+  a slot is inactive (schemaHash == 0), every following slot MUST
+  also be inactive.  Combined with the strict-ascending check
+  above, this forces the canonical layout
+  `[A1 < A2 < ... < AK, 0, 0, ..., 0]`.  Constraint:
+  `isZero[i].out * (1 - isZero[i+1].out) === 0` for every
+  consecutive pair.  Pre-fix, interleavings like `[A1, 0, A2, A3]`
+  passed the strict-ascending check (the inactive slot broke the
+  chain), letting a holder produce multiple distinct
+  `queryContextHash` values for the same credential set --
+  defeating the verifier's per-claim nullifier rate-limit.
+  Regression gate: 17-case `circuits/test/schema_ordering.test.js`
+  driving an isolated template at
+  `circuits/test/templates/schema_ordering_isolated.circom`.
+
+EdDSA cofactor-8 (SOLID-SEC-053, fixed 2026-04-28):
+
+- circomlib's `EdDSAPoseidonVerifier.circom` (used inline in
+  `CredentialAtom`) checks `S * Base8 == R8 + h * 8 * A` -- the
+  `8 * A` factor is computed via three `BabyDbl` doublings before
+  `EscalarMulAny` multiplies by `h`.  Off-chain
+  `solid_core::babyjubjub::sign` MUST mirror this convention by
+  computing `S = r + h * 8 * sk`; the no-8 variant is
+  self-consistent on host but every signature gets rejected by
+  the in-circuit witness.  Regression gate at
+  `crates/solid-core/src/babyjubjub.rs::tests::sec_053_eddsa_cofactor_8_round_trip`.
 
 Expiration:
 

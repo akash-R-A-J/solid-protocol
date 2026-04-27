@@ -1,15 +1,31 @@
 # SolID Protocol -- Improvement Roadmap
 
 > **Original document date:** 2026-04-21
-> **Last status reconciliation:** 2026-04-25 late-session (build-
-> pipeline restoration: circuit compile fixes, Cargo.lock
-> edition2024 dep-cascade resolution via `rust-version = "1.75"` +
-> `.cargo/config.toml` MSRV resolver, Poseidon BPF refactor through
-> the `sol_poseidon` syscall, `verify_batch_proof` BPF stack-frame
-> fix; SOLID-SEC-047 added to the registry as Fixed.  E2E unblock
-> session 2026-04-25 evening: SOLID-SEC-048 added as Open with an
-> interim feature-gated bypass live on localnet/devnet -- mainnet
-> deploy-blocker; registered as P0-7 below.).
+> **Last status reconciliation:** 2026-04-28 (circuit/ZK audit +
+> e2e bring-up session).  Five SEC findings landed in code this
+> session: **SOLID-SEC-045** (atomic binding update via Keccak path
+> recompute -- NO LONGER OPEN), **SOLID-SEC-049 NEW** (replace_leaf
+> discriminator was wrong; latent because no integration test
+> covered revoke / cooldown), **SOLID-SEC-050 NEW** (batch circuit
+> schema-canonicality bypass; trusted-setup re-run; new VK pin
+> `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`),
+> **SOLID-SEC-052 NEW** partial (BPF coord-form +
+> WASM bridge gate added at `docs/E2E_BLOCKERS.md` B11),
+> **SOLID-SEC-053 NEW** (EdDSA-Poseidon cofactor-8 mismatch
+> between off-chain `sign` and circomlib's in-circuit verifier).
+> E2E pipeline now generates a valid Groth16 proof at
+> `npm run prove`; live edge moved to **B13** (legacy-tx wire size
+> for `verify_batch_proof`).  Test counts: 169/169 cargo + 39/39
+> circuit witness-tester (mocha).  Prior reconciliation:
+> 2026-04-25 late-session (build-pipeline restoration: circuit
+> compile fixes, Cargo.lock edition2024 dep-cascade resolution via
+> `rust-version = "1.75"` + `.cargo/config.toml` MSRV resolver,
+> Poseidon BPF refactor through the `sol_poseidon` syscall,
+> `verify_batch_proof` BPF stack-frame fix; SOLID-SEC-047 added to
+> the registry as Fixed.  E2E unblock session 2026-04-25 evening:
+> SOLID-SEC-048 added as Open with an interim feature-gated bypass
+> live on localnet/devnet -- mainnet deploy-blocker; registered as
+> P0-7 below.).
 > **Original source:** Independent system audit (2026-04-21, Antigravity)
 >
 > **Status as of 2026-04-25 late-session.** Phase 1 and Phase 2 are
@@ -939,17 +955,23 @@ P0-7 above; see also `docs/E2E_BLOCKERS.md` B9 + O7 and
 `sec/SECURITY_REGISTRY.md` SOLID-SEC-048.
 
 New post-roadmap items added in the 2026-04-25 v0.6.1 audit (both
-MEDIUM, both Open; P0 per v0.6.1 Section 6.1):
+MEDIUM):
 
 - SOLID-SEC-045.  `revoke_issuer_atomic` and
   `request_withdrawal_atomic` do not update
-  `IssuerTreeBinding.current_root` in the same ix; pre-transition
-  proofs remain replayable against the stale binding until
-  `update_issuer_tree_root` is called separately.  Half-day fix:
-  write the new root into the binding inside the atomic handler.
+  `IssuerTreeBinding.current_root` in the same ix.
+  **Closed (2026-04-28).**  Helper
+  `solid_light::cpi_helpers::compute_concurrent_merkle_root_keccak`
+  walks the proof path with `solana_program::keccak::hashv` and
+  the atomic ixs now write the recomputed new root into the
+  binding inside the same instruction.  Soundness rests on
+  the CPI's prior validation of the path against the pre-CPI
+  tree root + Keccak256 pre-image resistance.  Closure receipts
+  in `sec/SECURITY_REGISTRY.md` SEC-045 detail entry.
 - SOLID-SEC-046.  No CU-budget regression gate on
-  `verify_batch_proof`.  Half-day fix: CI job + baseline in
-  `docs/CU_BUDGET.md`.
+  `verify_batch_proof`.  **Open** (not landed this session;
+  pairs with B13 since reconstructing redundant public inputs
+  on-chain adds CU and the baseline must capture that).
 
 Note: SOLID-SEC-006 Part 2 (circuit-bound `vk_generation`) is
 deferred behind the next trusted-setup cycle and is tracked in
@@ -961,11 +983,65 @@ structure; tracked by registry ID only):
 
 - SOLID-SEC-043 (MEDIUM, Open).  `IssuerTreeBinding.operator` is a
   single signer; gate behind Squads 3-of-5 before external audit.
-- SOLID-SEC-044 (LOW, Open).  Cooldown status does not replace the
-  issuer's tree leaf; add `request_withdrawal_atomic`.
+- SOLID-SEC-044 (LOW).  Cooldown status does not replace the
+  issuer's tree leaf; `request_withdrawal_atomic` added.
+  **Closed (2026-04-28).**  Pre-existing implementation +
+  SEC-045 binding fix together close the cooldown-replay window.
 
-See the v0.6 deep audit's Section 7.1 for the current Phase 3 close-
-out priority ordering.
+New items surfaced 2026-04-28 (circuit/ZK audit + e2e bring-up):
+
+- SOLID-SEC-049 (HIGH, NEW).  **Closed (2026-04-28).**
+  `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` was `[0xe388...]` but the
+  canonical `sha256("global:replace_leaf")[..8]` is `[0xcca5...]`.
+  Both atomic ixs would have failed at the SPL AC CPI with
+  `InstructionFallbackNotFound`.  Latent because no integration
+  test had ever exercised revoke / cooldown.  Caught by the
+  discriminator-derivation regression test added in the program
+  test sweep.
+- SOLID-SEC-050 (MEDIUM, NEW).  **Closed (2026-04-28).**  Schema-
+  ordering canonicality bypass in `batch_credential_query.circom`
+  -- strict-ascending check skipped when next slot inactive, so
+  `[A1, 0, A2, A3]` and `[0, A1, 0, A2]` produced different
+  `queryContextHash` values for the same credential set,
+  defeating the verifier's per-claim nullifier rate-limit.
+  Fixed: `isZero[i].out * (1 - isZero[i+1].out) === 0`.
+  Trusted-setup re-run; new VK pin
+  `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`.
+- SOLID-SEC-051 (LOW, NEW).  **Open (deferred).**  All-padding
+  `[0,0,0,0]` proofs admitted by the circuit and accepted by the
+  on-chain handler at `programs/zk-verifier/src/lib.rs:500-502`.
+  Defer-with-justification to next sanctioned trusted-setup cycle
+  (batches with SEC-006 Part 2 + the predicate-operand range
+  checks); one-constraint fix prepared.
+- SOLID-SEC-052 (HIGH, NEW).  **Closed partial (2026-04-28).**
+  Two BPF-runtime / cross-layer wire-format drifts:
+  (a) `is_on_curve` / `is_identity` rebuilt to evaluate the
+  circomlib-native curve equation directly (avoids BPF-incompat
+  arkworks `EdwardsAffine::is_on_curve()`); (b) WASM bridge
+  stale post-cff06c2 -- re-emitted via `wasm-pack build wasm/`.
+  Process gate at `docs/E2E_BLOCKERS.md` B11.  Outstanding:
+  `pubkey_to_affine` and `is_in_prime_order_subgroup` still use
+  the iso path; only matters when SEC-048 closes.
+- SOLID-SEC-053 (HIGH, NEW).  **Closed (2026-04-28).**
+  EdDSA-Poseidon cofactor-8 mismatch -- off-chain `sign`
+  computed `S = r + h*sk` while circomlib's in-circuit verifier
+  checks `S*B == R8 + h*8*A`.  Fixed both sides of the
+  sign+verify pair; regression gate at
+  `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`.  This
+  was the gate that unlocked `npm run prove`'s Groth16 witness;
+  e2e is now at B13.
+- **B13 (NEW live edge, 2026-04-28).**  `verify_batch_proof` ix
+  data is 1324 bytes which exceeds Solana's 1232-byte legacy-tx
+  wire size.  Architectural blocker for the on-chain submission
+  half of `npm run prove`.  Remediation analysis at
+  `docs/E2E_BLOCKERS.md` B13.  Will register as
+  **SOLID-SEC-054** once the remediation choice is sanctioned.
+  Recommended path: reconstruct redundant public inputs on-chain
+  from accounts already passed to the ix (saves 384 bytes;
+  total shrinks to 940 bytes; legacy-tx fits).
+
+See the v0.6.1 deep audit's Section 6.1 + this 2026-04-28
+reconciliation for the current Phase 3 close-out priority ordering.
 
 ---
 

@@ -4,20 +4,23 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-28 (post-cff06c2 e2e bring-up + program +
-  circuit audit + SEC-050 trusted-setup cycle).  Major code session;
+- **Last updated:** 2026-04-28 late session (circuit/ZK audit +
+  e2e bring-up + SEC-053 close-out).  Major code session;
   see "2026-04-28 -- circuit/ZK audit + e2e bring-up" below for the
   full receipts.  Quick state:
-  - **HEAD:** `59a85b3 added program tests` (this session's
-    program-tests + helpers commit) plus uncommitted SEC-050
-    circuit fix + SEC-052 babyjubjub.rs rewrite + new VK pin
-    `8385b82b...` + WASM bridge rebuild.
+  - **HEAD:** `ac84deb SEC-053: EdDSA-Poseidon cofactor-8 fix; prove
+    now generates a valid Groth16 proof` (committed; will be pushed
+    at end-of-session).  Pushed branch: `main`.
   - **E2E status:** `npm run e2e` walks through `init-onchain ->
     backfill-issuer-tree -> bootstrap-schema-tree ->
-    bootstrap-issuer -> issue` ALL GREEN.  Live edge is `npm run
-    prove`, blocked at B12 (EdDSA witness drift inside
-    `CredentialAtom`; see `docs/E2E_BLOCKERS.md` B12 for the
-    diagnostic plan).
+    bootstrap-issuer -> issue -> prove (Groth16 proof generated
+    in 5.09s)` ALL GREEN through proof generation.  Live edge is
+    the on-chain submission half of `npm run prove`: **B13**
+    (`verify_batch_proof` ix data 1324 bytes exceeds Solana's
+    1232-byte legacy-tx wire size).  See `docs/E2E_BLOCKERS.md`
+    B13 for the architectural-blocker remediation analysis.
+    Recommended path is documented in `plan/IMPLEMENTATION_PLAN.md`
+    Appendix D.
   - **Closures this session:**
     - SOLID-SEC-045 (atomic binding update; helper +
       keccak path-recompute + 7 unit tests + write-binding
@@ -26,19 +29,42 @@ authoritative.
       `0xe388...` -> `0xcca5...`).
     - SOLID-SEC-050 NEW (schema-canonicality bypass via
       interleaved padding; circuit constraint + 17 witness-
-      tester regressions; trusted-setup re-run).
-    - SOLID-SEC-052 NEW (BPF / cross-layer coord-form drift;
-      `is_on_curve` rewritten + WASM bridge rebuilt).
+      tester regressions; trusted-setup re-run; new VK pin
+      `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`).
+    - SOLID-SEC-052 NEW partial (BPF / cross-layer coord-form
+      drift; `is_on_curve` rewritten + WASM bridge rebuilt;
+      process gate at `docs/E2E_BLOCKERS.md` B11).
+    - SOLID-SEC-053 NEW (EdDSA-Poseidon cofactor-8 mismatch
+      between off-chain `sign` and circomlib's in-circuit
+      verifier; `S = r + h * 8 * sk`; regression gate
+      `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`).
     - `docs/E2E_BLOCKERS.md` O4 (padding_slot test) verified
       green and closed.
+    - `docs/E2E_BLOCKERS.md` B12 (EdDSA witness drift) closed
+      via SEC-053.
     - SOLID-SEC-041 confirmed in-code (VK sha256 pin
       gated `initialize.ts`).
   - **Open trackers introduced this session:** SOLID-SEC-051
     (all-padding circuit; LOW; defer to next setup cycle), B11
-    (WASM rebuild gate; documented + process gate added), B12
-    (EdDSA witness drift; live e2e edge).
-  - **Workspace tests:** 167/167 cargo + 39/39 circuit witness-
-    tester (mocha) green.
+    (WASM rebuild gate; documented + process gate added), B13
+    (legacy-tx wire size; live e2e edge -- promotes to
+    SOLID-SEC-054 once remediation choice sanctioned).
+  - **Workspace tests:** 169/169 cargo + 39/39 circuit witness-
+    tester (mocha) green; +1 host-side ignored forensic snapshot.
+
+## Pickup tomorrow (2026-04-29 morning)
+
+1. Read `plan/IMPLEMENTATION_PLAN.md` Appendix D ("Next session
+   pickup").  That section has the full B13 remediation steps.
+2. Implement on-chain reconstruction of the 12 redundant public
+   inputs in `programs/zk-verifier/src/lib.rs::verify_batch_proof`.
+3. Update the SDK encoder
+   `ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`
+   to send only the 20-input subset.
+4. Promote to **SOLID-SEC-054** in `sec/SECURITY_REGISTRY.md`.
+5. Run e2e end-to-end; expect `verified: true` tail.
+6. Then SOLID-SEC-046 CU gate; SOLID-SEC-010 vectors 3->10;
+   integration suite 02..11.
 
 (The 2026-04-27 strategy-session notes below are preserved as
 historical context; they were unchanged technically from the

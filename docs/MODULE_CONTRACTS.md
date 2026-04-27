@@ -1293,6 +1293,123 @@ On-chain:
     issuer-registry
         |-- SPL Account Compression
         |-- SPL Token
+        |-- solid-light (cpi_helpers)            <-- SEC-045 helper
     schema-registry
         (standalone, writes raw bytes)
 ```
+
+# Helpers added 2026-04-28 (post circuit/ZK audit + e2e bring-up)
+
+These are pure-data primitives that inline ix bodies were
+refactored against during the program test sweep this session.
+All have host-side regression tests.
+
+## solid_light::cpi_helpers
+
+  - `pub const ISSUER_TREE_DEPTH: usize = 16`.  Mirrors
+    `scripts/backfill_issuer_tree.ts` (default 16, override via
+    `SOLID_ISSUER_TREE_DEPTH`).  The atomic-binding-update path
+    (SOLID-SEC-045) requires the proof path supplied as
+    `remaining_accounts` to have exactly this many siblings; the
+    issuer tree is configured with canopy depth 0 so the full
+    path is always on-wire.
+
+  - `pub fn compute_concurrent_merkle_root_keccak(leaf, leaf_index,
+    proof_path) -> [u8; 32]`.  Recomputes a SPL Account
+    Compression concurrent-merkle-tree root from `(new_leaf,
+    leaf_index, full proof path)` using
+    `solana_program::keccak::hashv`.  Soundness for SOLID-SEC-045:
+    the `replace_leaf` CPI immediately preceding the call has
+    already validated the proof against the SPL AC tree's
+    pre-CPI root, so `proof_path` is the authentic Merkle
+    authentication path; re-running with `new_leaf` yields the
+    actual post-CPI root SPL AC just committed to.  Caller MUST
+    assert `proof_path.len() == ISSUER_TREE_DEPTH`.
+
+## issuer-registry (private helper, host-testable)
+
+  - `fn write_issuer_tree_binding_root(data, &new_root, slot)
+    -> Result<()>`.  Writes `new_root` into
+    `IssuerTreeBinding[40..72)` and `slot` into `[72..80)` after
+    asserting buffer length, discriminator, and active status.
+    Caller (`revoke_issuer_atomic` / `request_withdrawal_atomic`)
+    is responsible for the owner-check on the `AccountInfo`
+    BEFORE invoking this helper.  Host regression suite at
+    `programs/issuer-registry/src/lib.rs::tests` (5 negative
+    cases + happy path + idempotent write + 6 layout invariants
+    + discriminator drift gates that catch SOLID-SEC-049-class
+    typos).
+
+## schema-registry (public helpers, host-testable)
+
+These extract the byte-level write logic from the inline ix
+bodies so the layout checks are unit-testable with synthetic
+buffers.  All require the caller to have owner-checked the
+account against `crate::ID` first.
+
+  - `pub fn apply_schema_tree_root_update(data,
+    expected_schema_hash, signer_pubkey, new_root, now_slot)`.
+    Used by `update_tree_root`.  Asserts size, discriminator
+    `b"schmtree"`, schema-hash match, status active, authority
+    match, monotonicity (`now_slot > last_slot`).
+  - `pub fn apply_schema_tree_status_update(data, signer_pubkey,
+    new_status)`.  Used by `set_binding_status`.  Validates
+    `new_status in {0, 1}`, layout, authority.
+  - `pub fn apply_schema_tree_authority_rotation(data,
+    signer_pubkey, new_authority)`.  Used by
+    `transfer_tree_binding_authority`.
+  - `pub fn apply_global_root_update(data, signer_pubkey,
+    new_root, now_slot)`.  Mirror for `GlobalStateBinding`
+    (discriminator `b"globroot"`, root at `[8..40)`, slot at
+    `[40..48)`, authority at `[48..80)`).  Used by
+    `update_global_root`.
+  - `pub fn apply_global_authority_rotation(data, signer_pubkey,
+    new_authority)`.  Used by `transfer_global_binding_authority`.
+
+Host regression suite at
+`programs/schema-registry/src/lib.rs::tests` (30 cases: layout
+invariants, positive paths, every negative axis, cross-pollution
+between schema-tree-binding and global-binding helpers).
+
+## solid_core::babyjubjub::sign / verify (SOLID-SEC-053)
+
+The off-chain EdDSA-Poseidon signing convention now matches
+circomlib's in-circuit `EdDSAPoseidonVerifier` exactly:
+
+  - `sign(sk, msg) -> EdDSASignature`.  Computes
+    `S = r + h * 8 * sk` (the cofactor-8 factor is what the
+    in-circuit verifier already expects -- see
+    `node_modules/circomlib/circuits/eddsaposeidon.circom`
+    lines 66-78 where `dbl1/dbl2/dbl3` produce `8*A` and
+    `mulAny` multiplies by `h`, then RHS = `R8 + h*8*A`).
+    Pre-fix: omitted the 8x; sign + host verify were
+    self-consistent but the circuit rejected every signature.
+    Fix landed 2026-04-28; regression gate at
+    `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`
+    (positive: fresh sig verifies; negative: hand-crafted no-8
+    sig is rejected).
+  - `verify(pk, msg, &sig) -> Result<bool>`.  Mirrors `sign`:
+    checks `S * Base8 == R8 + h * 8 * A`.  Same cofactor-8 fix.
+
+## solid_core::babyjubjub::is_on_curve / is_identity (SOLID-SEC-052)
+
+Both predicates rewritten 2026-04-28 to evaluate the
+circomlib-native twisted-Edwards equation directly using only
+`Fq * Fq` and `Fq + Fq`:
+
+```
+a * x^2 + y^2 == 1 + d * x^2 * y^2     (a = 168700, d = 168696)
+```
+
+Avoids the BPF-incompat
+`EdwardsAffine::new_unchecked(x_circ_to_ark(x_circ), y).is_on_curve()`
+path that rejects valid points on BPF for the iso-transformed
+coordinate path introduced by the cff06c2 commit.  Behaviour
+identical on host and BPF.  Regression gate at
+`babyjubjub::tests::test_keygen_passes_on_chain_consolation_gate`
+(16 random keypairs round-trip).
+
+The same iso path still exists in `pubkey_to_affine` and
+`is_in_prime_order_subgroup`; only matters when SOLID-SEC-048
+closes (full subgroup check on-chain) and the BPF runtime hits
+those code paths.
