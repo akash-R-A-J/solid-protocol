@@ -488,10 +488,28 @@ async function main() {
   // actionable error rather than corrupt the partial state -- the
   // operator must `solana-test-validator --reset` (clean validator) or
   // wait for the prior session to recover.
+  // SOLID-SEC-006 Part 1 / NF-02: finalize-if-pending.  Pre-fix this branch
+  // returned as soon as `vk_initialized==true`, but never asserted
+  // `vk_finalized==true`.  Result: every deployment ended with the freeze-
+  // gate dead code (authority could replace the VK without the 48h timelock
+  // by re-uploading chunk 0).  The branch now finalizes before returning.
   try {
     const cfg = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
     if (cfg.vkInitialized) {
-      console.log('   ok (VK already finalized on this validator; skipping upload)');
+      if (!cfg.vkFinalized) {
+        console.log('   VK uploaded by prior run but not finalized; calling finalize_verification_key (SOLID-SEC-006 Part 1)...');
+        await zkProgram.methods.finalizeVerificationKey().accounts({
+          verifierConfig: verifierConfigPda,
+          authority: wallet.publicKey,
+        }).rpc();
+        const post = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
+        if (!post.vkFinalized) {
+          throw new Error('SOLID-SEC-006 Part 1: finalize_verification_key returned but vk_finalized is still false.');
+        }
+        console.log('   ok (VK finalized; freeze-gate active)');
+      } else {
+        console.log('   ok (VK already finalized on this validator; skipping upload)');
+      }
       const stateFile = readStateOrNull('initialize') ?? {};
       stateFile.vkStorageAddress = vkStoragePda.toBase58();
       writeState(stateFile);
@@ -548,6 +566,27 @@ async function main() {
     process.stdout.write(`   uploaded chunk ${i + 1}/${totalChunks}\r`);
   }
   console.log(`\n   ok (${vkBytes.length} bytes)`);
+
+  // SOLID-SEC-006 Part 1 / NF-02 (closed 2026-05-01).  Freeze the VK so
+  // any further write must go through the 48h-timelock path
+  // (`request_vk_rotation` -> wait -> `rotate_verification_key`).
+  // Pre-fix: this call was missing; every deployment ended with
+  // `vk_finalized=false` and `store_verification_key` would happily
+  // accept a fresh chunk-0 from the authority, bypassing the SEC-006
+  // freeze-gate entirely.
+  console.log('   finalizing VK (SOLID-SEC-006 Part 1)...');
+  await zkProgram.methods.finalizeVerificationKey().accounts({
+    verifierConfig: verifierConfigPda,
+    authority: wallet.publicKey,
+  }).rpc();
+  const cfgAfterFinalize = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
+  if (!cfgAfterFinalize.vkFinalized) {
+    throw new Error(
+      'SOLID-SEC-006 Part 1 post-condition failed: finalize_verification_key returned ' +
+      'but verifier_config.vk_finalized is still false.  Aborting initialize.',
+    );
+  }
+  console.log(`   ok (vk_finalized=true; rotation now requires request_vk_rotation + 48h timelock)`);
 
   // Persist state for downstream scripts.  Written under
   // `$XDG_RUNTIME_DIR` / `$TMPDIR` with mode 0600 (SOLID-SEC-020);
