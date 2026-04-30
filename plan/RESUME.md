@@ -4,7 +4,30 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-29 (B13 (1)+(3) attempt; latent-bug
+- **Last updated:** 2026-05-01 (e2e first reaches `verified: true`;
+  9 P0/P1 audit findings closed; LB4/LB5 surfaced + fixed; B13 Option
+  2 (buffer-account flow) lands; SEC-046 CU regression gate +
+  baselines committed).  See `plan/SESSION_LOG_2026-04-30.md` for
+  the full receipts.  Quick state:
+  - **HEAD:** `fb447ff` ("SEC-054 + LB1..LB5: e2e green end-to-end +
+    9 audit findings (P0/P1) closed").  211/211 host tests green.
+  - **E2E:** `npm run e2e` returns `verified: true` followed by
+    `ok (replay rejected by nullifier PDA init constraint)` on a
+    fresh localnet validator.  Reference green tx:
+    `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+  - **CU baselines:** `docs/CU_BUDGET.md` + `tests/cu_baselines.json`
+    (machine-readable).  Largest consumer: `AppendIssuerLeaf` at
+    427,518 CU (47% headroom under 800K cuIx).  All ixs land below
+    50% of Solana's 1.4M per-tx ceiling.
+  - **SEC-046 CI gate:** `.github/workflows/ci.yml::cu_regression`
+    re-measures every ix per PR; fails on `consumed > baseline * 1.10`.
+  - **What's next** (Pickup tomorrow): task #12 M2-M11 batch (no-
+    ceremony correctness fixes), then task #14 Lane B circuit
+    revision (CRIT-1, CRIT-1b, M1/SEC-048 Option E, H7, M3, SEC-051,
+    L3, SEC-006 Part 2 -- one ceremony covers all), then task #15
+    drop `sec007-skip-onchain`, then task #16 re-validate e2e.
+
+- **Previous update:** 2026-04-29 (B13 (1)+(3) attempt; latent-bug
   fixes; pivot to Option 2 for tomorrow).  See
   `plan/SESSION_LOG_2026-04-29.md` for the full receipts.  Quick
   state:

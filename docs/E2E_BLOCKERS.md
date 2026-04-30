@@ -17,6 +17,50 @@ has been updated to reflect the post-fix state.
 - **Owner:** rolling — last engineer to update this file
 - **Purpose:** track the punch list, not the audit. The audit lives in
   `sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`.
+
+- **STATE AS OF 2026-05-01 (e2e green close-out):** `npm run e2e`
+  returns `verified: true` end-to-end on a fresh localnet validator,
+  followed by a clean replay rejection.  Reference green tx for
+  `verify_batch_proof_v2`:
+  `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+
+  Two new latent bugs (LB4, LB5) surfaced during the on-chain Groth16
+  bring-up and were fixed:
+    - **LB4 (folded into SEC-059 closure)**: the IssuerTreeBinding
+      (and SchemaTreeBinding, GlobalStateBinding) must store the
+      **Poseidon root** the in-circuit `MerkleInclusion` template
+      consumes, NOT the SPL AC tree's Keccak root.  The earlier
+      SEC-045 / CRIT-2 fix mistakenly read the SPL AC active root
+      and wrote it to the binding.  Fix: each state-change ix
+      (`append_issuer_leaf`, atomic revoke / withdrawal,
+      `update_*_root`) computes the new Poseidon root on-chain via
+      `solid_light::cpi_helpers::compute_poseidon_merkle_root` from
+      a caller-supplied path; refuses any push that doesn't recompute
+      to the claimed root.  Architecture decision logged at
+      `plan/SESSION_LOG_2026-04-30.md` §3.1.
+    - **LB5 / SOLID-SEC-067 (NEW)**: G2 byte-order swap.
+      `groth16-solana 0.2.0`'s alt_bn128 syscall expects each F_q²
+      element in `(imag, real)` order; snarkjs JSON has
+      `(real, imag)`.  Fix: swap on encode in
+      `scripts/initialize.ts::serializeG2` and
+      `ts-sdk/packages/holder/src/index.ts::formatProofForSolana`.
+      Confirmed against `groth16-solana`'s own canonical reference
+      parser `parse_vk_to_rust.js`.  Host regression gate:
+      `programs/zk-verifier/src/lib.rs::tests::groth16_host_verify_round_trip`
+      consumes `tests/fixtures/groth16_e2e_proof.json` (captured by
+      `scripts/prove.ts` after a successful local snarkjs verify) and
+      runs `verify_groth16_proof` on host -- byte-for-byte matches
+      the on-chain Groth16 path.  Latent because no proof had reached
+      on-chain Groth16 before SEC-054 closed.
+  
+  Per-instruction CU baselines pinned at `docs/CU_BUDGET.md` +
+  `tests/cu_baselines.json`.  CI gate at
+  `.github/workflows/ci.yml::cu_regression` (SEC-046 closure).
+
+  This document is now SUPERSEDED for the live-edge tracking
+  purpose: there is no current e2e blocker.  Kept for the historical
+  record + the runbook section below.  Move to `docs/archive/` once
+  another two consecutive clean-machine e2e runs are observed.
 - **State as of 2026-04-27 evening:** unchanged from 2026-04-26
   ~02:15 IST.  No technical work landed today (strategy session,
   see `plan/RESUME.md` last update + `plan/GO_TO_MARKET.md`).  Live

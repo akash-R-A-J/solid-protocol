@@ -160,15 +160,75 @@ Phase 1 (remediation set) and Phase 2 (ADR-0014 compressed issuer tree
 plus 6-input nullifier) are closed. Phase 3 is open and drives the
 external-audit-ready close-out.
 
-As of 2026-04-28 (post circuit/ZK audit + e2e bring-up): the
+As of 2026-05-01 (post e2e first-`verified: true` close-out;
+B13 Option 2 + LB1..LB5 + nine P0/P1 audit findings landed): the
 following are **closed in code** and tracked in
-sec/SECURITY_REGISTRY.md:
+sec/SECURITY_REGISTRY.md.  E2E reference green tx for
+`verify_batch_proof_v2`:
+`tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+Per-instruction CU baselines are pinned in `docs/CU_BUDGET.md` +
+`tests/cu_baselines.json`; CI regression gate at
+`.github/workflows/ci.yml::cu_regression` enforces 1.10x tolerance.
 
-- SOLID-SEC-045 (MEDIUM, closed 2026-04-28). Atomic handlers
-  (revoke_issuer_atomic, request_withdrawal_atomic) now update
-  IssuerTreeBinding.current_root in the same ix via on-chain
-  Keccak path-recompute (helper at
-  solid_light::cpi_helpers::compute_concurrent_merkle_root_keccak).
+- SOLID-SEC-045 / CRIT-2 / H1 / LB4 (CRITICAL, closed 2026-04-30).
+  Atomic handlers (`revoke_issuer_atomic`, `request_withdrawal_atomic`,
+  `append_issuer_leaf`) now update IssuerTreeBinding.current_root in
+  the same ix via on-chain **Poseidon-Merkle** recompute (helper at
+  `solid_light::cpi_helpers::compute_poseidon_merkle_root`).  Earlier
+  fix used Keccak (matching SPL AC's hash family) but the in-circuit
+  `MerkleInclusion` template (`Poseidon(2)`) needs Poseidon -- LB4
+  surfaced 2026-04-30 once SEC-054 closed and on-chain Groth16
+  actually ran.  SPL AC stays as the leaf-presence ledger; binding
+  stores the Poseidon root.  Sibling closures: schema_registry's
+  `update_tree_root` and `update_global_root` got the same Poseidon-
+  recompute integrity gate (depth=20).
+- SOLID-SEC-054 (MEDIUM, closed 2026-05-01).  B13 wire-size cap
+  closed via Option 2 (buffer-account / chunked upload).  New ix
+  trio in zk-verifier (`init_proof_buffer`, `upload_proof_chunk`,
+  `verify_batch_proof_v2`) splits the 1324-byte payload across
+  N small txs.  SDK orchestration in
+  `ts-sdk/packages/verifier/src/index.ts::verifyOnChainV2`.
+- SOLID-SEC-058 / CRIT-3 (CRITICAL, closed 2026-04-30).  Off-chain
+  prover artifacts (.wasm, .zkey) now SHA-256-pinned via three pin
+  sources (env > sidecar > config).  New module
+  `ts-sdk/packages/sdk/src/artifact_integrity.ts`.
+- SOLID-SEC-059 / H1 (CRITICAL, closed 2026-04-30).  `update_issuer_tree_root`
+  is no longer a root-injection primitive: caller supplies
+  `(new_root, new_leaf, leaf_index, poseidon_proof_path)`; on-chain
+  Poseidon recompute refuses any mismatch.
+- SOLID-SEC-061 / H3 (HIGH, closed 2026-04-30).  New `withdraw_after_revoke`
+  ix with 24h DAO dispute window (cooldown_ends_at reuse) closes
+  the post-Cooldown stuck-stake trap.  New `StakeWithdrawn` event.
+- SOLID-SEC-062 / H4 (HIGH, closed 2026-04-30).  New
+  `solid_core::poseidon::is_canonical_bn254_le` enforces canonical
+  BN254 encoding on `register_issuer`'s BJJ x/y and `issue_credential`'s
+  commitment.
+- SOLID-SEC-063 / H5 (HIGH, closed 2026-04-30).  Schema-hash preimage
+  widened to 5-input Poseidon over (name_h, version_e, count_e,
+  fnames_h, cat_h); each `*_h` is a Merkle-Damgard absorb.  TS mirror
+  in `@solid-protocol/core::computeSchemaHash`.
+- SOLID-SEC-064 / H6 (HIGH, closed 2026-04-30).  `verifyOnChain` v0/ALT
+  path now checks `confirmTransaction(...).value.err` and throws on
+  revert; defense-in-depth post-fetches the nullifier PDA.
+- SOLID-SEC-066 / H8 (HIGH, closed 2026-04-30).  Holder
+  `SOLID_DEBUG_CIRCUIT_INPUT=1` no longer leaks master BJJ key;
+  default redacts; opt-in via `SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS`.
+- SOLID-SEC-067 / LB5 (CRITICAL NEW, closed 2026-04-30).  G2 byte-order
+  swap.  `groth16-solana 0.2.0`'s alt_bn128 syscall expects each F_q²
+  element in `(imag, real)` order; snarkjs JSON has `(real, imag)`.
+  Pre-fix every G2 component (VK β/γ/δ + proof B) was on the wrong
+  basis.  Fix in `serializeG2` + `formatProofForSolana`.  Host gate:
+  `tests::groth16_host_verify_round_trip`.
+- SOLID-SEC-046 (MEDIUM, closed 2026-05-01).  CU regression gate +
+  baselines committed (see `docs/CU_BUDGET.md`,
+  `tests/cu_baselines.json`, `.github/workflows/ci.yml`).
+- SOLID-SEC-049 (HIGH, NEW + closed 2026-04-28). The
+  SPL_AC_REPLACE_LEAF_DISCRIMINATOR constant in
+  programs/issuer-registry/src/lib.rs:54 was wrong (no SPL AC
+  ix preimage matched it); both atomic ixs would have failed
+  at the SPL AC CPI. Fixed to sha256("global:replace_leaf")[..8].
+  Latent because no integration test had ever exercised
+  revoke / cooldown.
 - SOLID-SEC-049 (HIGH, NEW + closed 2026-04-28). The
   SPL_AC_REPLACE_LEAF_DISCRIMINATOR constant in
   programs/issuer-registry/src/lib.rs:54 was wrong (no SPL AC

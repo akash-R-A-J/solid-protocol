@@ -1,0 +1,133 @@
+{
+  "_description": "SOLID-SEC-046 CU regression gate baselines. Captured on a fresh localnet on 2026-05-01 from the e2e green run. CI gate (.github/workflows/ci.yml::cu_regression) re-measures every entry on each PR and fails if `consumed_cu > baseline_cu * 1.10`. Human-readable companion: docs/CU_BUDGET.md.",
+  "_source_e2e_run_date": "2026-05-01",
+  "_validator": "solana-test-validator 1.18.22 (--reset, COPYFILE_DISABLE=1)",
+  "_tolerance_factor": 1.10,
+  "programs": {
+    "zk_verifier": {
+      "program_id": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
+      "instructions": {
+        "Initialize": {
+          "consumed_cu": 21394,
+          "cu_limit": 200000,
+          "tx_signature": "TgbBCRBSat7HEHLK1DcAMnw1k8uXa8T5am4Ft9q1DzYemQJkorFbGP7P8mNCQn7wTwMoWH5D4QoE3NG55AMifG8"
+        },
+        "StoreVerificationKey_chunk_1": {
+          "consumed_cu": 12842,
+          "cu_limit": 200000,
+          "tx_signature": "5sM715TtHU4pgQAcpgY3VnFJ6qgwb2PKAj18dY8MEYgZ73bq5i9hemF2L8psbDW1chQinJLsP7Na6u6yLLevUotZ"
+        },
+        "StoreVerificationKey_chunk_2": {
+          "consumed_cu": 9811,
+          "cu_limit": 200000,
+          "tx_signature": "5YX2sdtYjfTch11jhV6Q4RRqbb6AA42cFMRV6R9LzRtBDLfHjmcvjcrgpHDRAfMUv2TxXkRrJRkkKVX5TxXJWAtT"
+        },
+        "StoreVerificationKey_chunk_3": {
+          "consumed_cu": 10627,
+          "cu_limit": 200000,
+          "tx_signature": "2MvuLyNNgcycP2zttxVxD5P4bHhHXrpMgYmFg9efNcVfvHWmAHqygceHgPEaod7xMUA1gG1Dswfz67voXYbzib2J"
+        },
+        "InitProofBuffer": {
+          "consumed_cu": 13954,
+          "cu_limit": 200000,
+          "tx_signature": "2MttWiFoCM8PVzwaeDsHEwuQzsm7FGFyES9ky1NRAMZ2aCRGugPsZbSftAabANrexwRzeUHprC1aK42TfvjwRGdc"
+        },
+        "UploadProofChunk_chunk_1": {
+          "consumed_cu": 9647,
+          "cu_limit": 200000,
+          "tx_signature": "5J2D5QvuR6MvseuvDiHwTYjJQ4Meod1fuXkSRFGaJS5H45P6zbC8TdeNSYaZXnmerXrnraWHowjsf29VJNyfCpVv"
+        },
+        "UploadProofChunk_chunk_2": {
+          "consumed_cu": 9647,
+          "cu_limit": 200000,
+          "tx_signature": "5ND6nvhMdnYhQ4AmFGjM6qkZYTFBDD1rDRf6FF6VUJ4f5z1Ub3vj24MmntzSHpqDvpFYXPRAs8skA3UEXYjZtGXi"
+        },
+        "VerifyBatchProofV2": {
+          "consumed_cu": 315406,
+          "cu_limit": 799850,
+          "tx_signature": "tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX"
+        }
+      }
+    },
+    "issuer_registry": {
+      "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
+      "instructions": {
+        "InitializeRegistry": {
+          "consumed_cu": 50981,
+          "cu_limit": 200000,
+          "tx_signature": "5u9V6GnXizi238uf7BozDERR7ctnd6XXubSKjyv9Q3FNBhn18TBDNuuqwNEtfpo9uYm5Be4TXE2rkXuG2vKKSkgX"
+        },
+        "InitializeIssuerTreeBinding": {
+          "consumed_cu": 35599,
+          "cu_limit": 200000,
+          "tx_signature": "5RtMnQME8JLYYRhVB8V1gdvbaNf7RJvpdSL1AtNoFjVizrgkciHeBYqL52LTRAXFtfXhrPyRrUCtgCVUJ5THCmwg"
+        },
+        "RegisterIssuer_sec007_skip_onchain": {
+          "consumed_cu": 76107,
+          "cu_limit": 399850,
+          "tx_signature": "49TGLx3RL4DKEJURUzv6SzuRBKsCKbBVH6SdyQQv12rE48EJTVDphqBPTPF6nwwgMFscxgDpsxRHJb2o3U4H6a5D",
+          "_note": "Bypass build: skips on-chain BJJ prime-order subgroup check (~1.4M CU) and runs only the cheap is_on_curve + !is_identity gate. Will move into the issuance circuit once SEC-048 Option E lands."
+        },
+        "StakeTokens": {
+          "consumed_cu": 31548,
+          "cu_limit": 200000,
+          "tx_signature": "4SCiznn7piT3ggYdd5Cc8zUue6TpbmkVzuyEjY6ZJMf9SvCPTtjECMBSqvEhb9bozyfEUyDXcHm2Y1EHM34cN1F3"
+        },
+        "VoteOnIssuer": {
+          "consumed_cu": 24022,
+          "cu_limit": 200000,
+          "tx_signature": "46B7oKYX8DtPmMQA5jiGyx648beAUxgUFzRJ9RngzGduNqt32ENtWLKxHH1FxdFKcbnJQyL1NYLaCYkGtu576W93"
+        },
+        "FinalizeVoting": {
+          "consumed_cu": 12526,
+          "cu_limit": 200000,
+          "tx_signature": "VRDS8jgY5LHyfQkAoYNr1bHK4v8PpHWJuxkp79tR1HREjX3mQUVAu6Rdzz6nD7UzFU8PFZrZXz5GzKN1mB8hhVg"
+        },
+        "AppendIssuerLeaf": {
+          "consumed_cu": 427518,
+          "cu_limit": 799850,
+          "tx_signature": "nVw5qxh8LEjTg1ZUYzWoJUudNxWjSQ4ioUzAeEC6hNXPggeRqQwS4h71hbAF1wPDVxvGY5a4KnmaHfPhf5KHQPm",
+          "_note": "Atomic Poseidon-Merkle recompute over depth-16 path post SOLID-SEC-059 / H1 closure."
+        },
+        "IssueCredential": {
+          "consumed_cu": 66345,
+          "cu_limit": 200000,
+          "tx_signature": "aHiaevmhHRLZXgooD6sDMseHU6DhmynFw4phbMRG6ZffowQLS2RswfnuQnBQ72EHDaBsWoky1RUbs82B6Peynxn"
+        }
+      }
+    },
+    "schema_registry": {
+      "program_id": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1",
+      "instructions": {
+        "RegisterSchema": {
+          "consumed_cu": 229952,
+          "cu_limit": 399850,
+          "tx_signature": "gR4PZoBsE7yT9mWHAFu5892XzDnMCdcMvBAFCqqeQaeWT2ewBVjb6WpeTydBGRUQVvzQxawHpuz6t954P3sKmat",
+          "_note": "Three nested Poseidon-Merkle-Damgard absorbs (name, field_names, category) post SOLID-SEC-063 / H5 widening."
+        },
+        "InitializeGlobalBinding": {
+          "consumed_cu": 6253,
+          "cu_limit": 200000,
+          "tx_signature": "5jdC3jGZregroHYGZgZjkfrEA2VMoe59cd93YxUHSVey6ygejv9YQqok8smviygkPDqTtxAueCUxuKZA4Rek4bLb"
+        },
+        "InitializeTreeBinding": {
+          "consumed_cu": 24777,
+          "cu_limit": 200000,
+          "tx_signature": "3oPZsVVAYJKXfG9ZmXXgFXTuUqoojVSGAbMLDGtLnAk2YP6GAjZ1DsNgnpP2qFs9czveE2gDB1bqP7fejEEaSJZF"
+        },
+        "UpdateTreeRoot": {
+          "consumed_cu": 417775,
+          "cu_limit": 799850,
+          "tx_signature": "4vLQDGwUwnRuMgHTiYijEzvnWhEv9WbDoQ6rCW33NcXYojM7hFc9ZpWy9cdzbLdDJEzKr3Eu2HEfHjdrjfJN4E6c",
+          "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
+        },
+        "UpdateGlobalRoot": {
+          "consumed_cu": 417347,
+          "cu_limit": 799850,
+          "tx_signature": "5BM1cUECUz7oaZZAcHVCCNJUHowjr1gzeNNv3Za38rcTAbsjkP5xf3e6brn98pEkuUuhEn94vEUkcGm3N3C9Sfwe",
+          "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
+        }
+      }
+    }
+  }
+}
