@@ -87,18 +87,25 @@ families.
 
 ## CI gate
 
-`.github/workflows/ci.yml :: cu_regression` job re-runs `npm run e2e` on a
-fresh validator, parses the CU consumption from each tx, and asserts:
+`.github/workflows/ci.yml -> e2e_localnet` job has a **"SOLID-SEC-046
+CU regression gate"** step appended after `npm run e2e`.  The step
+runs `python3 scripts/measure_cu.py`, which queries every just-run tx
+via `solana confirm -v`, parses the per-program "consumed N of M
+compute units" line, matches each tx's Anchor `Instruction:` log line
+against a baseline entry in declaration order (chunked uploads pair
+chronologically), and asserts:
 
 ```text
 ix_consumed_cu <= baseline_consumed_cu * 1.10
 ```
 
-Any commit that pushes an ix over baseline+10% fails the gate.  This is
-the structural fix for SOLID-SEC-046 (no CU-budget regression gate).
+Any commit that pushes an ix over baseline+10% fails the gate.  This
+is the structural fix for SOLID-SEC-046 (no CU-budget regression gate).
+The 10% margin absorbs run-to-run variance from BPF VM noise + slot-
+time jitter; anything outside that band is a real regression.
 
-The script is at `scripts/measure_cu.py`; baselines are stored in
-`tests/cu_baselines.json` (machine-readable companion to this doc).
+Baselines are stored in `tests/cu_baselines.json` (machine-readable
+companion to this doc); the script lives at `scripts/measure_cu.py`.
 
 ---
 

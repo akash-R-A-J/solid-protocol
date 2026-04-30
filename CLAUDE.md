@@ -167,8 +167,10 @@ sec/SECURITY_REGISTRY.md.  E2E reference green tx for
 `verify_batch_proof_v2`:
 `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
 Per-instruction CU baselines are pinned in `docs/CU_BUDGET.md` +
-`tests/cu_baselines.json`; CI regression gate at
-`.github/workflows/ci.yml::cu_regression` enforces 1.10x tolerance.
+`tests/cu_baselines.json`; CI regression gate is the
+"SOLID-SEC-046 CU regression gate" step appended to the `e2e_localnet`
+job in `.github/workflows/ci.yml` (runs `scripts/measure_cu.py` after
+`npm run e2e`); enforces 1.10x tolerance.
 
 - SOLID-SEC-045 / CRIT-2 / H1 / LB4 (CRITICAL, closed 2026-04-30).
   Atomic handlers (`revoke_issuer_atomic`, `request_withdrawal_atomic`,
