@@ -296,6 +296,33 @@ pub fn verify_state_root_matches(tree_account_data: &[u8], expected_root: &[u8; 
     &tree_account_data[8..40] == expected_root.as_slice()
 }
 
+/// Extract `current_root` (bytes `[8..40)`) from a `GlobalStateBinding` PDA.
+///
+/// SOLID-SEC-054 / B13 reconstruction path: rather than the caller
+/// asserting `globalRoot` on the wire, the handler reads the canonical
+/// value directly from the on-chain account.  The owner-check is the
+/// caller's responsibility -- the bytes alone cannot prove the account
+/// was written by `schema-registry` (the same trust-boundary discipline
+/// as `verify_schema_tree_binding_for_issue`).
+///
+/// Returns `Err(StateRootMismatch)` if the buffer is too short or the
+/// discriminator is wrong.  Variant choice keeps the on-chain error
+/// surface stable: pre-B13 callers used `ErrorCode::InvalidGlobalRoot`
+/// and the discriminator-failure remap path is unchanged.
+pub fn extract_global_state_root(
+    tree_account_data: &[u8],
+) -> std::result::Result<[u8; 32], LightError> {
+    if tree_account_data.len() < 40 {
+        return Err(LightError::StateRootMismatch);
+    }
+    if tree_account_data[..8] != GLOBAL_ROOT_DISCRIMINATOR {
+        return Err(LightError::StateRootMismatch);
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&tree_account_data[8..40]);
+    Ok(out)
+}
+
 // ─── Schema-tree binding field accessors (SOLID-SEC-003) ───────────────────
 //
 // `issuer-registry::issue_credential` must anchor every append to a
@@ -346,6 +373,44 @@ pub fn schema_tree_binding_status(data: &[u8]) -> Option<u8> {
         return None;
     }
     Some(data[112])
+}
+
+/// Extract `current_root` (bytes `[72..104)`) from a `SchemaTreeBinding`
+/// account's data. Returns `None` if the buffer is too short or the
+/// discriminator is not `b"schmtree"`.
+pub fn schema_tree_binding_current_root(data: &[u8]) -> Option<[u8; 32]> {
+    if data.len() < 104 || data[..8] != SCHEMA_TREE_DISCRIMINATOR {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&data[72..104]);
+    Some(out)
+}
+
+/// SOLID-SEC-054 / B13 reconstruction helper: extract the
+/// `(current_root, schema_hash)` pair from an *active* `SchemaTreeBinding`.
+///
+/// This is the source-of-truth read path for slots `merkleRoots[i]`
+/// (public-input slot `2 + i`) and `schemaHashes[i]` (slot `6 + i`)
+/// when the on-chain handler reconstructs them from accounts rather
+/// than trusting the caller's wire-supplied values.  Errors:
+/// `InvalidSchemaBinding` for a malformed account; `SchemaTreeBindingFrozen`
+/// for a binding whose status byte is not `STATUS_ACTIVE_BYTE`.
+///
+/// Caller is still responsible for asserting `account.owner ==
+/// SCHEMA_REGISTRY_ID` -- bytes alone cannot prove provenance.
+pub fn extract_active_schema_root_binding(
+    data: &[u8],
+) -> std::result::Result<([u8; 32], [u8; 32]), LightError> {
+    let schema_hash =
+        schema_tree_binding_schema_hash(data).ok_or(LightError::InvalidSchemaBinding)?;
+    let current_root =
+        schema_tree_binding_current_root(data).ok_or(LightError::InvalidSchemaBinding)?;
+    let status = schema_tree_binding_status(data).ok_or(LightError::InvalidSchemaBinding)?;
+    if status != STATUS_ACTIVE_BYTE {
+        return Err(LightError::SchemaTreeBindingFrozen);
+    }
+    Ok((current_root, schema_hash))
 }
 
 /// Full `SchemaTreeBinding` gate used by `issue_credential` (SOLID-SEC-003).
@@ -479,71 +544,269 @@ pub fn verify_issuer_tree_binding_for_proof(
     Ok(())
 }
 
-// ─── SPL AC concurrent-merkle root recomputation (SOLID-SEC-045) ──────────
+/// SOLID-SEC-054 / B13 reconstruction helper: extract `current_root`
+/// from an *active* `IssuerTreeBinding`.
+///
+/// Mirrors `extract_active_schema_root_binding` for the singleton
+/// issuer-tree binding referenced at public-input slot
+/// `ISSUER_TREE_ROOT_INPUT_INDEX = 10`.  Errors:
+/// `InvalidIssuerTreeBinding` for a malformed account;
+/// `IssuerTreeBindingFrozen` for a binding whose status byte is not
+/// `STATUS_ACTIVE_BYTE`.  Caller is still responsible for asserting
+/// `account.owner == ISSUER_REGISTRY_ID`.
+pub fn extract_active_issuer_tree_root(data: &[u8]) -> std::result::Result<[u8; 32], LightError> {
+    let root =
+        issuer_tree_binding_current_root(data).ok_or(LightError::InvalidIssuerTreeBinding)?;
+    let status = issuer_tree_binding_status(data).ok_or(LightError::InvalidIssuerTreeBinding)?;
+    if status != STATUS_ACTIVE_BYTE {
+        return Err(LightError::IssuerTreeBindingFrozen);
+    }
+    Ok(root)
+}
+
+// ─── On-chain Poseidon-Merkle recompute (SOLID-SEC-059 / H1 closure) ────
 //
-// `revoke_issuer_atomic` and `request_withdrawal_atomic` both perform a
-// `replace_leaf` CPI into SPL Account Compression and then need to write
-// the post-CPI root into `IssuerTreeBinding.current_root` in the same
-// instruction.  Pre-fix, the binding was updated by a separate
-// `update_issuer_tree_root` call enforced only by doc comment (NEW-01,
-// 2026-04-25 audit).  Post-fix, the atomic handlers recompute the new
-// root on-chain from the inputs the CPI just validated.
+// The IssuerTreeBinding stores the *Poseidon* root of the issuer tree
+// because the in-circuit `MerkleInclusion` template (circuits/lib/
+// merkle_inclusion.circom) uses Poseidon(2) for path-recompute and
+// the witness commits to a Poseidon root.  The on-chain SPL AC tree
+// is Keccak-hashed and is the leaf-presence ledger; its root is NOT
+// the canonical root for proof verification (mixing the two was the
+// root cause of the LB4 hash-family mismatch surfaced 2026-04-30
+// when B13 Option 2 closed the wire-size cap and the Groth16 verify
+// path actually ran end-to-end).
+//
+// `update_issuer_tree_root` accepts a caller-supplied
+// `(new_root, new_leaf, leaf_index, poseidon_proof_path)` and rejects
+// any push whose recompute does not match `new_root`.  Off-chain
+// callers derive the path via `LocalReplicaAdapter` (Poseidon-hashed)
+// in `@solid-protocol/light`.  Soundness rests on Poseidon's
+// collision resistance + the circuit consuming the same root the
+// binding stored.
+
+/// Recompute a Poseidon-Merkle root from a leaf, its index, and the
+/// full proof path of sibling hashes.  Output is byte-identical to
+/// the off-chain `LocalReplicaAdapter.getRoot()` produced by
+/// `@solid-protocol/light` (which calls `poseidonHashPair`, which
+/// is the same `Poseidon(2)` the circuit's `MerkleInclusion`
+/// template uses).
+///
+/// Convention: `proof_path[i]` is the sibling at level `i` (level 0 =
+/// leaf level).  The bit at position `i` of `leaf_index` selects
+/// whether the running node is the LEFT or RIGHT child at that level
+/// (matches circomlib `Mux1`-driven hashing in
+/// `merkle_inclusion.circom`).
+///
+/// Caller is responsible for asserting `proof_path.len() == DEPTH`.
+/// On BPF, dispatches to `solana_program::poseidon::hashv` (the
+/// `sol_poseidon` syscall).  Cost: ~3K CU per Poseidon-2 + the
+/// canonicalize-to-Fr round; ~50K CU for a depth-16 path.
+pub fn compute_poseidon_merkle_root(
+    leaf: &[u8; 32],
+    leaf_index: u64,
+    proof_path: &[[u8; 32]],
+) -> Result<[u8; 32]> {
+    let mut node: [u8; 32] = *leaf;
+    let mut idx: u64 = leaf_index;
+    for sibling in proof_path.iter() {
+        let bit = idx & 1;
+        let pair: [[u8; 32]; 2] = if bit == 0 {
+            [node, *sibling]
+        } else {
+            [*sibling, node]
+        };
+        // solid_core::poseidon::hash_bytes is dual-target:
+        // BPF -> sol_poseidon syscall; host -> light-poseidon.
+        // Both produce byte-identical Poseidon(2) output matching
+        // circomlib.
+        node = solid_core::poseidon::hash_bytes(&pair)
+            .map_err(|_| error!(LightError::InvalidIssuerTreeBinding))?;
+        idx >>= 1;
+    }
+    Ok(node)
+}
+
+// ─── SPL AC ConcurrentMerkleTree v1 active-root parser ────────────────
+//
+// Kept as a utility for future use (e.g., when a Solana-native
+// Poseidon-Merkle program replaces SPL AC for the issuer tree, or
+// when a Keccak-side audit is needed).  No longer called in the
+// binding-update path -- see compute_poseidon_merkle_root above.
+//
+// The atomic handlers (`revoke_issuer_atomic`, `request_withdrawal_atomic`)
+// perform a `replace_leaf` CPI into SPL Account Compression and must then
+// write the post-CPI active root into `IssuerTreeBinding.current_root` in
+// the same ix.
+//
+// Pre-CRIT-2 design: recompute the new root client-side from
+// `(new_leaf, leaf_index, supplied_path)`.  The 2026-04-29 synthesis audit
+// (CRIT-2 / SEC-057) found this is unsound under SPL AC's *concurrent*
+// semantics.  SPL AC's `set_leaf` validates the supplied proof against any
+// root in the change_log ring buffer (default 64 entries), not only the
+// active root.  When the supplied proof matches a stale root, SPL AC walks
+// the change_log forward to fast-forward the proof's siblings to the live
+// state, then commits an updated leaf.  The post-CPI active root is
+// `change_log[new_active_index].root`, which depends on the in-buffer deltas
+// -- not on the user-supplied path alone.  Two operators calling
+// `revoke_issuer_atomic` back-to-back in the same block (both with paths
+// against the same pre-CPI root) would produce a recomputed root the SPL AC
+// tree never had -> phantom binding (DoS) or replay against a prior
+// legitimate root.
+//
+// Robust fix: after the CPI succeeds, re-borrow the merkle_tree account
+// data and read `change_logs[active_index].root` directly.  By definition,
+// that IS the post-CPI active root, regardless of how many concurrent
+// updates landed.
 
 /// SPL Account Compression issuer-tree depth.  Matches
 /// `scripts/backfill_issuer_tree.ts` (default 16, override via
-/// `SOLID_ISSUER_TREE_DEPTH`).  The atomic-binding-update path
-/// (SOLID-SEC-045) requires the proof path supplied as
-/// `remaining_accounts` to have exactly this many siblings; the
-/// issuer tree is also configured with canopy depth 0 so the full
-/// path is always on-wire.
+/// `SOLID_ISSUER_TREE_DEPTH`).  The issuer tree is configured with
+/// canopy depth 0 so the full path is always on-wire when SPL AC needs
+/// it; this parser verifies the on-chain `max_depth` field matches.
 pub const ISSUER_TREE_DEPTH: usize = 16;
 
-/// Recompute a SPL Account Compression concurrent-merkle-tree root
-/// from a leaf, its index, and the full proof path of sibling hashes.
+/// SPL AC issuer-tree max_buffer_size (canonical default).  Matches
+/// `scripts/backfill_issuer_tree.ts`.
+pub const ISSUER_TREE_BUFFER_SIZE: usize = 64;
+
+// SPL AC `ConcurrentMerkleTreeAccount` V1 byte layout for an issuer tree
+// (max_depth=16, max_buffer_size=64, canopy=0).  Verified against the
+// `@solana/spl-account-compression` 0.2.x reference implementation
+// (`accounts/ConcurrentMerkleTreeAccount.js::deserializeConcurrentMerkleTree`
+// + `types/ConcurrentMerkleTree.js::concurrentMerkleTreeBeetFactory`).
+//
+//   offset 0    account_type (CompressionAccountType::ConcurrentMerkleTree=1) : u8
+//   offset 1    header_version (ConcurrentMerkleTreeHeaderData::V1=0)         : u8
+//   offset 2    max_buffer_size                                               : u32 LE
+//   offset 6    max_depth                                                     : u32 LE
+//   offset 10   authority                                                     : Pubkey
+//   offset 42   creation_slot                                                 : u64 LE
+//   offset 50   _padding                                                      : [u8; 6]
+//   offset 56   sequence_number                                               : u64 LE
+//   offset 64   active_index                                                  : u64 LE
+//   offset 72   buffer_size                                                   : u64 LE
+//   offset 80   change_logs[0..MAX_BUFFER_SIZE]                               : (32 + max_depth*32 + 4 + 4) B each
+//                 each ChangeLog<MAX_DEPTH>:
+//                   +0     root                                       : [u8; 32]
+//                   +32    path_nodes                                 : [Pubkey; MAX_DEPTH]
+//                   +32+MAX_DEPTH*32   index                          : u32 LE
+//                   +36+MAX_DEPTH*32   _pad                           : u32
+//   offset 80+MAX_BUFFER_SIZE*CHANGE_LOG_SIZE   rightmost_proof       : (same layout as ChangeLog)
+
+const SPL_AC_ACCOUNT_TYPE_OFFSET: usize = 0;
+const SPL_AC_HEADER_VERSION_OFFSET: usize = 1;
+const SPL_AC_MAX_BUFFER_SIZE_OFFSET: usize = 2;
+const SPL_AC_MAX_DEPTH_OFFSET: usize = 6;
+const SPL_AC_ACTIVE_INDEX_OFFSET: usize = 64;
+const SPL_AC_CHANGE_LOGS_OFFSET: usize = 80;
+
+const SPL_AC_ACCOUNT_TYPE_CMT: u8 = 1;
+const SPL_AC_HEADER_DATA_V1_KIND: u8 = 0;
+
+/// Per-entry size of `ChangeLog<MAX_DEPTH=16>`: 32 (root) + 16*32 (path) + 4
+/// (index) + 4 (padding) = 552 bytes.
+pub const SPL_AC_CHANGE_LOG_SIZE_DEPTH_16: usize = 32 + ISSUER_TREE_DEPTH * 32 + 4 + 4;
+
+/// Minimum legal account size for an issuer-tree CMT (depth=16, buffer=64,
+/// canopy=0).  Matches `getConcurrentMerkleTreeAccountSize(16, 64, 0)` in
+/// `@solana/spl-account-compression`.  The trailing `+ SPL_AC_CHANGE_LOG_SIZE_DEPTH_16`
+/// term is the rightmost_proof Path, which has the same byte size as a
+/// ChangeLog (per SPL AC's `concurrentMerkleTreeBeetFactory`).
+pub const SPL_AC_ISSUER_TREE_ACCOUNT_SIZE: usize = SPL_AC_CHANGE_LOGS_OFFSET
+    + ISSUER_TREE_BUFFER_SIZE * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16
+    + SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
+
+const _: () = assert!(SPL_AC_CHANGE_LOG_SIZE_DEPTH_16 == 552);
+const _: () = assert!(SPL_AC_ISSUER_TREE_ACCOUNT_SIZE == 35960);
+
+/// Read the post-CPI active Merkle root from an SPL AC
+/// `ConcurrentMerkleTreeAccount` of (max_depth=16, max_buffer_size=64,
+/// canopy=0) -- the dimensions used by SolID's issuer tree (ADR-0014).
 ///
-/// SPL AC hashes with Keccak256.  Concatenation order matches SPL AC's
-/// `concurrent_merkle_tree::hash_pair`:
+/// MUST be called AFTER `invoke_signed(replace_leaf, ...)` returns Ok and
+/// the `merkle_tree` account data has been re-borrowed from the runtime.
+/// By definition, `change_logs[active_index].root` is the root SPL AC
+/// just committed -- no recomputation needed and no soundness assumption
+/// about whether the supplied proof was against the live or a stale root.
 ///
-/// ```text
-///   bit_i = (index >> i) & 1
-///   if bit_i == 0:  node = H(node, sibling)   // node is LEFT child
-///   if bit_i == 1:  node = H(sibling, node)   // node is RIGHT child
-/// ```
+/// Validates the on-chain account dimensions (account_type, header
+/// version, max_depth, max_buffer_size, active_index in range) BEFORE
+/// reading any path-relative byte; refuses any account whose layout
+/// drifts from the documented contract.  The fail-fast strategy avoids
+/// the SOLID-SEC-031 byte-encoding-drift class permanently for this
+/// surface.
 ///
-/// `proof_path[i]` is the sibling at level `i` (level 0 = leaf level).
-///
-/// Soundness argument for SOLID-SEC-045: in
-/// `revoke_issuer_atomic` / `request_withdrawal_atomic`, the
-/// `replace_leaf` CPI immediately preceding this call has already
-/// validated the proof against the SPL AC tree's pre-CPI root.  That
-/// proves `proof_path` is the authentic Merkle authentication path
-/// for `leaf_index` in the live tree.  Re-running the same path with
-/// `new_leaf` therefore yields the actual post-CPI root SPL AC just
-/// committed to -- a malicious caller cannot lie about it without
-/// either (a) breaking pre-image resistance of Keccak256, or
-/// (b) getting `replace_leaf` to accept a false proof.
-///
-/// Caller is responsible for asserting `proof_path.len() ==
-/// ISSUER_TREE_DEPTH` -- a too-short path returns a mid-tree node,
-/// a too-long path hashes past the root.
-pub fn compute_concurrent_merkle_root_keccak(
-    leaf: &[u8; 32],
-    leaf_index: u32,
-    proof_path: &[[u8; 32]],
-) -> [u8; 32] {
-    let mut node: [u8; 32] = *leaf;
-    let mut idx: u32 = leaf_index;
-    for sibling in proof_path.iter() {
-        let bit = idx & 1;
-        let hash = if bit == 0 {
-            anchor_lang::solana_program::keccak::hashv(&[&node[..], &sibling[..]])
-        } else {
-            anchor_lang::solana_program::keccak::hashv(&[&sibling[..], &node[..]])
-        };
-        node = hash.to_bytes();
-        idx >>= 1;
+/// Returns `LightError::InvalidIssuerTreeBinding` on any inconsistency
+/// (re-using the existing error code keeps caller `?`-flow simple; the
+/// failure reason is observable via the `msg!` log).
+pub fn read_spl_ac_active_root_d16_b64(merkle_tree_data: &[u8]) -> Result<[u8; 32]> {
+    if merkle_tree_data.len() < SPL_AC_ISSUER_TREE_ACCOUNT_SIZE {
+        msg!(
+            "read_spl_ac_active_root: short buffer ({} < {})",
+            merkle_tree_data.len(),
+            SPL_AC_ISSUER_TREE_ACCOUNT_SIZE
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
     }
-    node
+    if merkle_tree_data[SPL_AC_ACCOUNT_TYPE_OFFSET] != SPL_AC_ACCOUNT_TYPE_CMT {
+        msg!(
+            "read_spl_ac_active_root: wrong account_type ({})",
+            merkle_tree_data[SPL_AC_ACCOUNT_TYPE_OFFSET]
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
+    }
+    if merkle_tree_data[SPL_AC_HEADER_VERSION_OFFSET] != SPL_AC_HEADER_DATA_V1_KIND {
+        msg!(
+            "read_spl_ac_active_root: unsupported header version ({})",
+            merkle_tree_data[SPL_AC_HEADER_VERSION_OFFSET]
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
+    }
+    let max_buffer_size = u32::from_le_bytes(
+        merkle_tree_data[SPL_AC_MAX_BUFFER_SIZE_OFFSET..SPL_AC_MAX_BUFFER_SIZE_OFFSET + 4]
+            .try_into()
+            .map_err(|_| error!(LightError::InvalidIssuerTreeBinding))?,
+    );
+    let max_depth = u32::from_le_bytes(
+        merkle_tree_data[SPL_AC_MAX_DEPTH_OFFSET..SPL_AC_MAX_DEPTH_OFFSET + 4]
+            .try_into()
+            .map_err(|_| error!(LightError::InvalidIssuerTreeBinding))?,
+    );
+    if max_depth as usize != ISSUER_TREE_DEPTH {
+        msg!(
+            "read_spl_ac_active_root: max_depth={} (expected {})",
+            max_depth,
+            ISSUER_TREE_DEPTH
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
+    }
+    if max_buffer_size as usize != ISSUER_TREE_BUFFER_SIZE {
+        msg!(
+            "read_spl_ac_active_root: max_buffer_size={} (expected {})",
+            max_buffer_size,
+            ISSUER_TREE_BUFFER_SIZE
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
+    }
+    let active_index = u64::from_le_bytes(
+        merkle_tree_data[SPL_AC_ACTIVE_INDEX_OFFSET..SPL_AC_ACTIVE_INDEX_OFFSET + 8]
+            .try_into()
+            .map_err(|_| error!(LightError::InvalidIssuerTreeBinding))?,
+    );
+    if active_index >= max_buffer_size as u64 {
+        msg!(
+            "read_spl_ac_active_root: active_index={} >= max_buffer_size={}",
+            active_index,
+            max_buffer_size
+        );
+        return Err(error!(LightError::InvalidIssuerTreeBinding));
+    }
+    let root_offset =
+        SPL_AC_CHANGE_LOGS_OFFSET + (active_index as usize) * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
+    let root: [u8; 32] = merkle_tree_data[root_offset..root_offset + 32]
+        .try_into()
+        .map_err(|_| error!(LightError::InvalidIssuerTreeBinding))?;
+    Ok(root)
 }
 
 // ─── Errors ────────────────────────────────────────────────────────────────
@@ -830,178 +1093,286 @@ mod tests {
         ));
     }
 
-    // ─── SOLID-SEC-045 keccak path-recompute tests ────────────────────────
+    // ─── SPL AC ConcurrentMerkleTree active-root parser ──────────────────
     //
-    // The atomic-binding-update path recomputes the SPL AC tree's
-    // post-CPI root in-handler.  These tests pin:
-    //   - byte-equivalence with hand-built reference roots at small depths
-    //   - left vs right child semantics (bit-i of index)
-    //   - empty-path behaviour (root = leaf)
-    //   - that high bits of leaf_index past the path length do not
-    //     contaminate the computed root (idx >>= 1 over `depth` levels
-    //     consumes only the bottom `depth` bits)
-    //   - byte-stable known-answer test against a fixed input vector
+    // Regression gate for the CRIT-2 / SEC-057 fix.  Synthesises an SPL AC
+    // V1 account (depth=16, buffer=64, canopy=0) at known offsets and
+    // asserts the parser reads `change_logs[active_index].root` exactly --
+    // and refuses every layout-drift axis (account_type, header version,
+    // max_depth, max_buffer_size, oversized active_index, short buffer).
 
-    fn keccak(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        anchor_lang::solana_program::keccak::hashv(&[&left[..], &right[..]]).to_bytes()
-    }
-
-    #[test]
-    fn keccak_root_recompute_depth_0_is_identity() {
-        // Empty proof path -> leaf IS the root.
-        let leaf: [u8; 32] = [42u8; 32];
-        assert_eq!(
-            compute_concurrent_merkle_root_keccak(&leaf, 0, &[]),
-            leaf,
-            "empty path must return the leaf unchanged"
-        );
-        // leaf_index value must not matter when there is no path to walk.
-        assert_eq!(
-            compute_concurrent_merkle_root_keccak(&leaf, u32::MAX, &[]),
-            leaf
-        );
-    }
-
-    #[test]
-    fn keccak_root_recompute_depth_1_left_vs_right() {
-        let leaf: [u8; 32] = [1u8; 32];
-        let sibling: [u8; 32] = [2u8; 32];
-        let path = [sibling];
-
-        // Index 0: leaf is LEFT child -> H(leaf, sibling).
-        let computed_left = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
-        assert_eq!(computed_left, keccak(&leaf, &sibling));
-
-        // Index 1: leaf is RIGHT child -> H(sibling, leaf).
-        let computed_right = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
-        assert_eq!(computed_right, keccak(&sibling, &leaf));
-
-        // Sanity: left and right should differ.
-        assert_ne!(computed_left, computed_right);
-    }
-
-    #[test]
-    fn keccak_root_recompute_depth_3_full_tree() {
-        // Build a full 8-leaf depth-3 tree and verify the helper
-        // recomputes the same root for every leaf index.
-        let leaves: Vec<[u8; 32]> = (0..8u8).map(|i| [i; 32]).collect();
-
-        // Layer 1 (4 nodes, each a hash of two leaves)
-        let mut layer1 = Vec::new();
-        for i in 0..4 {
-            layer1.push(keccak(&leaves[2 * i], &leaves[2 * i + 1]));
+    /// Build a V1 SPL AC `ConcurrentMerkleTreeAccount` byte image with
+    /// the given `active_index` and the root at that change-log slot
+    /// set to `root`.  Other slots are filled with deterministic but
+    /// distinct bytes so a buggy parser that reads the wrong slot has
+    /// nowhere to hide.
+    fn make_spl_ac_issuer_tree_account(active_index: u64, root: [u8; 32]) -> Vec<u8> {
+        let mut buf = vec![0u8; SPL_AC_ISSUER_TREE_ACCOUNT_SIZE];
+        // Header: account_type=1 (CMT), header_version=0 (V1).
+        buf[SPL_AC_ACCOUNT_TYPE_OFFSET] = SPL_AC_ACCOUNT_TYPE_CMT;
+        buf[SPL_AC_HEADER_VERSION_OFFSET] = SPL_AC_HEADER_DATA_V1_KIND;
+        // V1 header data: max_buffer_size = 64, max_depth = 16.
+        buf[SPL_AC_MAX_BUFFER_SIZE_OFFSET..SPL_AC_MAX_BUFFER_SIZE_OFFSET + 4]
+            .copy_from_slice(&(ISSUER_TREE_BUFFER_SIZE as u32).to_le_bytes());
+        buf[SPL_AC_MAX_DEPTH_OFFSET..SPL_AC_MAX_DEPTH_OFFSET + 4]
+            .copy_from_slice(&(ISSUER_TREE_DEPTH as u32).to_le_bytes());
+        // active_index slot.
+        buf[SPL_AC_ACTIVE_INDEX_OFFSET..SPL_AC_ACTIVE_INDEX_OFFSET + 8]
+            .copy_from_slice(&active_index.to_le_bytes());
+        // Fill every change_log[i].root with a distinguishable but
+        // deterministic decoy pattern, then overwrite the active slot.
+        for i in 0..ISSUER_TREE_BUFFER_SIZE {
+            let off = SPL_AC_CHANGE_LOGS_OFFSET + i * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
+            // decoy = [i+1; 32] (avoids zero so a "read all zeroes" bug fails).
+            let decoy = [(i as u8).wrapping_add(0xC0); 32];
+            buf[off..off + 32].copy_from_slice(&decoy);
         }
-        // Layer 2 (2 nodes)
-        let mut layer2 = Vec::new();
-        for i in 0..2 {
-            layer2.push(keccak(&layer1[2 * i], &layer1[2 * i + 1]));
-        }
-        // Root
-        let expected_root = keccak(&layer2[0], &layer2[1]);
+        let active_off = SPL_AC_CHANGE_LOGS_OFFSET
+            + (active_index as usize) * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
+        buf[active_off..active_off + 32].copy_from_slice(&root);
+        buf
+    }
 
-        for i in 0..8usize {
-            let leaf = leaves[i];
-            let path = [
-                leaves[i ^ 1],
-                layer1[(i / 2) ^ 1],
-                layer2[(i / 4) ^ 1],
-            ];
-            let computed = compute_concurrent_merkle_root_keccak(&leaf, i as u32, &path);
-            assert_eq!(
-                computed, expected_root,
-                "recomputed root mismatch at leaf index {}",
-                i
-            );
+    #[test]
+    fn read_spl_ac_active_root_happy_path_active_index_zero() {
+        let root: [u8; 32] = [0xAA; 32];
+        let buf = make_spl_ac_issuer_tree_account(0, root);
+        assert_eq!(read_spl_ac_active_root_d16_b64(&buf).unwrap(), root);
+    }
+
+    #[test]
+    fn read_spl_ac_active_root_happy_path_active_index_max() {
+        // active_index = MAX_BUFFER_SIZE - 1 = 63 is still a valid slot.
+        let root: [u8; 32] = [0xBB; 32];
+        let buf = make_spl_ac_issuer_tree_account((ISSUER_TREE_BUFFER_SIZE - 1) as u64, root);
+        assert_eq!(read_spl_ac_active_root_d16_b64(&buf).unwrap(), root);
+    }
+
+    #[test]
+    fn read_spl_ac_active_root_returns_active_slot_not_decoy() {
+        // Every other slot has a decoy; the parser MUST find the
+        // active slot specifically.
+        let root: [u8; 32] = [0x77; 32];
+        for active in [0u64, 1, 5, 17, 32, 63] {
+            let buf = make_spl_ac_issuer_tree_account(active, root);
+            let got = read_spl_ac_active_root_d16_b64(&buf).unwrap();
+            assert_eq!(got, root, "active_index={} returned wrong root", active);
+            // None of the decoys equal `root`, so the assertion above
+            // already rules out off-by-N reads.  Belt-and-suspenders:
+            assert_ne!(got[0], 0xC0u8.wrapping_add(active as u8));
         }
     }
 
     #[test]
-    fn keccak_root_recompute_high_bits_of_index_ignored() {
-        // For depth=2 the helper consumes only 2 bits of leaf_index.
-        // Index 0 (00) and index 4 (100) must produce the same root --
-        // both have bit_0 = bit_1 = 0; bit_2 is past the path.
-        let leaf: [u8; 32] = [7u8; 32];
-        let path = [[3u8; 32], [4u8; 32]];
-
-        let r0 = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
-        let r4 = compute_concurrent_merkle_root_keccak(&leaf, 4, &path);
-        assert_eq!(r0, r4);
-
-        // Index 1 (01) and 5 (101) must also agree (same bottom 2 bits).
-        let r1 = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
-        let r5 = compute_concurrent_merkle_root_keccak(&leaf, 5, &path);
-        assert_eq!(r1, r5);
-
-        // But indexes with different bottom-2 bits must differ.
-        assert_ne!(r0, r1);
+    fn read_spl_ac_active_root_rejects_wrong_account_type() {
+        let mut buf = make_spl_ac_issuer_tree_account(0, [0xAA; 32]);
+        buf[SPL_AC_ACCOUNT_TYPE_OFFSET] = 2; // not CMT
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
     }
 
     #[test]
-    fn keccak_root_recompute_known_answer_depth_2() {
-        // Byte-stable known-answer test.  A future change to keccak
-        // semantics or hash-pair concatenation order would shift this
-        // value; the test then forces an explicit re-baseline +
-        // cross-language-vector regen.
-        let leaf: [u8; 32] = {
-            let mut b = [0u8; 32];
-            b[31] = 1;
-            b
-        };
-        let sib0: [u8; 32] = {
-            let mut b = [0u8; 32];
-            b[31] = 2;
-            b
-        };
-        let sib1: [u8; 32] = {
-            let mut b = [0u8; 32];
-            b[31] = 3;
-            b
-        };
-        // Index 1 -> bit_0 = 1 (RIGHT at leaf), bit_1 = 0 (LEFT at level 1)
-        // L1_node = H(sib0, leaf)
-        // root    = H(L1_node, sib1)
-        let expected_l1 = keccak(&sib0, &leaf);
-        let expected_root = keccak(&expected_l1, &sib1);
-
-        let path = [sib0, sib1];
-        let computed = compute_concurrent_merkle_root_keccak(&leaf, 1, &path);
-        assert_eq!(computed, expected_root);
+    fn read_spl_ac_active_root_rejects_wrong_header_version() {
+        let mut buf = make_spl_ac_issuer_tree_account(0, [0xAA; 32]);
+        buf[SPL_AC_HEADER_VERSION_OFFSET] = 1; // V2 not yet supported
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
     }
 
     #[test]
-    fn keccak_root_recompute_changing_leaf_changes_root() {
-        // The whole point of SOLID-SEC-045 is that swapping leaf at
-        // a fixed index produces a different root.  This is the
-        // host-side regression gate for that property.
-        let leaf_old: [u8; 32] = [0xAA; 32];
-        let leaf_new: [u8; 32] = [0xBB; 32];
-        let path: Vec<[u8; 32]> = (0..ISSUER_TREE_DEPTH)
-            .map(|i| {
-                let mut b = [0u8; 32];
-                b[0] = i as u8;
-                b
-            })
-            .collect();
-
-        let root_old = compute_concurrent_merkle_root_keccak(&leaf_old, 12345, &path);
-        let root_new = compute_concurrent_merkle_root_keccak(&leaf_new, 12345, &path);
-        assert_ne!(
-            root_old, root_new,
-            "different leaf preimage at the same index must yield different roots"
-        );
+    fn read_spl_ac_active_root_rejects_wrong_max_depth() {
+        let mut buf = make_spl_ac_issuer_tree_account(0, [0xAA; 32]);
+        buf[SPL_AC_MAX_DEPTH_OFFSET..SPL_AC_MAX_DEPTH_OFFSET + 4]
+            .copy_from_slice(&20u32.to_le_bytes()); // not 16
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
     }
 
     #[test]
-    fn keccak_root_recompute_full_issuer_tree_depth_runs() {
-        // Depth-16 path runs to completion in host tests (no panic on
-        // bounds, no runaway).  Outputs a 32-byte root.
-        let leaf: [u8; 32] = [0xCC; 32];
-        let path: Vec<[u8; 32]> = (0..ISSUER_TREE_DEPTH)
-            .map(|i| [i as u8; 32])
-            .collect();
-        let root = compute_concurrent_merkle_root_keccak(&leaf, 0, &path);
-        // Just check it ran and produced a non-zero, non-leaf output.
-        assert_ne!(root, [0u8; 32]);
-        assert_ne!(root, leaf);
+    fn read_spl_ac_active_root_rejects_wrong_max_buffer_size() {
+        let mut buf = make_spl_ac_issuer_tree_account(0, [0xAA; 32]);
+        buf[SPL_AC_MAX_BUFFER_SIZE_OFFSET..SPL_AC_MAX_BUFFER_SIZE_OFFSET + 4]
+            .copy_from_slice(&128u32.to_le_bytes()); // not 64
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
+    }
+
+    #[test]
+    fn read_spl_ac_active_root_rejects_oversized_active_index() {
+        let mut buf = make_spl_ac_issuer_tree_account(0, [0xAA; 32]);
+        // active_index = 64 violates `active_index < buffer_size` and
+        // would otherwise read past the end of change_logs.
+        buf[SPL_AC_ACTIVE_INDEX_OFFSET..SPL_AC_ACTIVE_INDEX_OFFSET + 8]
+            .copy_from_slice(&(ISSUER_TREE_BUFFER_SIZE as u64).to_le_bytes());
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
+    }
+
+    #[test]
+    fn read_spl_ac_active_root_rejects_short_buffer() {
+        let buf = vec![0u8; SPL_AC_ISSUER_TREE_ACCOUNT_SIZE - 1];
+        assert!(read_spl_ac_active_root_d16_b64(&buf).is_err());
+    }
+
+    #[test]
+    fn read_spl_ac_active_root_layout_constants_pinned() {
+        // The const_assert!s outside the test module already gate the
+        // structural sizes (552, 35960).  This test pins the offsets so
+        // a future maintainer reading just the test understands what we
+        // depend on.
+        assert_eq!(SPL_AC_ACCOUNT_TYPE_OFFSET, 0);
+        assert_eq!(SPL_AC_HEADER_VERSION_OFFSET, 1);
+        assert_eq!(SPL_AC_MAX_BUFFER_SIZE_OFFSET, 2);
+        assert_eq!(SPL_AC_MAX_DEPTH_OFFSET, 6);
+        assert_eq!(SPL_AC_ACTIVE_INDEX_OFFSET, 64);
+        assert_eq!(SPL_AC_CHANGE_LOGS_OFFSET, 80);
+        assert_eq!(SPL_AC_CHANGE_LOG_SIZE_DEPTH_16, 552);
+        assert_eq!(SPL_AC_ISSUER_TREE_ACCOUNT_SIZE, 35960);
+    }
+
+    // ─── SOLID-SEC-054 / B13 reconstruction helpers ──────────────────────
+    //
+    // The on-chain `verify_batch_proof` handler reconstructs 11 of the 32
+    // public-input slots from the accounts it already takes, so the wire
+    // payload shrinks from 1324 bytes to 972 bytes (under Solana's
+    // 1232-byte legacy-tx packet limit). The extract_* helpers below are
+    // the source-of-truth read path for those slots; their byte-layout
+    // contract is shared with the equality-style verify_* helpers above.
+    //
+    // These tests are the regression gate for the layout: every variant
+    // (good, frozen, malformed, truncated) round-trips byte-identically
+    // against the verify_* paths, so a future layout change cannot land
+    // without breaking both helpers in the same commit.
+
+    #[test]
+    fn extract_global_state_root_happy_path() {
+        let root = [42u8; 32];
+        let data = make_global_root_account(root);
+        let extracted = extract_global_state_root(&data).expect("happy path");
+        assert_eq!(extracted, root);
+        assert!(verify_state_root_matches(&data, &extracted));
+    }
+
+    #[test]
+    fn extract_global_state_root_rejects_bad_discriminator() {
+        let mut data = make_global_root_account([42u8; 32]);
+        data[0] = 0;
+        assert!(matches!(
+            extract_global_state_root(&data),
+            Err(LightError::StateRootMismatch)
+        ));
+    }
+
+    #[test]
+    fn extract_global_state_root_rejects_short_data() {
+        let data = vec![0u8; 39];
+        assert!(matches!(
+            extract_global_state_root(&data),
+            Err(LightError::StateRootMismatch)
+        ));
+    }
+
+    #[test]
+    fn schema_tree_binding_current_root_happy_path() {
+        let schema = [7u8; 32];
+        let root = [9u8; 32];
+        let tree_pk = [3u8; 32];
+        let data = make_schema_account(schema, tree_pk, root, 0);
+        assert_eq!(schema_tree_binding_current_root(&data), Some(root));
+    }
+
+    #[test]
+    fn schema_tree_binding_current_root_rejects_bad_discriminator() {
+        let mut data = make_schema_account([0u8; 32], [0u8; 32], [0u8; 32], 0);
+        data[0] = 0;
+        assert_eq!(schema_tree_binding_current_root(&data), None);
+    }
+
+    #[test]
+    fn schema_tree_binding_current_root_rejects_short_data() {
+        let data = vec![0u8; 100];
+        assert_eq!(schema_tree_binding_current_root(&data), None);
+    }
+
+    #[test]
+    fn extract_active_schema_root_binding_happy_path() {
+        let schema = [7u8; 32];
+        let root = [9u8; 32];
+        let tree_pk = [3u8; 32];
+        let data = make_schema_account(schema, tree_pk, root, 0);
+        let (extracted_root, extracted_schema) =
+            extract_active_schema_root_binding(&data).expect("happy path");
+        assert_eq!(extracted_root, root);
+        assert_eq!(extracted_schema, schema);
+        // Round-trip equivalence with the verify_* path.
+        assert!(verify_schema_root_binding(
+            &data,
+            &extracted_root,
+            &extracted_schema
+        ));
+    }
+
+    #[test]
+    fn extract_active_schema_root_binding_rejects_frozen() {
+        let data = make_schema_account([7u8; 32], [3u8; 32], [9u8; 32], 1);
+        assert!(matches!(
+            extract_active_schema_root_binding(&data),
+            Err(LightError::SchemaTreeBindingFrozen)
+        ));
+    }
+
+    #[test]
+    fn extract_active_schema_root_binding_rejects_bad_discriminator() {
+        let mut data = make_schema_account([0u8; 32], [0u8; 32], [0u8; 32], 0);
+        data[0] = 0;
+        assert!(matches!(
+            extract_active_schema_root_binding(&data),
+            Err(LightError::InvalidSchemaBinding)
+        ));
+    }
+
+    #[test]
+    fn extract_active_schema_root_binding_rejects_short_data() {
+        let data = vec![0u8; 100];
+        assert!(matches!(
+            extract_active_schema_root_binding(&data),
+            Err(LightError::InvalidSchemaBinding)
+        ));
+    }
+
+    #[test]
+    fn extract_active_issuer_tree_root_happy_path() {
+        let tree = make_tree_pk(7);
+        let root = [9u8; 32];
+        let data = make_issuer_tree_binding(tree.to_bytes(), root, 0);
+        let extracted = extract_active_issuer_tree_root(&data).expect("happy path");
+        assert_eq!(extracted, root);
+        // Round-trip equivalence with the verify_* path.
+        assert!(verify_issuer_tree_binding_for_proof(&data, &extracted).is_ok());
+    }
+
+    #[test]
+    fn extract_active_issuer_tree_root_rejects_frozen() {
+        let tree = make_tree_pk(7);
+        let data = make_issuer_tree_binding(tree.to_bytes(), [9u8; 32], 1);
+        assert!(matches!(
+            extract_active_issuer_tree_root(&data),
+            Err(LightError::IssuerTreeBindingFrozen)
+        ));
+    }
+
+    #[test]
+    fn extract_active_issuer_tree_root_rejects_bad_discriminator() {
+        let tree = make_tree_pk(7);
+        let mut data = make_issuer_tree_binding(tree.to_bytes(), [9u8; 32], 0);
+        data[0] = 0;
+        assert!(matches!(
+            extract_active_issuer_tree_root(&data),
+            Err(LightError::InvalidIssuerTreeBinding)
+        ));
+    }
+
+    #[test]
+    fn extract_active_issuer_tree_root_rejects_short_data() {
+        let data = vec![0u8; 70];
+        assert!(matches!(
+            extract_active_issuer_tree_root(&data),
+            Err(LightError::InvalidIssuerTreeBinding)
+        ));
     }
 }

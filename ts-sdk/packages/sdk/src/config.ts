@@ -31,6 +31,27 @@ export const SOLID_CONFIG = {
   // Circuit artifacts (wasm + zkey) — CDN/IPFS in production.
   ARTIFACT_BASE_URL: 'https://cdn.solid-protocol.com/artifacts/v1',
 
+  /**
+   * SOLID-SEC-058 (CRIT-3): SHA-256 pins for the off-chain prover artifacts.
+   *
+   * Empty string means "not pinned via this source".  The artifact-integrity
+   * gate prefers env vars (`SOLID_CIRCUIT_WASM_SHA256`,
+   * `SOLID_CIRCUIT_ZKEY_SHA256`, `SOLID_VK_SHA256`) and sidecar files
+   * (`circuits/build/*.sha256`) over these constants -- those are populated
+   * at build/CI time, while these are the production pins published with
+   * a tagged release.  Mismatch on any source is a hard failure.
+   *
+   * For local dev: leave these empty and let the sidecars (written by
+   * `circuits/scripts/setup.js`) provide the pin.  For dev artifacts that
+   * are not pinned anywhere, set `SOLID_CIRCUIT_ARTIFACT_INTEGRITY=skip`
+   * with eyes wide open -- see `artifact_integrity.ts`.
+   */
+  ARTIFACT_SHA256: {
+    BATCH_QUERY_WASM: '' as string,
+    BATCH_QUERY_ZKEY: '' as string,
+    BATCH_QUERY_VK: '' as string,
+  },
+
   // Registry & Governance (Placeholder)
   AUTHORITY_PUBKEY: 'SoLid1111111111111111111111111111111111111',
   SOLID_TOKEN_MINT: 'SoLidToken11111111111111111111111111111111',

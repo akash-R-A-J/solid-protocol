@@ -681,22 +681,46 @@ has been updated to reflect the post-fix state.
 - **Remediation candidates** (in increasing soundness preference,
   decreasing engineering cost):
   1. **Reconstruct redundant public inputs on-chain.**  Of the
-     32 public inputs, 12 are derivable from accounts already
+     32 public inputs, 11 are derivable from accounts already
      passed to the ix:
-       - `globalRoot` -> `global_tree` account body
-       - `merkleRoots[0..3]` -> `schema_tree_N` account bodies
-       - `schemaHashes[0..3]` -> `schema_tree_N` bindings
-       - `issuerTreeRoot` -> `issuer_tree_binding`
-       - `verifierAddress` -> `program_id.to_bytes()`
-       - `currentTimestamp` -> `Clock::unix_timestamp` (with
-         skew tolerance per SEC-005)
-     Removing these from the ix arg list saves 12 * 32 = 384
-     bytes of `public_inputs` body.  Remaining 20 inputs ->
-     640 bytes; total ix data shrinks from 1324 to 940 bytes
-     (well under 1232).  Handler reconstructs the full
-     `[u8; 32]; 32]` array internally and verifies Groth16
-     against it.  Trade-off: slightly more on-chain CU (~5K
-     extra for 12 byte copies); circuit unchanged.
+       - slot 1: `globalRoot` -> `global_tree` account body
+       - slots 2..5: `merkleRoots[0..3]` -> `schema_tree_N`
+         account bodies
+       - slots 6..9: `schemaHashes[0..3]` -> `schema_tree_N`
+         bindings
+       - slot 10: `issuerTreeRoot` -> `issuer_tree_binding`
+       - slot 29: `verifierAddress` -> `program_id.to_bytes()`
+     Slot 31 (`currentTimestamp`) **stays on the wire** even
+     though there is an on-chain `Clock` source.  The reason is
+     soundness, not policy: Groth16 public-input equality is
+     polynomial-commitment equality, with zero tolerance.  The
+     off-chain prover commits the witness to a specific `T_off`
+     at proof-build time; reconstructing `T_chain =
+     Clock::unix_timestamp` at handler time would land a
+     different field element 1-2 seconds later (slot times,
+     network propagation, validator inclusion delay) and Groth16
+     would reject every proof.  The SEC-005 skew window is a
+     *separate* on-chain freshness predicate that wraps the
+     wire-supplied `T_off`; it is not a substitute for
+     cryptographic equality.  Slot 30 (`verifierNonce`) is also
+     witness-bound and stays on the wire.
+     Removing the 11 reconstructible slots from the ix arg list
+     saves 11 * 32 = 352 bytes of `public_inputs` body.
+     Remaining 21 inputs -> 672 bytes; total ix data shrinks
+     from 1324 to 972 bytes (well under 1232).  Handler
+     reconstructs the full `[[u8; 32]; 32]` array internally
+     and verifies Groth16 against it.
+     Trade-off: net CU is approximately wash and possibly
+     favorable.  The handler already extracts every
+     reconstructed root for the existing binding-check (per
+     `sec/audits/2026-04-26_v0.6.1_modular_audit/04_compute/cu_budget.md`
+     §3: ~3.5K each for global/issuer roots, ~3.5K-14K for
+     schema bindings).  Reconstruction is "copy the same 32-byte
+     slice into `public_inputs[i]`" -- ~1-2K CU.  Meanwhile
+     shrinking the wire from 32 to 21 inputs saves ~2-3K from
+     the Anchor `__global` wrapper's by-value deser.  Pair with
+     SOLID-SEC-046 to capture the new baseline; circuit
+     unchanged; trusted setup unchanged.
   2. **Buffer-account upload + verify-from-buffer.**  Add a
      `init_proof_buffer(payer)` ix that allocates a scratch PDA
      `[b"proof-buffer", payer]`; followed by `upload_proof_chunk`
@@ -711,11 +735,83 @@ has been updated to reflect the post-fix state.
      data alone is 1324 bytes).  Combine with (1) and the
      numbers fit; ALT compression of the 11-account list saves
      a further ~341 bytes of header overhead.
-- **Recommended path: (1) + (3).**  Cleanest single-tx
-  experience for the holder; minimal on-chain CU; no extra
-  ixs.  (2) is the fallback if the on-chain reconstruction
-  pushes verify_batch_proof's CU budget over the per-tx ceiling
-  (re-uses SEC-046 instrumentation).
+- **Originally recommended: (1) + (3).**  Cleanest single-tx
+  experience for the holder; minimal on-chain CU (net wash or
+  favorable per the audit decomposition above); no extra ixs.
+  Implemented in code 2026-04-29 -- the (1) reconstruction
+  shipped, the (3) Versioned-tx + ALT path shipped, and three
+  latent bugs were fixed along the way (LB1: Anchor 0.30.1
+  Vec<[u8; 32]> deser broken on BPF; LB2: SEC-005 timestamp
+  byte-order asymmetric to SDK encoding; LB3: reconstructed
+  Merkle slots had the same BE/LE asymmetry).  See
+  `plan/SESSION_LOG_2026-04-29.md` §1.3.
+
+- **Why (1)+(3) does not actually fit -- byte-math reality
+  (2026-04-29).**  The doc estimated "(1)+(3) fits with ~135
+  bytes margin" but did not include the 800K CU budget ix the
+  verifier needs (~285K-345K CU per
+  `sec/audits/2026-04-26_v0.6.1_modular_audit/04_compute/cu_budget.md`,
+  default per-ix is 200K).  Adding
+  `ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 })`
+  costs ~40 bytes on the wire because programs being invoked
+  must live in `staticAccountKeys` and cannot be ALT-compressed.
+
+  Actual measured tx surface for v0 + ALT + cuIx:
+  ```
+   1 sig section (1 + 64)                                 65
+   v0 marker + header (1 + 3)                              4
+   4 static keys × 32 + 1 shortvec count                 129
+     - payer (signer)
+     - ComputeBudgetProgram.programId (program)
+     - zk_verifier programId          (program)
+     - nullifier_record               (writable, dynamic)
+   recentBlockhash                                        32
+   2 ixs: shortvec (1) + cuIx (8) + verifyIx (987)       996
+     - cuIx data: 5 bytes (1 ix-tag + 4 LE u32 cu_limit)
+     - verifyIx data: 972 bytes (8 disc + 256 proof
+       + 4 Vec<u8> len + 672 wire body + 32 nullifier)
+   1 ALT struct: shortvec (1) + 32 key + 1+1 writable
+     + 1+7 readonly                                       43
+   = 1269 raw bytes -- 37 over 1232 cap
+  ```
+
+  Compression knobs already exhausted:
+  - Move `verifier_config` writable -> readonly: ALT struct's
+    writable_count drops 1 byte and readonly_count gains 1 byte.
+    Net zero.
+  - Drop the redundant `nullifier` arg (it duplicates
+    `public_inputs[0..32]`): saves 32 bytes from ix.data.  Tx
+    becomes 1237 -- still 5 bytes over.
+  - Reduce ix.keys count: requires merging `schema_tree_0..3`
+    slots, which is a circuit + trusted-setup change.
+
+- **Pivoting to (2) -- buffer-account / chunked upload.**  This
+  is the documented escape valve at
+  `docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1.1 ("B13 Decision 1 --
+  Option 2").  Three new ixs:
+  1. `init_proof_buffer(payer)` -- allocate a scratch PDA
+     `[b"proof-buffer", payer.key]`.
+  2. `upload_proof_chunk(buffer, offset: u32, bytes: Vec<u8>)`
+     -- chunked write into the buffer (~700-byte chunks; 2
+     uploads cover the full proof).
+  3. `verify_batch_proof_v2(buffer)` -- reads from the buffer,
+     reuses the existing SEC-054 reconstruction path, runs
+     Groth16, atomically inits the nullifier PDA, closes the
+     buffer.
+
+  The `_v2` ix carries no proof bytes, so it fits cuIx + ALT +
+  the small static surface comfortably.  Total per-proof: 3-4
+  txs (init + upload(s) + verify), but each tx is unconditionally
+  under 1232 bytes regardless of how many wire inputs the
+  circuit grows to.  Trade: more txs per proof; fixes the
+  wire-size wall for good.
+
+  Tracking: B13 / SOLID-SEC-054 stays open until the buffer-
+  account flow lands.  The (1)+(3) WIP code remains in tree --
+  the latent-bug fixes (LB1/LB2/LB3), the slot-mapping constants,
+  the extract helpers, and the ALT helper all carry forward into
+  the buffer-account version.  Only the `verify_batch_proof`
+  direct-tx submission path is replaced.
 - **Tracking.**  No security-registry entry yet (this is a
   protocol-shape issue, not a soundness gap).  Will register
   as `SOLID-SEC-054` once the remediation choice is sanctioned.

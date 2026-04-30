@@ -108,9 +108,16 @@ export async function generateProof(
   query: CompoundQuery,
   credential: StoredCredential,
   masterPrivateKey: Uint8Array,
+  // SOLID-SEC-058 / CRIT-3: snarkjs.groth16.fullProve accepts Uint8Array
+  // as well as string (path / URL).  Allowing Uint8Array lets the SDK
+  // facade pre-load + SHA-256 verify the artifacts before passing them
+  // here, removing the TOCTOU between hash check and snarkjs's own
+  // re-fetch.  The integrity gate lives in `@solid-protocol/sdk::loadAndVerifyArtifact`;
+  // direct callers of this function (e.g. `scripts/prove.ts`) MUST verify
+  // hashes themselves before passing strings.
   circuitPaths: {
-    wasmPath: string;
-    zkeyPath: string;
+    wasmPath: string | Uint8Array;
+    zkeyPath: string | Uint8Array;
   },
   options: MerkleProofSource & {
     /** Global-state tree PDA (mirrors schema_registry::global_binding). */
@@ -327,9 +334,16 @@ export async function generateBatchProof(
   masterPrivateKey: Uint8Array,
   masterPublicKey: { x: Uint8Array; y: Uint8Array },
   revocationNonce: bigint,
+  // SOLID-SEC-058 / CRIT-3: snarkjs.groth16.fullProve accepts Uint8Array
+  // as well as string (path / URL).  Allowing Uint8Array lets the SDK
+  // facade pre-load + SHA-256 verify the artifacts before passing them
+  // here, removing the TOCTOU between hash check and snarkjs's own
+  // re-fetch.  The integrity gate lives in `@solid-protocol/sdk::loadAndVerifyArtifact`;
+  // direct callers of this function (e.g. `scripts/prove.ts`) MUST verify
+  // hashes themselves before passing strings.
   circuitPaths: {
-    wasmPath: string;
-    zkeyPath: string;
+    wasmPath: string | Uint8Array;
+    zkeyPath: string | Uint8Array;
   },
   options: MerkleProofSource & {
     /** Address of the global-state tree (mirrored in `schema_registry::global_binding`). */
@@ -678,9 +692,53 @@ export async function generateBatchProof(
   // 4. Run SnarkJS
   console.log('Generating Batch Groth16 proof (N=4)...');
   if (process.env.SOLID_DEBUG_CIRCUIT_INPUT) {
+    // SOLID-SEC-066 / H8: pre-CRIT-3, this dumped the FULL circuitInput
+    // (including masterIdentityKey, holderBJJPrivKey, revocationNonce,
+    // salts, issuer signature scalars, attestation data) to a
+    // world-readable /tmp file in plaintext.  A single
+    // `actions/upload-artifact: ./tmp` mistake leaks holder identity.
+    //
+    // Robust fix:
+    //   - default mode redacts every secret-bearing field
+    //   - full dump only behind a separate env var
+    //     `SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS=DANGER_I_UNDERSTAND`
+    //   - output goes to a 0700-mode mkdtempSync directory, not /tmp
     const fs = await import('fs');
-    fs.writeFileSync('/tmp/solid-circuit-input.json', JSON.stringify(circuitInput, null, 2));
-    console.log('[debug] dumped circuit input -> /tmp/solid-circuit-input.json');
+    const path = await import('path');
+    const os = await import('os');
+    const includeSecrets =
+      process.env.SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS === 'DANGER_I_UNDERSTAND';
+    const REDACTED = '<redacted by SOLID-SEC-066 -- set ' +
+      'SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS=DANGER_I_UNDERSTAND to dump>';
+    const SECRET_FIELDS = [
+      'masterIdentityKey',
+      'holderBJJPrivKey',
+      'revocationNonce',
+      'salts',
+      'issuerSigR8xs',
+      'issuerSigR8ys',
+      'issuerSigSs',
+      'data',
+    ] as const;
+    const dumpInput: any = includeSecrets
+      ? circuitInput
+      : Object.fromEntries(
+          Object.entries(circuitInput).map(([k, v]) =>
+            (SECRET_FIELDS as readonly string[]).includes(k) ? [k, REDACTED] : [k, v],
+          ),
+        );
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'solid-circuit-input-'));
+    try {
+      fs.chmodSync(outDir, 0o700);
+    } catch {
+      // ignore on platforms that don't support POSIX modes
+    }
+    const outPath = path.join(outDir, 'solid-circuit-input.json');
+    fs.writeFileSync(outPath, JSON.stringify(dumpInput, null, 2), { mode: 0o600 });
+    console.log(
+      `[debug] dumped circuit input -> ${outPath} ` +
+        `(${includeSecrets ? 'WITH SECRETS -- DO NOT COMMIT' : 'redacted'})`,
+    );
   }
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
@@ -772,13 +830,21 @@ function formatProofForSolana(proof: any): {
   proofA.set(piA_y, 32);
 
   // Convert proof.pi_b (G2)
+  // LB5 / SOLID-SEC-067 (closed 2026-04-30): snarkjs's `pi_b` is
+  // `[[c0_real, c1_imag], [c0_real, c1_imag], [1, 0]]` -- (real, imag)
+  // order.  Solana's alt_bn128 syscall (and groth16-solana) decodes
+  // each F_q² element in (imag, real) order.  The pre-fix code wrote
+  // pi_b in snarkjs order (real, imag); the on-chain pairing then
+  // operated on a different point and Groth16 verify rejected every
+  // proof.  Latent because no proof reached on-chain verify until
+  // SOLID-SEC-054 / B13 Option 2.
   const proofB = new Uint8Array(128);
-  for (let i = 0; i < 2; i++) {
-    for (let j = 0; j < 2; j++) {
-      const val = bigintToBytes32(BigInt(proof.pi_b[i][j]));
-      proofB.set(val, (i * 2 + j) * 32);
-    }
-  }
+  // X = (x_imag, x_real)
+  proofB.set(bigintToBytes32(BigInt(proof.pi_b[0][1])), 0);   // x_imag
+  proofB.set(bigintToBytes32(BigInt(proof.pi_b[0][0])), 32);  // x_real
+  // Y = (y_imag, y_real)
+  proofB.set(bigintToBytes32(BigInt(proof.pi_b[1][1])), 64);  // y_imag
+  proofB.set(bigintToBytes32(BigInt(proof.pi_b[1][0])), 96);  // y_real
 
   // Convert proof.pi_c (G1)
   const proofC = new Uint8Array(64);

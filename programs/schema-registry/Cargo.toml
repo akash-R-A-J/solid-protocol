@@ -18,6 +18,11 @@ idl-build = ["anchor-lang/idl-build"]
 [dependencies]
 anchor-lang = { workspace = true }
 solid-core = { path = "../../crates/solid-core" }
+# SOLID-SEC-059 sibling closure for global + schema trees (2026-04-30):
+# `update_global_root` and `update_tree_root` integrity-check the
+# caller-pushed root via on-chain Poseidon-Merkle recompute.  Helper
+# lives in `solid_light::cpi_helpers::compute_poseidon_merkle_root`.
+solid-light = { path = "../../crates/solid-light" }
 # NOTE: previously had a direct `light-poseidon = "0.2"` dep here.  It was
 # unused (no `light_poseidon::*` import in this crate) and was the primary
 # vector for the BPF stack-overflow:

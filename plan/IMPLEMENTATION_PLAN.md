@@ -34,9 +34,10 @@ acceptance. Every item references `SOLID-SEC-NNN` in
   on-chain submission).  See `plan/RESUME.md` "2026-04-28"
   section for full receipts; next-session pickup is the
   B13 remediation choice (recommended path: reconstruct
-  redundant public inputs on-chain from accounts already
-  passed to the ix; saves 384 bytes; total shrinks to 940
-  bytes).
+  the 11 redundant public inputs on-chain from accounts already
+  passed to the ix; saves 11 * 32 = 352 bytes; total shrinks
+  from 1324 to 972 bytes; `currentTimestamp` and `verifierNonce`
+  stay on the wire because they are witness-bound).
 - Prior revision: 2026-04-27 (Phase 3.4 circuit + SDK alignment).
   Landed: `LessThanBN254` + `BabyPbk254` in circuits; Rust fixture
   generator `gen_circuit_vectors`; mocha harness under `circuits/test/`
@@ -857,73 +858,117 @@ See `adr/README.md`. New `adr/NNNN-title.md`, add to
 4. Update this plan's status columns and the next-phase entry
    criteria.
 
-## Appendix D -- Next session pickup (2026-04-29)
+## Appendix D -- Next session pickup (2026-04-30)
 
-Live edge: **B13** -- `verify_batch_proof` ix data is 1324 bytes,
-exceeds Solana's 1232-byte legacy-tx wire size.  The Groth16
-proof itself generates fine post-SEC-053; the failure is at the
-on-chain submission step inside `npm run prove`.
+Updated 2026-04-29 evening after the (1)+(3) attempt + pivot.
+For the day-by-day receipts, read
+`plan/SESSION_LOG_2026-04-29.md` end-to-end before touching
+anything; the L7-L9 discipline rules in §5 of that doc are new
+and load-bearing.
 
-Recommended path (per `docs/E2E_BLOCKERS.md` B13 remediation
-analysis): **reconstruct redundant public inputs on-chain from
-accounts already passed to the ix.**
+Live edge: **B13 Option 2 -- buffer-account / chunked upload.**
+The originally-recommended (1)+(3) path landed in code (B13
+on-chain reconstruction + Versioned-tx + ALT) and surfaced three
+latent BE/LE byte-order bugs which were also fixed.  But the
+combined surface is 37 bytes over the 1232-byte legacy-tx cap
+once the required `setComputeUnitLimit` ix is included.  Hence
+the pivot.
 
-  * 12 of the 32 public inputs are derivable from accounts the
-    ix already takes:
-      - `globalRoot` -> `global_tree` body
-      - `merkleRoots[0..3]` -> `schema_tree_N` bodies
-      - `schemaHashes[0..3]` -> `schema_tree_N` bindings
-      - `issuerTreeRoot` -> `issuer_tree_binding`
-      - `verifierAddress` -> `program_id.to_bytes()`
-      - `currentTimestamp` -> `Clock::unix_timestamp` (skew per
-        SEC-005)
-  * Removing them from the ix arg list saves 12 * 32 = 384
-    bytes of `public_inputs` body.  Remaining 20 inputs ->
-    640 bytes; total ix data shrinks from 1324 to 940 bytes
-    (well under 1232).
-  * Handler reconstructs the full `[[u8; 32]; 32]` array
-    internally before calling `verify_groth16_proof`.
-  * Trade-off: ~5K extra CU for 12 byte copies; pairs with
-    SOLID-SEC-046 since the new baseline must capture this.
-  * Circuit unchanged; trusted setup unchanged; off-chain SDK
-    unchanged (the witness still uses the full 32 inputs).
-    Only the wire-format from caller -> handler shrinks.
+Recommended path (per `docs/E2E_BLOCKERS.md` B13 + the pivot
+analysis added there 2026-04-29 + `docs/REMEDIATION_OPTIONS_ARCHIVE.md`
+§1.1): **buffer-account upload + verify-from-buffer.**
+
+  * The (1)+(3) reconstruction pieces (slot mapping, extract
+    helpers, ALT helpers, the LB1-LB3 byte-order fixes) shipped
+    as code 2026-04-29 and stay in tree.  See
+    `plan/SESSION_LOG_2026-04-29.md` §1.3 for the full list.
+    What did NOT ship: the actual on-chain submission, because
+    the resulting v0+ALT+cuIx tx is 1269 raw bytes (37 over the
+    1232-byte cap).
+  * Buffer-account approach (this session pickup):
+      - `init_proof_buffer(payer)` -- new ix; allocates a
+        scratch PDA seeded by `[b"proof-buffer", payer.key]`,
+        ~1024 bytes capacity.
+      - `upload_proof_chunk(buffer, offset: u32, bytes:
+        Vec<u8>)` -- new ix; writes `bytes` into
+        `buffer.data[offset..offset+bytes.len()]`.
+        Idempotent on re-upload-of-same-bytes.  Chunk size is
+        chosen so each upload tx fits cleanly under 1232 bytes;
+        ~700-byte chunks cover the proof in 2 uploads.
+      - `verify_batch_proof_v2(buffer)` -- new ix; reads the
+        staged proof from `buffer.data`, performs the same B13
+        reconstruction the existing `verify_batch_proof`
+        already does (reuse the extract helpers in
+        `crates/solid-light/src/cpi_helpers.rs`), runs Groth16,
+        atomically initializes the nullifier PDA via the same
+        `init` constraint, closes the buffer (rent reclaimed
+        to payer).
+  * Slots 30 (`verifierNonce`) and 31 (`currentTimestamp`) stay
+    in the wire-equivalent buffer payload because they are
+    witness-bound (Groth16 has zero-tolerance polynomial
+    equality on public inputs; the SEC-005 skew window is an
+    additional on-chain freshness predicate, not a substitute).
+  * Trust boundaries (preserve all):
+      - Buffer PDA owner is `zk_verifier` -- only this program
+        can write via `upload_proof_chunk`.
+      - `verify_batch_proof_v2` rejects underfilled buffers
+        (length mismatch, missing chunks).
+      - Buffer is closed at end of verify (rent return); re-use
+        requires a fresh `init_proof_buffer`.
+      - All existing soundness gates from `verify_batch_proof`
+        replicate in `_v2` (owner checks, schema-canonicality,
+        issuer-tree binding, timestamp skew, nullifier bind).
+  * Circuit unchanged; trusted setup unchanged; the SEC-048
+    Option E ceremony (arc 5) is unaffected by this pivot.
 
 Steps for the implementer:
 
-1. Update `programs/zk-verifier/src/lib.rs::verify_batch_proof`
-   args: drop the corresponding 12 `[u8; 32]` slots from
-   `public_inputs: Vec<[u8; 32]>`.  Have the handler read them
-   from the existing accounts (`global_tree`, `schema_tree_N`,
-   `issuer_tree_binding`, `program_id`, `Clock`) and stitch the
-   full 32-element array before Groth16.
-2. Update the SDK encoder
-   `ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`
-   to send only the 20-input subset.
-3. Promote the finding to **SOLID-SEC-054** in
-   `sec/SECURITY_REGISTRY.md` once the design is sanctioned.
-4. Add a regression gate: an integration test that submits a
-   proof with the wrong subset (e.g. wrong globalRoot reconstructed
-   from a forged account) and asserts the Groth16 verify
-   rejects.  Pair with the existing P0-2 owner-check tests.
-
-If the on-chain reconstruction pushes CU over budget,
-fallback is the buffer-account pattern (B13 remediation
-option 2): pre-stage the proof bytes via chunked uploads
-to a scratch PDA, then a slim `verify_batch_proof_v2(buffer)`
-reads from it.  More txs per proof but unconditionally
-fits within wire-size limits.
+1. Add the three new ixs to
+   `programs/zk-verifier/src/lib.rs`.  Reuse the existing
+   `WIRE_INPUT_SLOTS` / `RECONSTRUCTED_INPUT_SLOTS` constants
+   and the `extract_active_*` helpers in
+   `cpi_helpers.rs` -- both already shipped 2026-04-29.
+2. Update `ts-sdk/packages/verifier/src/index.ts::verifyOnChain`
+   to orchestrate the chunked-upload flow:
+   `ensureLookupTable` (already implemented) ->
+   `init_proof_buffer` -> `upload_proof_chunk` * N ->
+   `verify_batch_proof_v2(buffer)`.  Cache the ALT pubkey
+   across runs (already implemented); cache the buffer PDA
+   per-payer.
+3. Add cargo unit tests:
+   - chunked upload assembles to byte-identical payload as the
+     legacy direct-tx wire.
+   - missing chunk in buffer -> `_v2` rejects with a typed
+     error.
+   - over-chunk (write past buffer end) -> rejects.
+   - buffer-from-different-payer -> rejects (wrong PDA owner).
+4. Add an integration test that submits a proof with a forged
+   buffer (wrong globalRoot bytes injected) and asserts
+   Groth16 rejects.  Pair with the existing P0-2 owner-check
+   tests.
+5. Run `npm run e2e`; assert `verified: true` tail.
+6. Promote SEC-054 from "Open (interim partial)" to "Fixed"
+   in `sec/SECURITY_REGISTRY.md` once green.  "Verified" after
+   one full sprint of the integration test in CI per the
+   non-negotiable in §0.
 
 Order of operations the next session:
 
-  1. Read `plan/RESUME.md` "2026-04-28" section for receipts.
-  2. Read `docs/E2E_BLOCKERS.md` B13 for the full analysis.
-  3. Read `programs/zk-verifier/src/lib.rs::verify_batch_proof`
-     (lines 370-588) to map the existing public-input layout.
-  4. Implement the on-chain reconstruction; add the regression
-     gate; redeploy + retry `npm run prove`; confirm
-     `verified: true` tail.
-  5. Promote to SEC-054 in the registry once green.
+  1. Read `plan/SESSION_LOG_2026-04-29.md` end-to-end,
+     especially §5 (learnings L7-L9 are new).
+  2. Read `plan/RESUME.md` "Pickup tomorrow" section.
+  3. Read `docs/E2E_BLOCKERS.md` B13 for the full byte-math
+     ledger of why (1)+(3) doesn't fit.
+  4. Read `docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1.1 for the
+     mechanics + future-trigger of Option 2.
+  5. Commit-split the WIP per RESUME §"Step 1" before any new
+     code.  L9 of the session log is explicit on this.
+  6. Implement `init_proof_buffer` / `upload_proof_chunk` /
+     `verify_batch_proof_v2`; add the cargo unit + integration
+     tests (the regression gates ship in the same commit as
+     the fix, per L4).
+  7. Run e2e end-to-end; confirm `verified: true`.
+  8. Promote SEC-054 to Fixed.
 
 After B13 closes, the immediate Phase 4 P0 backlog is:
 

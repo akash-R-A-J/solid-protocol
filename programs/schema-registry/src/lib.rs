@@ -249,15 +249,22 @@ pub mod schema_registry {
             );
         }
 
-        // SEC-06 / SOLID-SEC-002: Verify schema_hash against metadata.
-        //
-        // Shared derivation with `solid_core::schema::SchemaDefinition::compute_hash`
-        // so the on-chain check cannot drift from the off-chain SDK. Any
-        // change to the preimage layout must land in BOTH places in the same
-        // PR (regression test: `solid_core::schema::tests::test_compute_schema_hash_parts_matches_definition`).
-        let computed_hash =
-            solid_core::schema::compute_schema_hash_from_parts(&name, version, field_names.len())
-                .map_err(|_| error!(ErrorCode::PoseidonFailed))?;
+        // SEC-06 / SOLID-SEC-002 + SOLID-SEC-063 / H5: verify schema_hash
+        // against the WIDENED preimage that binds field_names + category,
+        // not just (name, version, field_count).  Two registrations
+        // differing only in field semantics or category previously
+        // collided to the same hash; verifiers accepting a proof under
+        // schema A would treat it as schema B.  Shared derivation with
+        // the off-chain SDK so the on-chain check cannot drift.  See
+        // `solid_core::schema::tests::test_compute_schema_hash_binds_field_names_and_category`
+        // for the regression gate.
+        let computed_hash = solid_core::schema::compute_schema_hash_from_parts(
+            &name,
+            version,
+            &field_names,
+            &category,
+        )
+        .map_err(|_| error!(ErrorCode::PoseidonFailed))?;
         require!(computed_hash == schema_hash, ErrorCode::InvalidSchemaHash);
 
         let schema = &mut ctx.accounts.schema_account;
@@ -399,10 +406,33 @@ pub mod schema_registry {
     /// describes.  A future v1.1 can replace this with a permissionless
     /// refresh that parses the SPL AC tree header directly; that is tracked
     /// in `docs/REVOCATION_DESIGN.md` alongside R-3.
+    /// Update the schema-tree binding's Poseidon `current_root`.
+    ///
+    /// SOLID-SEC-059 sibling for the schema (credential) tree
+    /// (closes 2026-04-30): pre-fix, this ix accepted any caller-supplied
+    /// `new_root: [u8; 32]` from the binding's authority -- a single-key
+    /// root-injection primitive that combined with SEC-043 yielded full
+    /// proof-forging.  Robust fix: caller supplies (new_root, new_leaf,
+    /// leaf_index, poseidon_proof_path) and the handler runs an on-chain
+    /// Poseidon-Merkle recompute, refusing any push whose recompute does
+    /// not equal `new_root`.  Mirrors the issuer-side
+    /// `update_issuer_tree_root` integrity check.
+    ///
+    /// Architecture (LB4 closure 2026-04-30): the binding stores the
+    /// POSEIDON root because the in-circuit `MerkleInclusion` template
+    /// uses Poseidon(2) for path-recompute.  SPL AC's Keccak root is the
+    /// leaf-presence ledger and is NOT the canonical root for proof
+    /// verification.
+    ///
+    /// `poseidon_proof_path` is sent as a flat `Vec<u8>` of `TREE_DEPTH * 32 = 640`
+    /// bytes (TREE_DEPTH=20, matching the in-circuit `merkleSiblings[i][TREE_DEPTH]`).
     pub fn update_tree_root(
         ctx: Context<UpdateTreeRoot>,
         schema_hash: [u8; 32],
         new_root: [u8; 32],
+        new_leaf: [u8; 32],
+        leaf_index: u64,
+        poseidon_proof_path: Vec<u8>,
     ) -> Result<()> {
         let binding_info = ctx.accounts.schema_tree_binding.to_account_info();
         require_keys_eq!(
@@ -410,6 +440,22 @@ pub mod schema_registry {
             crate::ID,
             ErrorCode::InvalidBindingOwner
         );
+
+        require!(
+            poseidon_proof_path.len() == solid_core::TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(solid_core::TREE_DEPTH);
+        for i in 0..solid_core::TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
+        let computed_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
+                .map_err(|_| error!(ErrorCode::TreeRootMismatch))?;
+        require!(computed_root == new_root, ErrorCode::TreeRootMismatch);
+
         let mut data = binding_info.try_borrow_mut_data()?;
         let signer_bytes = ctx.accounts.authority.key().to_bytes();
         apply_schema_tree_root_update(
@@ -477,15 +523,45 @@ pub mod schema_registry {
         Ok(())
     }
 
-    /// Update the singleton global-state root.  Authority-gated (matches the
-    /// authority recorded at `initialize_global_binding`).
-    pub fn update_global_root(ctx: Context<UpdateGlobalRoot>, new_root: [u8; 32]) -> Result<()> {
+    /// Update the singleton global-state root with on-chain Poseidon
+    /// integrity check.  Mirrors `update_tree_root`'s SEC-059-sibling
+    /// closure (2026-04-30) for the credential tree.  Caller supplies
+    /// (new_root, new_leaf, leaf_index, poseidon_proof_path); on-chain
+    /// Poseidon-Merkle recompute refuses any push that does not equal
+    /// the recomputed root.
+    ///
+    /// Authority-gated (matches the authority recorded at
+    /// `initialize_global_binding`); the integrity check is a NEW gate
+    /// closing the SEC-059 root-injection vector for the global tree.
+    pub fn update_global_root(
+        ctx: Context<UpdateGlobalRoot>,
+        new_root: [u8; 32],
+        new_leaf: [u8; 32],
+        leaf_index: u64,
+        poseidon_proof_path: Vec<u8>,
+    ) -> Result<()> {
         let binding_info = ctx.accounts.global_binding.to_account_info();
         require_keys_eq!(
             *binding_info.owner,
             crate::ID,
             ErrorCode::InvalidBindingOwner
         );
+
+        require!(
+            poseidon_proof_path.len() == solid_core::TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(solid_core::TREE_DEPTH);
+        for i in 0..solid_core::TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
+        let computed_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
+                .map_err(|_| error!(ErrorCode::GlobalRootMismatch))?;
+        require!(computed_root == new_root, ErrorCode::GlobalRootMismatch);
+
         let mut data = binding_info.try_borrow_mut_data()?;
         let signer_bytes = ctx.accounts.authority.key().to_bytes();
         apply_global_root_update(&mut data, &signer_bytes, &new_root, Clock::get()?.slot)
@@ -659,6 +735,12 @@ pub enum ErrorCode {
     MetadataTooLong,
     #[msg("On-chain Poseidon evaluation failed")]
     PoseidonFailed,
+    #[msg("poseidon_proof_path length must equal solid_core::TREE_DEPTH * 32 (SEC-059 sibling)")]
+    InvalidProofPathLength,
+    #[msg("Submitted new_root does not match the on-chain Poseidon-Merkle recompute against (new_leaf, leaf_index, poseidon_proof_path) for the schema tree (SEC-059 sibling)")]
+    TreeRootMismatch,
+    #[msg("Submitted new_root does not match the on-chain Poseidon-Merkle recompute for the global tree (SEC-059 sibling)")]
+    GlobalRootMismatch,
 }
 
 // ─── Host-side tests ───────────────────────────────────────────────────────
@@ -790,14 +872,8 @@ mod tests {
         let auth = [3u8; 32];
         let real_schema = [7u8; 32];
         let wrong_schema = [8u8; 32];
-        let mut buf = make_schema_tree_binding(
-            real_schema,
-            [0u8; 32],
-            [0u8; 32],
-            100,
-            STATUS_ACTIVE,
-            auth,
-        );
+        let mut buf =
+            make_schema_tree_binding(real_schema, [0u8; 32], [0u8; 32], 100, STATUS_ACTIVE, auth);
         let err = apply_schema_tree_root_update(&mut buf, &wrong_schema, &auth, &[1u8; 32], 200)
             .unwrap_err();
         assert_eq!(anchor_error_code(err), ec(ErrorCode::SchemaHashMismatch));
@@ -914,8 +990,7 @@ mod tests {
         let new_auth = [7u8; 32];
         let mut buf =
             make_schema_tree_binding([0u8; 32], [0u8; 32], [0u8; 32], 1, STATUS_ACTIVE, old_auth);
-        let err =
-            apply_schema_tree_authority_rotation(&mut buf, &imposter, &new_auth).unwrap_err();
+        let err = apply_schema_tree_authority_rotation(&mut buf, &imposter, &new_auth).unwrap_err();
         assert_eq!(
             anchor_error_code(err),
             ec(ErrorCode::UnauthorizedTreeBinding)

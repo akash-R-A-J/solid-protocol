@@ -97,14 +97,17 @@ impl SchemaDefinition {
 
     /// Compute the Poseidon hash of this schema.
     ///
-    /// The hash is computed from the schema name (as field elements) + version + field count.
-    /// This must be deterministic for the same schema definition, and must agree
-    /// byte-for-byte with `schema-registry::register_schema`'s on-chain check.
-    /// Both sides therefore delegate to `compute_schema_hash_from_parts` below
-    /// so the preimage layout cannot drift between off-chain SDK and on-chain
-    /// program. See SOLID-SEC-002.
+    /// The hash is computed from the schema name + version + field-names +
+    /// category.  Must be deterministic for the same schema definition and
+    /// agree byte-for-byte with `schema-registry::register_schema`'s
+    /// on-chain check.  Both sides delegate to
+    /// `compute_schema_hash_from_parts` so the preimage layout cannot
+    /// drift.  See SOLID-SEC-002 (preimage-shared) and SOLID-SEC-063 / H5
+    /// (preimage-widened to bind field semantics + category).
     pub fn compute_hash(&self) -> Result<[u8; 32]> {
-        compute_schema_hash_from_parts(&self.name, self.version, self.fields.len())
+        let field_names: Vec<String> = self.fields.iter().map(|f| f.name.clone()).collect();
+        let cat = format!("{:?}", self.category);
+        compute_schema_hash_from_parts(&self.name, self.version, &field_names, &cat)
     }
 
     /// Get the cached schema hash, computing if needed.
@@ -121,38 +124,91 @@ impl SchemaDefinition {
 /// (`SchemaDefinition::compute_hash`) and the on-chain registry handler
 /// (`schema-registry::register_schema`).
 ///
-/// Preimage layout (all values are `u64` Poseidon inputs):
-/// 1. Schema name bytes chunked into 8-byte little-endian groups, each
-///    interpreted as a `u64` via `u64::from_le_bytes`.
-/// 2. `version` as `u64`.
-/// 3. `field_count` as `u64`.
+/// SOLID-SEC-063 / H5 (2026-04-29): the pre-fix derivation only bound
+/// `(name, version, field_count)`.  Two schemas differing only in
+/// field semantics (different `field_names`) or `category` collided to
+/// the same hash, so a verifier accepting a proof issued under one
+/// schema would treat it as another.  Robust fix: widen the preimage
+/// to include canonical `field_names` and `category` via a 5-input
+/// final Poseidon over per-component digests.
 ///
-/// The vector is truncated to 16 inputs to stay within the Poseidon
-/// width ceiling used by `light-poseidon` / `circomlib`.
+/// Preimage layout (5 [u8;32] field elements fed to `hash_bytes`):
+/// 1. `name_h = poseidon_compress_bytes(name.as_bytes())` --
+///    Merkle-Damgard-style absorb so arbitrary-length names cannot
+///    collide via truncation.
+/// 2. `version_e` -- 1-byte version in byte 0, rest zero.
+/// 3. `count_e`   -- field_count as u64-LE in bytes [0..8], rest zero.
+/// 4. `fnames_h`  -- absorb of `(u32 LE count) || (u32 LE len || bytes)*`.
+///                   Length-prefixing makes the encoding canonical
+///                   (no two distinct field-name lists serialize to
+///                   the same byte stream).
+/// 5. `cat_h`     -- `poseidon_compress_bytes(category.as_bytes())`.
 ///
-/// The output is 32 bytes in little-endian field-element encoding. This
-/// is the SAME encoding used by every other primitive in the protocol.
+/// `poseidon_compress_bytes` (defined below) is a Merkle-Damgard
+/// absorb over `solid_core::poseidon::hash_bytes` with a final
+/// length-tag round, so an arbitrary-length input compresses to a
+/// single 32-byte digest with no collision risk via padding.  All
+/// primitives are dual-target (BPF + host) so the on-chain
+/// `register_schema` and the off-chain `SchemaDefinition::compute_hash`
+/// produce byte-identical output.
 ///
-/// Load-bearing for SOLID-SEC-002: if this function diverges between
-/// off-chain and on-chain implementations, `register_schema` will reject
-/// every correctly-derived schema hash the SDK produces.
+/// Load-bearing for SOLID-SEC-002 + SOLID-SEC-063.
 pub fn compute_schema_hash_from_parts(
     name: &str,
     version: u8,
-    field_count: usize,
+    field_names: &[String],
+    category: &str,
 ) -> Result<[u8; 32]> {
-    let mut hash_inputs: Vec<u64> = Vec::new();
-    for chunk in name.as_bytes().chunks(8) {
-        let mut buf = [0u8; 8];
-        buf[..chunk.len()].copy_from_slice(chunk);
-        hash_inputs.push(u64::from_le_bytes(buf));
+    let name_h = poseidon_compress_bytes(name.as_bytes())?;
+
+    // Canonical field-names byte stream: count-prefix + per-name
+    // length-prefix + bytes.  No two distinct lists serialize the
+    // same way (the length prefixes prevent boundary-shift attacks).
+    let mut fb: Vec<u8> = Vec::new();
+    fb.extend_from_slice(&(field_names.len() as u32).to_le_bytes());
+    for n in field_names {
+        let nb = n.as_bytes();
+        fb.extend_from_slice(&(nb.len() as u32).to_le_bytes());
+        fb.extend_from_slice(nb);
     }
-    hash_inputs.push(version as u64);
-    hash_inputs.push(field_count as u64);
-    if hash_inputs.len() > 16 {
-        hash_inputs.truncate(16);
+    let fnames_h = poseidon_compress_bytes(&fb)?;
+
+    let cat_h = poseidon_compress_bytes(category.as_bytes())?;
+
+    let mut version_e = [0u8; 32];
+    version_e[0] = version;
+
+    let mut count_e = [0u8; 32];
+    count_e[..8].copy_from_slice(&(field_names.len() as u64).to_le_bytes());
+
+    poseidon::hash_bytes(&[name_h, version_e, count_e, fnames_h, cat_h])
+}
+
+/// Merkle-Damgard absorb of an arbitrary-length byte slice through
+/// `poseidon::hash_bytes`.  Each round consumes 31 bytes (so they fit
+/// in one Bn254 field element with byte 31 reserved for a chunk-length
+/// marker, which makes the padding canonical and refuses padding-shift
+/// collisions).  A final length-tag round binds the total input length
+/// into the digest.
+///
+/// Output is byte-identical on BPF (sol_poseidon syscall) and host
+/// (light-poseidon fallback) -- see `solid_core::poseidon` for the
+/// dual-target guarantee.
+fn poseidon_compress_bytes(data: &[u8]) -> Result<[u8; 32]> {
+    let mut state = [0u8; 32];
+    for chunk in data.chunks(31) {
+        let mut elem = [0u8; 32];
+        elem[..chunk.len()].copy_from_slice(chunk);
+        // Byte 31 carries the chunk length, making each absorb round
+        // canonical.  Two distinct inputs that align on 31-byte
+        // boundaries cannot reach the same internal state.
+        elem[31] = chunk.len() as u8;
+        state = poseidon::hash_bytes(&[state, elem])?;
     }
-    poseidon::hash_fields_to_bytes(&hash_inputs)
+    let mut len_tag = [0u8; 32];
+    len_tag[..8].copy_from_slice(&(data.len() as u64).to_le_bytes());
+    state = poseidon::hash_bytes(&[state, len_tag])?;
+    Ok(state)
 }
 
 // ─── Pre-built Schema Constructors ─────────────────────────────────────────
@@ -370,47 +426,93 @@ mod tests {
         assert!(product_certification_v1().is_ok());
     }
 
-    /// SOLID-SEC-002 regression gate.
+    /// SOLID-SEC-002 + SOLID-SEC-063 regression gate.
     ///
     /// `SchemaDefinition::compute_hash` and `compute_schema_hash_from_parts`
     /// are the off-chain and on-chain entry points for the same derivation.
-    /// They MUST produce identical outputs for identical (name, version,
-    /// field_count). Any future divergence (e.g. someone "simplifies" one
-    /// side) immediately breaks `register_schema` and fails this test.
+    /// They MUST produce identical outputs for identical inputs.  Any
+    /// divergence breaks `register_schema` and fails this test.
     #[test]
     fn test_compute_schema_hash_parts_matches_definition() {
         let s = basic_identity_v1().unwrap();
         let via_definition = s.compute_hash().unwrap();
-        let via_parts = compute_schema_hash_from_parts(&s.name, s.version, s.fields.len()).unwrap();
+        let field_names: Vec<String> = s.fields.iter().map(|f| f.name.clone()).collect();
+        let via_parts = compute_schema_hash_from_parts(
+            &s.name,
+            s.version,
+            &field_names,
+            &format!("{:?}", s.category),
+        )
+        .unwrap();
         assert_eq!(via_definition, via_parts);
 
         let s2 = vaccination_v1().unwrap();
         let via_definition2 = s2.compute_hash().unwrap();
-        let via_parts2 =
-            compute_schema_hash_from_parts(&s2.name, s2.version, s2.fields.len()).unwrap();
+        let field_names2: Vec<String> = s2.fields.iter().map(|f| f.name.clone()).collect();
+        let via_parts2 = compute_schema_hash_from_parts(
+            &s2.name,
+            s2.version,
+            &field_names2,
+            &format!("{:?}", s2.category),
+        )
+        .unwrap();
         assert_eq!(via_definition2, via_parts2);
     }
 
-    /// SOLID-SEC-002 regression gate.
-    ///
-    /// Same inputs must produce the same bytes; a single flipped field must
-    /// produce different bytes. Any failure here is a Poseidon breakage.
+    /// SOLID-SEC-063 / H5: same name+version+count but different field
+    /// names MUST produce different hashes.  Same name+version+fields
+    /// but different category MUST produce different hashes.  Pre-fix
+    /// these all collided.
+    #[test]
+    fn test_compute_schema_hash_binds_field_names_and_category() {
+        let names_a = vec!["age".into(), "country".into()];
+        let names_b = vec!["age".into(), "score".into()]; // same count, different second name
+        let h_a = compute_schema_hash_from_parts("schema_v1", 1, &names_a, "Identity").unwrap();
+        let h_b = compute_schema_hash_from_parts("schema_v1", 1, &names_b, "Identity").unwrap();
+        assert_ne!(h_a, h_b, "field-name change must change schema_hash");
+
+        let h_cat = compute_schema_hash_from_parts("schema_v1", 1, &names_a, "Healthcare").unwrap();
+        assert_ne!(h_a, h_cat, "category change must change schema_hash");
+
+        // Permutation of field-names must also change the hash (canonical
+        // ordering is the issuer's responsibility; the hash binds the
+        // exact ordering submitted).
+        let names_perm = vec!["country".into(), "age".into()];
+        let h_perm =
+            compute_schema_hash_from_parts("schema_v1", 1, &names_perm, "Identity").unwrap();
+        assert_ne!(h_a, h_perm, "field-name permutation must change schema_hash");
+    }
+
+    /// Determinism + sensitivity to single-field changes.
     #[test]
     fn test_compute_schema_hash_parts_deterministic_and_sensitive() {
-        let a = compute_schema_hash_from_parts("basic_identity_v1", 1, 8).unwrap();
-        let b = compute_schema_hash_from_parts("basic_identity_v1", 1, 8).unwrap();
+        let names: Vec<String> = (0..8).map(|i| format!("f{}", i)).collect();
+        let a = compute_schema_hash_from_parts("schema_v1", 1, &names, "Identity").unwrap();
+        let b = compute_schema_hash_from_parts("schema_v1", 1, &names, "Identity").unwrap();
         assert_eq!(a, b);
 
-        // Version change -> different hash.
-        let c = compute_schema_hash_from_parts("basic_identity_v1", 2, 8).unwrap();
+        let c = compute_schema_hash_from_parts("schema_v1", 2, &names, "Identity").unwrap();
         assert_ne!(a, c);
 
-        // Field-count change -> different hash.
-        let d = compute_schema_hash_from_parts("basic_identity_v1", 1, 7).unwrap();
+        let names_short: Vec<String> = (0..7).map(|i| format!("f{}", i)).collect();
+        let d = compute_schema_hash_from_parts("schema_v1", 1, &names_short, "Identity").unwrap();
         assert_ne!(a, d);
 
-        // Name change -> different hash.
-        let e = compute_schema_hash_from_parts("vaccination_v1", 1, 8).unwrap();
+        let e = compute_schema_hash_from_parts("schema_v2", 1, &names, "Identity").unwrap();
         assert_ne!(a, e);
+    }
+
+    /// SOLID-SEC-063 / H5: padding-shift attack must be impossible.
+    /// Two different (name, category) pairs that "look the same" after
+    /// boundary alignment must hash differently.
+    #[test]
+    fn test_schema_hash_no_padding_shift_collision() {
+        let names: Vec<String> = vec!["x".into()];
+        // "schema_v1" (9 bytes) + cat="Identity" (8 bytes) vs
+        // "schema_v" (8 bytes) + cat="1Identity" (9 bytes) -- byte
+        // streams differ but a naive concat-then-hash would collide.
+        let h_a = compute_schema_hash_from_parts("schema_v1", 1, &names, "Identity").unwrap();
+        let h_b = compute_schema_hash_from_parts("schema_v", 1, &names, "1Identity").unwrap();
+        assert_ne!(h_a, h_b);
     }
 }

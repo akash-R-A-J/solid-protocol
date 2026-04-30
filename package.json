@@ -24,7 +24,8 @@
     "@solid-protocol/issuer": "file:./ts-sdk/packages/issuer",
     "@solid-protocol/holder": "file:./ts-sdk/packages/holder",
     "@solid-protocol/verifier": "file:./ts-sdk/packages/verifier",
-    "@solid-protocol/light": "file:./ts-sdk/packages/light"
+    "@solid-protocol/light": "file:./ts-sdk/packages/light",
+    "@solid-protocol/sdk": "file:./ts-sdk/packages/sdk"
   },
   "devDependencies": {
     "tsx": "^4.21.0",

@@ -487,26 +487,16 @@ async function main() {
       [Buffer.from('issuer-tree-authority')],
       PROGRAM_PUBKEYS.issuerRegistry,
     );
-    await issuerProgram.methods.appendIssuerLeaf().accounts({
-      registryConfig: registryConfigPda,
-      issuerAccount: issuerAccountPda,
-      issuerTreeAuthority: issuerTreeAuthorityPda,
-      merkleTree: issuerTreePkRaw,
-      logWrapper: new PublicKey('noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV'),
-      compressionProgram: new PublicKey('cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK'),
-      authority: wallet.publicKey,
-    }).rpc();
-    console.log(`   ok (leaf appended; binding=${issuerTreeBindingPda.toBase58()})`);
-
-    // ADR-0014: refresh the binding's current_root so verify_batch_proof
-    // sees the new leaf.  We replay the tree locally to derive the root;
-    // this works for the E2E localnet flow where this script is the
-    // only thing mutating the tree.  In a multi-operator setup an
-    // indexer reading `IssuerLeafAppended` / `IssuerLeafReplaced`
-    // events maintains the replica.
+    // SOLID-SEC-059 / H1 (2026-04-30, atomic + integrity-checked):
+    // `appendIssuerLeaf` updates the binding atomically via on-chain
+    // Poseidon-Merkle recompute against `poseidon_proof_path`.  Caller
+    // must supply the Poseidon siblings the new leaf would have AT its
+    // assigned index.  Off-chain we replay the issuer tree locally
+    // (LocalReplicaAdapter is Poseidon-hashed, matching the in-circuit
+    // MerkleInclusion template).
     const refreshed: any = await (issuerProgram.account as any)
       .issuerAccount.fetch(issuerAccountPda);
-    const leaf = computeIssuerLeaf(
+    const newIssuerLeaf = computeIssuerLeaf(
       issuerAuthority.publicKey.toBytes(),
       issuerBjj.public_key_x,
       issuerBjj.public_key_y,
@@ -515,9 +505,9 @@ async function main() {
     );
     const treeDepth = Number(state.issuerTreeDepth ?? 16);
     const replica = new LocalReplicaAdapter(treeDepth, poseidonHashPair);
-    // Replay all currently-enrolled issuers in leaf-index order.  On a
-    // clean localnet bootstrap there is typically only THIS issuer,
-    // but code defensively in case backfill enrolled others first.
+    // Replay every currently-enrolled issuer in leaf-index order so the
+    // replica matches on-chain SPL AC's leaf set; then append the new
+    // leaf; then fetch the path against the new leaf.
     const allIssuers = await (issuerProgram.account as any).issuerAccount.all();
     const enrolled = allIssuers
       .map((e: any) => ({ pda: e.publicKey, acc: e.account }))
@@ -535,18 +525,36 @@ async function main() {
       );
       replica.appendLeaf(l);
     }
-    const newRoot = replica.getRoot();
-    await issuerProgram.methods.updateIssuerTreeRoot(
-      Array.from(newRoot),
-    ).accounts({
-      issuerTreeBinding: issuerTreeBindingPda,
-      authority: wallet.publicKey,
-    }).rpc();
-    console.log(
-      `   ok (binding root updated to 0x${Buffer.from(newRoot).toString('hex').slice(0, 16)}...)`,
-    );
-    // Sanity-check: our leaf was actually the last one appended.
-    if (leaf.some((b, i) => b !== undefined && false)) void leaf;
+    replica.appendLeaf(newIssuerLeaf);
+    const proof = await replica.fetch(issuerTreePkRaw, newIssuerLeaf);
+    // Flat Vec<u8> matching the on-chain expectation (16 * 32 bytes).
+    const flatPath = new Uint8Array(treeDepth * 32);
+    for (let i = 0; i < treeDepth; i++) {
+      flatPath.set(proof.siblings[i], i * 32);
+    }
+
+    await issuerProgram.methods
+      .appendIssuerLeaf(Buffer.from(flatPath))
+      .accounts({
+        registryConfig: registryConfigPda,
+        issuerAccount: issuerAccountPda,
+        issuerTreeAuthority: issuerTreeAuthorityPda,
+        merkleTree: issuerTreePkRaw,
+        issuerTreeBinding: issuerTreeBindingPda,
+        logWrapper: new PublicKey('noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV'),
+        compressionProgram: new PublicKey('cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK'),
+        authority: wallet.publicKey,
+      })
+      .preInstructions([
+        // SOLID-SEC-059 / H1: on-chain Poseidon-Merkle recompute over a
+        // depth-16 path costs ~380K CU on BPF (each
+        // `Fr::from_le_bytes_mod_order` canonicalisation is ~10-20K CU
+        // and we do 32 of them).  800K leaves comfortable headroom
+        // under the 1.4M per-tx ceiling.
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+      ])
+      .rpc();
+    console.log(`   ok (leaf appended + binding root atomically updated; binding=${issuerTreeBindingPda.toBase58()})`);
   }
 
   // ─── 9. persist state ─────────────────────────────────────────────

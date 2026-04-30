@@ -782,7 +782,8 @@ mod tests {
         let (r8_x_circ, r8_y_circ) = affine_to_circomlib_xy(&r8_point);
         let (pk_x_circ, pk_y_circ) = affine_to_circomlib_xy(&pk_point);
         let msg_fq = bytes_to_fq(&msg);
-        let h_fq = poseidon::hash_fr(&[r8_x_circ, r8_y_circ, pk_x_circ, pk_y_circ, msg_fq]).unwrap();
+        let h_fq =
+            poseidon::hash_fr(&[r8_x_circ, r8_y_circ, pk_x_circ, pk_y_circ, msg_fq]).unwrap();
         let h = fq_to_fr(&h_fq);
         // Old (broken) convention: S = r + h*sk (no 8x).
         let s_old = r + h * sk;
@@ -847,8 +848,10 @@ mod tests {
         // Bonus: holder pubkey is byte-stable for the fixed input.  Pins
         // the SEC-052 (a/b) closure -- if circomlib<->arkworks coord-form
         // alignment regresses, this assertion fires.
-        let expected_holder_x_hex = "23247a9e3f6c9c6d547fb0d4efbe82d34383c608c7da5191758f96ee6dfeeb69";
-        let expected_holder_y_hex = "2dc9fbaaabd04ea364b60d03f5bc62bcc120770baa87c86454355887b8fda94e";
+        let expected_holder_x_hex =
+            "23247a9e3f6c9c6d547fb0d4efbe82d34383c608c7da5191758f96ee6dfeeb69";
+        let expected_holder_y_hex =
+            "2dc9fbaaabd04ea364b60d03f5bc62bcc120770baa87c86454355887b8fda94e";
         let mut x_be = holder_pk.x;
         x_be.reverse();
         let mut y_be = holder_pk.y;

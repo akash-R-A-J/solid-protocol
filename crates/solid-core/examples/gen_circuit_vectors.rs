@@ -405,16 +405,25 @@ fn build_baby_pbk_vectors() -> Vec<BabyPbkVector> {
     }
 
     // sk = 1 -> pk = Base8.
-    out.push(make_vector("sk = 1 (pk should equal Base8)", &small_bn254_bytes(1)));
+    out.push(make_vector(
+        "sk = 1 (pk should equal Base8)",
+        &small_bn254_bytes(1),
+    ));
     // sk = 2.
     out.push(make_vector("sk = 2", &small_bn254_bytes(2)));
     // sk = 7.
     out.push(make_vector("sk = 7", &small_bn254_bytes(7)));
     // sk = 0xCAFE_BABE.
-    out.push(make_vector("sk = 0xCAFEBABE", &small_bn254_bytes(0xCAFE_BABE)));
+    out.push(make_vector(
+        "sk = 0xCAFEBABE",
+        &small_bn254_bytes(0xCAFE_BABE),
+    ));
 
     // Regression: sk with bit 253 set.
-    out.push(make_vector("regression: bit-253 set (p - 1)", &bn254_p_minus_one_bytes()));
+    out.push(make_vector(
+        "regression: bit-253 set (p - 1)",
+        &bn254_p_minus_one_bytes(),
+    ));
 
     // Several deterministic Poseidon-derived sks, including at least
     // two with bit 253 set (covers the credentialPrivKey =
@@ -433,10 +442,7 @@ fn build_baby_pbk_vectors() -> Vec<BabyPbkVector> {
         sk[7] = 0x55;
         // Force bit 253 unset by zeroing top byte's bit.
         sk[31] &= 0b0001_1111;
-        out.push(make_vector(
-            "deterministic sk (bit-253 unset)",
-            &sk,
-        ));
+        out.push(make_vector("deterministic sk (bit-253 unset)", &sk));
     }
 
     out
@@ -507,7 +513,11 @@ fn build_identity_anchor_vectors() -> Vec<IdentityAnchorVector> {
         // Skip if it happens to land in bit-253 range.
         let cred = poseidon::hash_bytes(&[master, schema]).unwrap();
         if !bit253_set(&cred) {
-            out.push(make_vector("deterministic (bit-253 unset)", &master, &schema));
+            out.push(make_vector(
+                "deterministic (bit-253 unset)",
+                &master,
+                &schema,
+            ));
         }
     }
 
@@ -602,13 +612,19 @@ fn main() -> anyhow::Result<()> {
     for v in &vectors.lt_bn254 {
         for s in [&v.a_dec, &v.b_dec] {
             let val = BigUint::parse_bytes(s.as_bytes(), 10).unwrap();
-            assert!(val < p, "lt_bn254 vector emitted out-of-domain element: {s}");
+            assert!(
+                val < p,
+                "lt_bn254 vector emitted out-of-domain element: {s}"
+            );
         }
     }
     for v in &vectors.baby_pbk254 {
         for s in [&v.sk_dec, &v.pk_x_dec, &v.pk_y_dec] {
             let val = BigUint::parse_bytes(s.as_bytes(), 10).unwrap();
-            assert!(val < p, "baby_pbk254 vector emitted out-of-domain element: {s}");
+            assert!(
+                val < p,
+                "baby_pbk254 vector emitted out-of-domain element: {s}"
+            );
         }
     }
     for v in &vectors.identity_anchor {
@@ -631,25 +647,37 @@ fn main() -> anyhow::Result<()> {
     // identity_anchor.  This is the regression class we are pinning
     // down; if it ever drops to zero, the test suite is no longer
     // covering the original failure.
-    let lt_bit253 = vectors.lt_bn254.iter()
-        .filter(|v| v.a_bit253_set || v.b_bit253_set).count();
-    let pbk_bit253 = vectors.baby_pbk254.iter()
-        .filter(|v| v.bit253_set).count();
-    let anchor_bit253 = vectors.identity_anchor.iter()
-        .filter(|v| v.bit253_set).count();
-    assert!(lt_bit253 >= 2, "lt_bn254: <2 bit-253 vectors (have {lt_bit253})");
-    assert!(pbk_bit253 >= 2, "baby_pbk254: <2 bit-253 vectors (have {pbk_bit253})");
-    assert!(anchor_bit253 >= 2, "identity_anchor: <2 bit-253 vectors (have {anchor_bit253})");
+    let lt_bit253 = vectors
+        .lt_bn254
+        .iter()
+        .filter(|v| v.a_bit253_set || v.b_bit253_set)
+        .count();
+    let pbk_bit253 = vectors.baby_pbk254.iter().filter(|v| v.bit253_set).count();
+    let anchor_bit253 = vectors
+        .identity_anchor
+        .iter()
+        .filter(|v| v.bit253_set)
+        .count();
+    assert!(
+        lt_bit253 >= 2,
+        "lt_bn254: <2 bit-253 vectors (have {lt_bit253})"
+    );
+    assert!(
+        pbk_bit253 >= 2,
+        "baby_pbk254: <2 bit-253 vectors (have {pbk_bit253})"
+    );
+    assert!(
+        anchor_bit253 >= 2,
+        "identity_anchor: <2 bit-253 vectors (have {anchor_bit253})"
+    );
 
-    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../circuits/test/fixtures");
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../circuits/test/fixtures");
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("create_dir_all {}", out_dir.display()))?;
     let out_path = out_dir.join("circuit_vectors.json");
     let mut json = serde_json::to_string_pretty(&vectors)?;
     json.push('\n');
-    fs::write(&out_path, json)
-        .with_context(|| format!("write {}", out_path.display()))?;
+    fs::write(&out_path, json).with_context(|| format!("write {}", out_path.display()))?;
     println!(
         "Wrote {} ({} lt + {} babyPbk + {} anchor vectors; bit-253 cov: lt={} pbk={} anchor={})",
         out_path.display(),

@@ -12,3 +12,8 @@ crate-type = ["lib"]
 anchor-lang = { workspace = true }
 borsh = "0.10"
 hex = "0.4"
+# SOLID-SEC-059 / H1 closure: on-chain Poseidon-Merkle recompute uses
+# `solid_core::poseidon::hash_bytes` (dual-target: BPF sol_poseidon
+# syscall, host light-poseidon).  The cycle is broken because solid-core
+# does not depend on solid-light.
+solid-core = { path = "../solid-core" }

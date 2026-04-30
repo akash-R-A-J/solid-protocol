@@ -56,6 +56,52 @@ use light_poseidon::{Poseidon, PoseidonHasher};
 
 // ─── Field Element ↔ Bytes Conversion (dual-target) ────────────────────────
 
+/// BN254 scalar field modulus `p` as little-endian bytes.  Used by
+/// [`is_canonical_bn254_le`] (SOLID-SEC-062 / H4) to reject
+/// non-canonical 32-byte field-element encodings at trust boundaries.
+///
+/// `p = 21888242871839275222246405745257275088548364400416034343698204186575808495617`
+///
+/// Big-endian hex (sanity):
+/// `0x30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001`.
+///
+/// BabyJubJub (used for issuer pubkey x/y) is defined over the BN254
+/// scalar field, so the same modulus applies to BJJ coordinates and to
+/// the Poseidon-output commitment.
+pub const BN254_FR_MODULUS_LE: [u8; 32] = [
+    0x01, 0x00, 0x00, 0xf0, 0x93, 0xf5, 0xe1, 0x43, 0x91, 0x70, 0xb9, 0x79, 0x48, 0xe8, 0x33, 0x28,
+    0x5d, 0x58, 0x81, 0x81, 0xb6, 0x45, 0x50, 0xb8, 0x29, 0xa0, 0x31, 0xe1, 0x72, 0x4e, 0x64, 0x30,
+];
+
+/// Returns `true` iff `bytes` (interpreted as a little-endian 256-bit
+/// integer) is strictly less than the BN254 scalar field modulus.
+///
+/// Use at every trust boundary that accepts a 32-byte field element
+/// from an untrusted caller (commitment, BJJ pubkey x/y, etc.).
+/// Without this gate, a malicious issuer can pick `c1, c2` with `c1 !=
+/// c2` but `c1 mod p == c2 mod p`, producing two on-chain leaves the
+/// circuit treats as one -- enabling nullifier-confusion attacks
+/// against revocation accounting.  See SOLID-SEC-062 (H4 of the
+/// 2026-04-29 synthesis audit).
+///
+/// CU cost on BPF: O(32) byte compares; <100 CU.
+#[inline]
+pub fn is_canonical_bn254_le(bytes: &[u8; 32]) -> bool {
+    // Compare in MSB-first order: walk from byte 31 (most significant
+    // in LE) down to byte 0.  First byte that differs decides.
+    for i in (0..32).rev() {
+        if bytes[i] < BN254_FR_MODULUS_LE[i] {
+            return true;
+        }
+        if bytes[i] > BN254_FR_MODULUS_LE[i] {
+            return false;
+        }
+    }
+    // bytes == p exactly is NOT canonical (the canonical encoding of p
+    // is 0).
+    false
+}
+
 /// Convert an `Fr` field element to 32 bytes (little-endian).
 ///
 /// This matches circomlib's internal representation.
@@ -390,5 +436,90 @@ mod tests {
         // And it must agree bit-for-bit with the host field-element path.
         let h3 = fr_to_bytes_le(&hash_fr(&[bytes_le_to_fr(&oversized)]).unwrap());
         assert_eq!(h1, h3, "byte path with oversized input must equal Fr path");
+    }
+
+    // ─── BN254 canonicality (SOLID-SEC-062 / H4) ─────────────────────────
+
+    #[test]
+    fn is_canonical_zero_is_canonical() {
+        assert!(is_canonical_bn254_le(&[0u8; 32]));
+    }
+
+    #[test]
+    fn is_canonical_one_is_canonical() {
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        assert!(is_canonical_bn254_le(&one));
+    }
+
+    #[test]
+    fn is_canonical_modulus_minus_one_is_canonical() {
+        // p - 1 (LE) = (modulus - 1) — must accept.
+        let mut p_minus_one = BN254_FR_MODULUS_LE;
+        // LE: subtract 1 by decrementing byte 0 (no borrow because byte 0 = 0x01).
+        p_minus_one[0] -= 1;
+        assert!(is_canonical_bn254_le(&p_minus_one));
+    }
+
+    #[test]
+    fn is_canonical_exact_modulus_is_rejected() {
+        // p itself is NOT canonical (must be strictly less than p).
+        assert!(!is_canonical_bn254_le(&BN254_FR_MODULUS_LE));
+    }
+
+    #[test]
+    fn is_canonical_modulus_plus_one_is_rejected() {
+        let mut p_plus_one = BN254_FR_MODULUS_LE;
+        // LE add 1 (byte 0 = 0x01 -> 0x02; no overflow into byte 1).
+        p_plus_one[0] += 1;
+        assert!(!is_canonical_bn254_le(&p_plus_one));
+    }
+
+    #[test]
+    fn is_canonical_max_field_value_is_rejected() {
+        // 0xFF * 32 == 2^256 - 1; well above p.
+        assert!(!is_canonical_bn254_le(&[0xFFu8; 32]));
+    }
+
+    #[test]
+    fn is_canonical_high_byte_above_top_is_rejected() {
+        // Top byte of p is 0x30; setting byte 31 to 0x31 with rest zero
+        // gives a value that is > p iff the high byte alone exceeds p's
+        // high byte.
+        let mut v = [0u8; 32];
+        v[31] = 0x31;
+        assert!(!is_canonical_bn254_le(&v));
+    }
+
+    #[test]
+    fn is_canonical_high_byte_below_top_is_canonical() {
+        let mut v = [0u8; 32];
+        v[31] = 0x2F;
+        assert!(is_canonical_bn254_le(&v));
+    }
+
+    #[test]
+    fn is_canonical_high_bytes_match_low_bytes_below_p_is_canonical() {
+        // Build a value whose top 16 bytes match `p`'s top 16 bytes but
+        // whose bottom 16 bytes are zero.  Strictly less than `p`, so
+        // canonical.  Catches an off-by-one in the MSB-first walk that
+        // returns false too early on byte equality.
+        let mut v = [0u8; 32];
+        for i in 16..32 {
+            v[i] = BN254_FR_MODULUS_LE[i];
+        }
+        // Top 16 bytes equal p; bottom 16 are zero whereas p's bottom
+        // 16 starts with 0x01 -- so v < p strictly.
+        assert!(is_canonical_bn254_le(&v));
+    }
+
+    #[test]
+    fn is_canonical_modulus_le_constant_round_trips_through_fr() {
+        // The on-chain const must agree with arkworks' notion of p.
+        // bytes_le_to_fr reduces `p` to 0; round-tripping via
+        // fr_to_bytes_le yields the canonical encoding of 0.
+        let fr_zero = bytes_le_to_fr(&BN254_FR_MODULUS_LE);
+        let bytes = fr_to_bytes_le(&fr_zero);
+        assert_eq!(bytes, [0u8; 32]);
     }
 }

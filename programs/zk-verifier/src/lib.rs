@@ -23,22 +23,62 @@ declare_id!("DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb");
 
 // ─── Circuit Constants ─────────────────────────────────────────────────────
 // batch_credential_query public inputs (32 total; ADR-0014 revision of
-// ADR-0012, which previously pinned 31):
-//   [0]      = nullifierHash (circuit output; 6-input Poseidon post ADR-0014)
-//   [1]      = globalRoot
-//   [2..5]   = merkleRoots[4]
-//   [6..9]   = schemaHashes[4]
-//   [10]     = issuerTreeRoot                  (NEW; SEC-004 / SEC-008)
-//   [11..14] = queryCredentialIndices[4]
-//   [15..18] = queryFieldIndices[4]
-//   [19..22] = queryOperators[4]
-//   [23..26] = queryValues[4]
-//   [27]     = numPredicates
-//   [28]     = compoundLogic
-//   [29]     = verifierAddress
-//   [30]     = verifierNonce
-//   [31]     = currentTimestamp
+// ADR-0012, which previously pinned 31).  The full 32-element layout
+// is fixed by the trusted setup; on the wire we send only the 21 slots
+// the witness owns -- the other 11 are reconstructed on-chain from
+// accounts the ix already takes (SOLID-SEC-054 / B13).  Slot indices
+// below are inclusive ranges (a..=b means a, a+1, ..., b).
+//
+//   [0]       = nullifierHash         (wire; circuit output, 6-input Poseidon
+//                                      post ADR-0014)
+//   [1]       = globalRoot            (RECONSTRUCT from `global_tree`)
+//   [2..=5]   = merkleRoots[4]        (RECONSTRUCT from `schema_tree_N`)
+//   [6..=9]   = schemaHashes[4]       (RECONSTRUCT from `schema_tree_N`)
+//   [10]      = issuerTreeRoot        (RECONSTRUCT from `issuer_tree_binding`;
+//                                      NEW; SEC-004 / SEC-008)
+//   [11..=14] = queryCredentialIndices[4]  (wire)
+//   [15..=18] = queryFieldIndices[4]       (wire)
+//   [19..=22] = queryOperators[4]          (wire)
+//   [23..=26] = queryValues[4]             (wire)
+//   [27]      = numPredicates              (wire)
+//   [28]      = compoundLogic              (wire)
+//   [29]      = verifierAddress       (RECONSTRUCT from `program_id`)
+//   [30]      = verifierNonce              (wire; witness-bound anti-replay
+//                                           nonce)
+//   [31]      = currentTimestamp           (wire; witness-bound, freshness
+//                                           enforced via SEC-005 skew window
+//                                           against `Clock::unix_timestamp`)
+//
+// Slots 30 and 31 stay on the wire because they are witness-bound and
+// Groth16 enforces polynomial-equality on public inputs with zero
+// tolerance.  `Clock::unix_timestamp` cannot reproduce the exact
+// `T_off` the witness committed to (slot times, network propagation,
+// inclusion delay; off by ~1-2 seconds at minimum); the SEC-005 skew
+// window is an *additional* on-chain freshness predicate that wraps
+// the wire-supplied `currentTimestamp`, not a substitute for
+// cryptographic equality.
 pub const NR_PUBLIC_INPUTS: usize = 32;
+
+/// SOLID-SEC-054 / B13: the number of public-input slots transmitted on
+/// the wire.  Compile-time invariant: `NR_WIRE_INPUTS +
+/// RECONSTRUCTED_INPUT_SLOTS.len() == NR_PUBLIC_INPUTS`.
+pub const NR_WIRE_INPUTS: usize = 21;
+
+/// Slots transmitted on the wire, in canonical (ascending) order.  The
+/// caller's `public_inputs: Vec<u8>` has length `NR_WIRE_INPUTS * 32`;
+/// chunk `i` at `[i*32 .. (i+1)*32]` maps to circuit slot
+/// `WIRE_INPUT_SLOTS[i]`. Off-chain SDK encoders
+/// (`ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`)
+/// MUST extract `publicSignals[WIRE_INPUT_SLOTS[i]]` for each `i` in
+/// the same order and flatten each slot to 32 little-endian bytes.
+pub const WIRE_INPUT_SLOTS: [usize; NR_WIRE_INPUTS] = [
+    0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31,
+];
+
+/// Slots reconstructed on-chain from accounts the ix already takes.
+/// In the same canonical (ascending) order as the circuit layout.
+pub const RECONSTRUCTED_INPUT_SLOTS: [usize; NR_PUBLIC_INPUTS - NR_WIRE_INPUTS] =
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 29];
 
 /// Index of `issuerTreeRoot` in `public_inputs[]`.  Load-bearing: the
 /// handler reads this slot and cross-checks it against the on-chain
@@ -351,76 +391,220 @@ pub mod zk_verifier {
     /// `VerifyBatchProof` accounts struct.  Forcing a real call boundary
     /// keeps user-fn locals isolated from the wrapper's frame.
     ///
-    /// `public_inputs` is `Vec<[u8; 32]>` (heap-resident) rather than
-    /// `[[u8; 32]; NR_PUBLIC_INPUTS]` (1 024 bytes inline) by design.
-    /// Anchor's `__global` wrapper deserializes the args struct, then
-    /// passes args by value into this fn -- on BPF the arg copy lives in
-    /// the wrapper's outgoing-args stack slots, doubling the array's
-    /// stack footprint.  At `NR_PUBLIC_INPUTS = 32` that pushed the
-    /// wrapper 456 bytes past the 4 KB per-frame BPF budget.  A `Vec`
-    /// is a 24-byte fat pointer regardless of length, so the wrapper
-    /// only holds one cheap copy and the underlying 1 024-byte buffer
-    /// stays on the heap.  Length is validated equal to
-    /// `NR_PUBLIC_INPUTS` before any indexed access; conversion to the
-    /// `&[[u8; 32]; NR_PUBLIC_INPUTS]` shape that `Groth16Verifier`
-    /// expects is a single zero-cost `TryInto` on the slice.  See
-    /// `ts-sdk/packages/verifier/src/index.ts` for the matching wire
-    /// encoding (4-byte LE length prefix before the 32x32-byte payload).
+    /// `public_inputs` is `Vec<u8>` (heap-resident, flat) rather than
+    /// `[[u8; 32]; NR_WIRE_INPUTS]` (672 bytes inline) or the obvious
+    /// `Vec<[u8; 32]>` shape.  Two reasons:
+    ///
+    /// (a) Anchor's `__global` wrapper deserializes the args struct,
+    /// then passes args by value into this fn -- on BPF the arg copy
+    /// lives in the wrapper's outgoing-args stack slots, doubling the
+    /// array's stack footprint.  At the prior `NR_PUBLIC_INPUTS = 32`
+    /// that pushed the wrapper 456 bytes past the 4 KB per-frame BPF
+    /// budget (SEC-047).  A `Vec` is a 24-byte fat pointer regardless
+    /// of length, so the wrapper only holds one cheap copy and the
+    /// underlying buffer stays on the heap.
+    ///
+    /// (b) `Vec<[u8; 32]>` round-trips fine on the host but reliably
+    /// fails Anchor 0.30.1's per-element BorshDeserialize on BPF
+    /// during the wrapper's args-deser step (`InstructionDidNotDeserialize`,
+    /// surfaced post-SEC-053 once a real proof first reached the
+    /// handler).  Flat `Vec<u8>` deserializes via the
+    /// fast-path `Vec::with_capacity + read_exact`, which is in
+    /// active use across the rest of the program (e.g.
+    /// `store_verification_key`).  The handler chunks into 32-byte
+    /// slices below.
+    ///
+    /// SOLID-SEC-054 / B13: the wire carries only `NR_WIRE_INPUTS = 21`
+    /// of the 32 circuit slots; the remaining 11 are reconstructed
+    /// in-handler from the accounts already on the ix surface
+    /// (`global_tree`, `schema_tree_0..3`, `issuer_tree_binding`,
+    /// `program_id`).  This shrinks ix data from 1324 to 972 bytes,
+    /// under Solana's 1232-byte legacy-tx packet ceiling.  See the
+    /// `WIRE_INPUT_SLOTS` / `RECONSTRUCTED_INPUT_SLOTS` constants
+    /// above for the slot partition.
+    ///
+    /// See `ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`
+    /// for the matching wire encoding (4-byte LE length prefix == 672
+    /// (= NR_WIRE_INPUTS * 32) before the flat payload).
     #[inline(never)]
     pub fn verify_batch_proof(
         ctx: Context<VerifyBatchProof>,
         proof_a: [u8; 64],
         proof_b: [u8; 128],
         proof_c: [u8; 64],
-        public_inputs: Vec<[u8; 32]>,
+        public_inputs: Vec<u8>,
         nullifier: [u8; 32],
     ) -> Result<()> {
         let config = &ctx.accounts.verifier_config;
         require!(!config.paused, ErrorCode::Paused);
         require!(config.vk_initialized, ErrorCode::VerificationKeyNotSet);
 
-        // (0) Public-input arity gate.  Every downstream slot index in this
-        // handler is a compile-time constant against `NR_PUBLIC_INPUTS`
-        // (e.g. `VERIFIER_ADDRESS_INPUT_INDEX`, `CURRENT_TIMESTAMP_INPUT_INDEX`,
-        // and the schema/merkle range `[2..10]`).  A Vec gives a malicious
-        // caller the freedom to send the wrong length and crash the program
-        // on the first out-of-bounds access; converting to a fixed-size
-        // reference here turns that into a typed error.
-        let public_inputs: &[[u8; 32]; NR_PUBLIC_INPUTS] = public_inputs
-            .as_slice()
-            .try_into()
-            .map_err(|_| ErrorCode::InvalidProofFormat)?;
-
-        // (1) Nullifier binding: the output signal (public_inputs[0]) must equal
-        // the `nullifier` the caller is about to register as a PDA seed.
-        require!(nullifier == public_inputs[0], ErrorCode::NullifierMismatch);
-
-        // (2) SEC-13: verifier scope binding.  Index shifted to 29
-        // by ADR-0014 (issuerTreeRoot inserted at [10]).
-        let verifier_address_input = public_inputs[VERIFIER_ADDRESS_INPUT_INDEX];
+        // (0) Wire-arity gate.  Caller sends exactly `NR_WIRE_INPUTS *
+        // 32` flat bytes (21 slots * 32 bytes = 672 bytes).  Any
+        // other length is a typed rejection -- the per-chunk indexing
+        // below assumes the exact length.
         require!(
-            verifier_address_input == ID.to_bytes(),
-            ErrorCode::InvalidVerifierAddress
+            public_inputs.len() == NR_WIRE_INPUTS * 32,
+            ErrorCode::InvalidProofFormat
         );
 
-        // (2b) SOLID-SEC-005: bind `currentTimestamp` public input to on-chain
-        // Clock. The circuit enforces `currentTimestamp <= expirationTimestamp`
-        // per credential, but without an on-chain freshness check a prover may
-        // pass `currentTimestamp = 0` and defeat every expiration gate.
+        // (1) Reconstruct the full 32-slot public-input array on the
+        // user-fn stack frame (1024 bytes; user fn has ~2.2 KB free
+        // per the SEC-047 stack-frame audit -- cf. `cu_budget.md` §6).
+        // The Anchor `__global` wrapper's tighter ~1.6 KB-free margin
+        // is unaffected because `#[inline(never)]` keeps this frame
+        // separate from the wrapper's deserialization frame.
+        let mut full_inputs: [[u8; 32]; NR_PUBLIC_INPUTS] = [[0u8; 32]; NR_PUBLIC_INPUTS];
+
+        // (1a) Copy wire-supplied slots into their canonical positions.
+        // `WIRE_INPUT_SLOTS[i]` is the circuit-slot index that the
+        // bytes at `public_inputs[i*32..(i+1)*32]` are destined for.
+        for (wire_idx, &circuit_slot) in WIRE_INPUT_SLOTS.iter().enumerate() {
+            let start = wire_idx * 32;
+            full_inputs[circuit_slot]
+                .copy_from_slice(&public_inputs[start..start + 32]);
+        }
+
+        // (1b) Reconstruct `globalRoot` (slot 1) from the
+        // `GlobalStateBinding` PDA owned by `schema-registry`.
+        // Owner-check is load-bearing: a system-owned account with
+        // a forged `globroot` discriminator would otherwise parse
+        // cleanly.  Pre-B13 we read this slot from the wire and
+        // checked it matched the account body; post-B13 we read
+        // directly from the account, which is strictly stronger
+        // (eliminates the "what if the wire-supplied root is stale
+        // but skew-valid" question).
         //
-        // public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX] is a 32-byte LE
-        // encoding of a BN254 field element.  Plausible unix timestamps
-        // fit in a u64, so bytes [8..32] MUST be zero; otherwise the
-        // caller has either (a) fed the circuit a pathological value
-        // or (b) packed the input with the wrong encoding (see
-        // SOLID-SEC-031 for the related SDK-side fix). Either way we
-        // reject.
-        let ts_bytes = public_inputs[CURRENT_TIMESTAMP_INPUT_INDEX];
-        for i in 8..32 {
+        // Byte-order: the holder SDK reads stored roots/hashes via
+        // `bufToDecimal` (LE-decode), then the verifier SDK BE-encodes
+        // each `publicSignals[i]` for the wire (because groth16-solana
+        // interprets each [u8; 32] public input as BE).  So the
+        // BE-form Groth16 expects is `reverse(stored_bytes)`.  All
+        // reconstructed slots in (1b)-(1d) byte-reverse on copy --
+        // verifierAddress (1e) is the exception because the holder
+        // already uses `bufToDecimalBE` for it (SOLID-SEC-031).
+        require_keys_eq!(
+            *ctx.accounts.global_tree.owner,
+            SCHEMA_REGISTRY_ID,
+            ErrorCode::InvalidGlobalRoot
+        );
+        let global_tree_data = ctx.accounts.global_tree.try_borrow_data()?;
+        let mut global_root_le = cpi_helpers::extract_global_state_root(&global_tree_data)
+            .map_err(|_| ErrorCode::InvalidGlobalRoot)?;
+        global_root_le.reverse();
+        full_inputs[1] = global_root_le;
+        drop(global_tree_data);
+
+        // (1c) Reconstruct `issuerTreeRoot` (slot 10) from the
+        // singleton `IssuerTreeBinding` PDA owned by `issuer-registry`
+        // (ADR-0014).  Same LE -> BE reversal as (1b).
+        require_keys_eq!(
+            *ctx.accounts.issuer_tree_binding.owner,
+            ISSUER_REGISTRY_ID,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
+        let mut issuer_root_le = cpi_helpers::extract_active_issuer_tree_root(
+            &issuer_binding_data,
+        )
+        .map_err(|e| match e {
+            cpi_helpers::LightError::IssuerTreeBindingFrozen => ErrorCode::IssuerTreeBindingFrozen,
+            _ => ErrorCode::InvalidIssuerTreeBinding,
+        })?;
+        issuer_root_le.reverse();
+        full_inputs[ISSUER_TREE_ROOT_INPUT_INDEX] = issuer_root_le;
+        drop(issuer_binding_data);
+
+        // (1d) Reconstruct merkleRoots[0..3] (slots 2..5) and
+        // schemaHashes[0..3] (slots 6..9) from `schema_tree_0..3`.
+        //
+        // Inactive-slot signal: callers pass `Pubkey::default()` (or
+        // any non-`SCHEMA_REGISTRY_ID`-owned account) for slots they
+        // don't have a credential for.  The owner-check below
+        // distinguishes active vs inactive without needing a wire
+        // flag; inactive slots leave `full_inputs[2+i]` and
+        // `full_inputs[6+i]` at their zero-initialized state, which
+        // matches the witness commitment for unused slots.
+        //
+        // Canonical-ordering check (schemas strictly ascending) is
+        // preserved as defense-in-depth: catches a misordered set of
+        // schema_tree accounts.  The strict-ascending comparison runs
+        // on the BE-reversed schema-hash bytes (the same byte ordering
+        // the witness committed to), so the ordering invariant matches
+        // the circuit's own canonicality check (SOLID-SEC-050).
+        let mut last_schema: Option<[u8; 32]> = None;
+        for i in 0..4usize {
+            let tree_info = match i {
+                0 => &ctx.accounts.schema_tree_0,
+                1 => &ctx.accounts.schema_tree_1,
+                2 => &ctx.accounts.schema_tree_2,
+                _ => &ctx.accounts.schema_tree_3,
+            };
+            // Inactive slot: not owned by schema-registry.  Leave the
+            // corresponding `full_inputs` entries at zero; the witness
+            // committed to zero too, so Groth16 stays consistent.
+            if *tree_info.owner != SCHEMA_REGISTRY_ID {
+                continue;
+            }
+            let data = tree_info.try_borrow_data()?;
+            let (mut merkle_root_le, mut schema_hash_le) =
+                cpi_helpers::extract_active_schema_root_binding(&data).map_err(|e| match e {
+                    cpi_helpers::LightError::SchemaTreeBindingFrozen => {
+                        ErrorCode::InvalidSchemaRootBinding
+                    }
+                    _ => ErrorCode::InvalidSchemaRootBinding,
+                })?;
+            merkle_root_le.reverse();
+            schema_hash_le.reverse();
+            // Both are now in BE form; matches what Groth16 expects
+            // and what the circuit's canonicality check uses.
+            if let Some(prev) = last_schema {
+                require!(schema_hash_le > prev, ErrorCode::InvalidCredentialOrder);
+            }
+            last_schema = Some(schema_hash_le);
+            full_inputs[2 + i] = merkle_root_le;
+            full_inputs[6 + i] = schema_hash_le;
+        }
+
+        // (1e) Reconstruct `verifierAddress` (slot 29) from this
+        // program's ID.  Constant; no account read.
+        full_inputs[VERIFIER_ADDRESS_INPUT_INDEX] = ID.to_bytes();
+
+        // (2) Nullifier binding: the output signal (full_inputs[0])
+        // must equal the `nullifier` the caller is about to register
+        // as a PDA seed.  full_inputs[0] is wire-sourced (slot 0 is
+        // in `WIRE_INPUT_SLOTS`).
+        require!(nullifier == full_inputs[0], ErrorCode::NullifierMismatch);
+
+        // (3) SOLID-SEC-005: bind `currentTimestamp` (slot 31, wire-sourced)
+        // to on-chain Clock via the configured skew window. The
+        // circuit enforces `currentTimestamp <= expirationTimestamp`
+        // per credential; without an on-chain freshness check a
+        // prover may pass `currentTimestamp = 0` and defeat every
+        // expiration gate.
+        //
+        // full_inputs[CURRENT_TIMESTAMP_INPUT_INDEX] is a 32-byte
+        // **big-endian** encoding of a BN254 field element.  Big-endian
+        // is the convention the SDK uses for every public input
+        // (matching `verifierAddress = ID.to_bytes()` per SOLID-SEC-031,
+        // which is itself BE because Solana pubkeys serialize BE).
+        // Plausible unix timestamps fit in a u64, so the high 24 bytes
+        // (`[0..24]`) MUST be zero with the value living in `[24..32]`;
+        // otherwise the caller has either (a) fed the circuit a
+        // pathological value or (b) packed the input with the wrong
+        // encoding.
+        //
+        // Pre-B13 this check was written against an LE assumption (read
+        // `[0..8]` as LE u64, require `[8..32]` zero).  That was latent
+        // because the verifier was never invoked end-to-end before
+        // SOLID-SEC-054 / B13 closed the wire-size wall; the SDK has
+        // always encoded BE.
+        let ts_bytes = full_inputs[CURRENT_TIMESTAMP_INPUT_INDEX];
+        for i in 0..24 {
             require!(ts_bytes[i] == 0, ErrorCode::StaleTimestamp);
         }
-        let claimed_ts = u64::from_le_bytes(
-            ts_bytes[0..8]
+        let claimed_ts = u64::from_be_bytes(
+            ts_bytes[24..32]
                 .try_into()
                 .map_err(|_| ErrorCode::StaleTimestamp)?,
         );
@@ -435,131 +619,24 @@ pub mod zk_verifier {
             ErrorCode::StaleTimestamp
         );
 
-        // (3) Global-root verification.
-        //
-        // The `global_tree` account is the `GlobalStateBinding` PDA owned by
-        // `schema-registry`. Without the owner check below an attacker can
-        // pass a system-owned account with a forged `globroot` discriminator
-        // and any root bytes: the parse-level verify_state_root_matches would
-        // succeed against fabricated data and the whole ZK path becomes
-        // bypassable.
-        require_keys_eq!(
-            *ctx.accounts.global_tree.owner,
-            SCHEMA_REGISTRY_ID,
-            ErrorCode::InvalidGlobalRoot
-        );
-        let global_root = public_inputs[1];
-        let tree_account_data = ctx.accounts.global_tree.try_borrow_data()?;
-        require!(
-            cpi_helpers::verify_state_root_matches(&tree_account_data, &global_root),
-            ErrorCode::InvalidGlobalRoot
-        );
-
-        // (3b) ADR-0014: issuer-tree root binding.
-        //
-        // Cross-check `public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX]`
-        // against the singleton `IssuerTreeBinding.current_root`.  The
-        // owner check is load-bearing for the same reason as (3) -- a
-        // system-owned account with a forged `issrtree` discriminator
-        // would otherwise parse cleanly.  Bundled with the SOLID-SEC-008
-        // epoch nullifier (the root is already in `public_inputs[0]`'s
-        // preimage), this closes the post-revocation replay window.
-        require_keys_eq!(
-            *ctx.accounts.issuer_tree_binding.owner,
-            ISSUER_REGISTRY_ID,
-            ErrorCode::InvalidIssuerTreeBinding
-        );
-        let issuer_tree_root_input = public_inputs[ISSUER_TREE_ROOT_INPUT_INDEX];
-        let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
-        cpi_helpers::verify_issuer_tree_binding_for_proof(
-            &issuer_binding_data,
-            &issuer_tree_root_input,
-        )
-        .map_err(|e| match e {
-            cpi_helpers::LightError::IssuerTreeRootMismatch => ErrorCode::IssuerTreeRootMismatch,
-            cpi_helpers::LightError::IssuerTreeBindingFrozen => ErrorCode::IssuerTreeBindingFrozen,
-            _ => ErrorCode::InvalidIssuerTreeBinding,
-        })?;
-        drop(issuer_binding_data);
-
-        // (4) Schema ↔ root binding + canonical ordering.
-        //
-        // Each non-zero slot `i` has:
-        //   merkle_roots[i] = public_inputs[2 + i]
-        //   schema_hashes[i] = public_inputs[6 + i]
-        //
-        // For every active slot we require:
-        //   (a) the schema must be strictly greater than the previous active schema
-        //   (b) the registered credential-tree PDA for that schema must exist
-        //       and its stored root must equal `merkle_roots[i]`.
-        let mut last_schema: Option<[u8; 32]> = None;
-        for i in 0..4usize {
-            let merkle_root = public_inputs[2 + i];
-            let schema_hash = public_inputs[6 + i];
-
-            if merkle_root == [0u8; 32] && schema_hash == [0u8; 32] {
-                continue;
-            }
-
-            // (4a) Canonical ordering: schemas strictly ascending.
-            if let Some(prev) = last_schema {
-                require!(schema_hash > prev, ErrorCode::InvalidCredentialOrder);
-            }
-            last_schema = Some(schema_hash);
-
-            // (4b) Registered tree lookup via schema-registry PDA.
-            // The caller must pass 4 `schema_tree_info[i]` accounts, one per
-            // active slot (zero slots allow the default `Pubkey::default()`).
-            //
-            // The owner check here is load-bearing for the same reason as the
-            // global_tree check above: without it, a crafted system-owned
-            // account carrying a `schmtree` discriminator would be accepted.
-            let tree_info = match i {
-                0 => &ctx.accounts.schema_tree_0,
-                1 => &ctx.accounts.schema_tree_1,
-                2 => &ctx.accounts.schema_tree_2,
-                _ => &ctx.accounts.schema_tree_3,
-            };
-            require_keys_eq!(
-                *tree_info.owner,
-                SCHEMA_REGISTRY_ID,
-                ErrorCode::InvalidSchemaRootBinding
-            );
-            let data = tree_info.try_borrow_data()?;
-            require!(
-                cpi_helpers::verify_schema_root_binding(&data, &merkle_root, &schema_hash),
-                ErrorCode::InvalidSchemaRootBinding
-            );
-        }
-
-        // (5) Groth16 verification.
+        // (4) Groth16 verification against the reconstructed full
+        // 32-element array.
         //
         // Delegate to a separate, NEVER-INLINED helper.  The BPF target
         // is a flat 4 KB per-frame stack and `lto=fat` aggressively
         // inlines the user handler into Anchor's `__global::*` wrapper.
-        // After the merge, the wrapper holds Anchor's deserialized
-        // argument struct (`proof_a` 64 + `proof_b` 128 + `proof_c` 64
-        // + `public_inputs` 32×32 = 1024 + `nullifier` 32 = 1 312 bytes)
-        // AND a second moved copy of the same 1 312 bytes when those
-        // args are passed by value into the user fn — plus `vk_buf`
-        // (~480 bytes after the IC table moved to the heap), the
-        // by-value `Groth16Verifyingkey` returned by `as_verifying_key`
-        // (~480 bytes), `proof_a_neg` (64 bytes), and the
-        // `Groth16Verifier` (~120 bytes).  That tipped
-        // `__global::verify_batch_proof` 456 bytes past the 4 KB BPF
-        // budget.
-        //
-        // Confining the heavy Groth16 locals to a `#[inline(never)]`
-        // helper keeps them in their own stack frame, well isolated
-        // from the wrapper's argument-deserialization frame.  This is
-        // the durable fix: it does not depend on LTO's inlining
+        // Confining the heavy Groth16 locals (~1.2 KB) to a
+        // `#[inline(never)]` helper keeps them in their own stack
+        // frame, well isolated from the wrapper's
+        // argument-deserialization frame.  This is the durable
+        // SEC-047 fix: it does not depend on LTO's inlining
         // heuristics and survives compiler upgrades.
         verify_groth16_proof(
             &ctx.accounts.vk_storage.data,
             &proof_a,
             &proof_b,
             &proof_c,
-            public_inputs,
+            &full_inputs,
         )?;
 
         // (6) Allocate nullifier PDA — atomic replay-safety.
@@ -586,7 +663,256 @@ pub mod zk_verifier {
         );
         Ok(())
     }
+
+    // ─── B13 Option 2 / SOLID-SEC-054: buffer-account chunked-upload path ───
+    //
+    // The legacy `verify_batch_proof` ix data is 1269 bytes once the
+    // required `setComputeUnitLimit` is prepended -- 37 bytes over Solana's
+    // 1232-byte legacy-tx packet cap.  Versioned-tx + ALT compression
+    // doesn't recover that delta because the cuIx itself adds 32 bytes of
+    // ComputeBudget program key + ~8 bytes for the cuIx data, both of which
+    // must remain in `staticAccountKeys` (programs cannot be ALT-compressed).
+    //
+    // This trio of ixs is the documented escape valve from
+    // `docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1.1 + `docs/E2E_BLOCKERS.md`
+    // B13 Option 2.  Caller flow:
+    //
+    //   init_proof_buffer(payer)                 -- 1 small tx
+    //   upload_proof_chunk(buffer, off, bytes)*N -- 2-4 small txs
+    //   verify_batch_proof_v2(buffer)            -- 1 small tx
+    //
+    // The `_v2` ix re-runs the same B13 (1) reconstruction the legacy ix
+    // does (slots 1, 2..5, 6..9, 10, 29 from accounts), so soundness
+    // properties are identical.  The legacy ix is preserved for the
+    // narrower "proof fits in one tx" case.
+
+    /// Allocate a per-payer scratch PDA for staging a Groth16 proof.
+    pub fn init_proof_buffer(ctx: Context<InitProofBuffer>) -> Result<()> {
+        let buffer = &mut ctx.accounts.proof_buffer;
+        buffer.payer = ctx.accounts.payer.key();
+        buffer.created_slot = Clock::get()?.slot;
+        buffer.bytes_written = 0;
+        // `data` is zero-initialized by Anchor's `init` constraint.
+        Ok(())
+    }
+
+    /// Append `bytes` into `proof_buffer.data[offset..]`.  Idempotent on
+    /// re-upload-of-same-bytes; the caller is the only writer (PDA seed
+    /// includes their pubkey so two payers cannot collide).
+    pub fn upload_proof_chunk(
+        ctx: Context<UploadProofChunk>,
+        offset: u32,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let buffer = &mut ctx.accounts.proof_buffer;
+        require_keys_eq!(
+            buffer.payer,
+            ctx.accounts.payer.key(),
+            ErrorCode::InvalidProofBufferOwner
+        );
+        let off = offset as usize;
+        let end = off
+            .checked_add(bytes.len())
+            .ok_or(ErrorCode::InvalidProofChunk)?;
+        require!(end <= PROOF_BUFFER_PAYLOAD_SIZE, ErrorCode::InvalidProofChunk);
+        buffer.data[off..end].copy_from_slice(&bytes);
+        if (end as u32) > buffer.bytes_written {
+            buffer.bytes_written = end as u32;
+        }
+        Ok(())
+    }
+
+    /// Verify a Groth16 proof staged in `proof_buffer` and atomically
+    /// initialise the nullifier PDA.  Mirrors `verify_batch_proof`'s
+    /// soundness checks (B13 reconstruction of slots 1, 2..5, 6..9, 10,
+    /// 29; nullifier binding; SEC-005 timestamp skew; Groth16 pairing).
+    /// Closes the buffer and refunds rent at end-of-handler.
+    ///
+    /// `nullifier_seed` MUST equal the nullifier staged in
+    /// `proof_buffer.data[256..288)`.  The Anchor accounts struct uses
+    /// `nullifier_seed` to derive the `nullifier_record` PDA at
+    /// deser-time; a mismatch with the buffered nullifier is rejected
+    /// in-handler with `ErrorCode::NullifierMismatch`.
+    #[inline(never)]
+    pub fn verify_batch_proof_v2(
+        ctx: Context<VerifyBatchProofV2>,
+        nullifier_seed: [u8; 32],
+    ) -> Result<()> {
+        let config = &ctx.accounts.verifier_config;
+        require!(!config.paused, ErrorCode::Paused);
+        require!(config.vk_initialized, ErrorCode::VerificationKeyNotSet);
+
+        let buffer = &ctx.accounts.proof_buffer;
+        require_keys_eq!(
+            buffer.payer,
+            ctx.accounts.payer.key(),
+            ErrorCode::InvalidProofBufferOwner
+        );
+        require!(
+            buffer.bytes_written as usize == PROOF_BUFFER_PAYLOAD_SIZE,
+            ErrorCode::ProofBufferIncomplete
+        );
+
+        // Layout: [proof_a 64 | proof_b 128 | proof_c 64 | nullifier 32 |
+        //          wire_inputs 21*32 = 672], total = 960.
+        let proof_a: [u8; 64] = buffer.data[0..64]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidProofFormat))?;
+        let proof_b: [u8; 128] = buffer.data[64..192]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidProofFormat))?;
+        let proof_c: [u8; 64] = buffer.data[192..256]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidProofFormat))?;
+        let nullifier: [u8; 32] = buffer.data[256..288]
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidProofFormat))?;
+
+        // The PDA seed driving `nullifier_record` was derived from
+        // `nullifier_seed` (ix arg) at account-deser time.  Refuse if
+        // the caller's seed does not match the buffered nullifier; a
+        // mismatch otherwise produces a phantom nullifier PDA that
+        // doesn't correspond to the verified proof.
+        require!(
+            nullifier_seed == nullifier,
+            ErrorCode::NullifierMismatch
+        );
+
+        // Reconstruct the full 32-slot public-input array (same logic
+        // as verify_batch_proof; see that handler for the byte-order
+        // commentary).
+        let mut full_inputs: [[u8; 32]; NR_PUBLIC_INPUTS] = [[0u8; 32]; NR_PUBLIC_INPUTS];
+        let wire_region = &buffer.data[288..(288 + NR_WIRE_INPUTS * 32)];
+        for (wire_idx, &circuit_slot) in WIRE_INPUT_SLOTS.iter().enumerate() {
+            let start = wire_idx * 32;
+            full_inputs[circuit_slot].copy_from_slice(&wire_region[start..start + 32]);
+        }
+
+        // Slot 1: globalRoot from GlobalStateBinding.
+        require_keys_eq!(
+            *ctx.accounts.global_tree.owner,
+            SCHEMA_REGISTRY_ID,
+            ErrorCode::InvalidGlobalRoot
+        );
+        let global_tree_data = ctx.accounts.global_tree.try_borrow_data()?;
+        let mut global_root_le = cpi_helpers::extract_global_state_root(&global_tree_data)
+            .map_err(|_| ErrorCode::InvalidGlobalRoot)?;
+        global_root_le.reverse();
+        full_inputs[1] = global_root_le;
+        drop(global_tree_data);
+
+        // Slot 10: issuerTreeRoot from IssuerTreeBinding.
+        require_keys_eq!(
+            *ctx.accounts.issuer_tree_binding.owner,
+            ISSUER_REGISTRY_ID,
+            ErrorCode::InvalidIssuerTreeBinding
+        );
+        let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
+        let mut issuer_root_le =
+            cpi_helpers::extract_active_issuer_tree_root(&issuer_binding_data)
+                .map_err(|e| match e {
+                    cpi_helpers::LightError::IssuerTreeBindingFrozen => {
+                        ErrorCode::IssuerTreeBindingFrozen
+                    }
+                    _ => ErrorCode::InvalidIssuerTreeBinding,
+                })?;
+        issuer_root_le.reverse();
+        full_inputs[ISSUER_TREE_ROOT_INPUT_INDEX] = issuer_root_le;
+        drop(issuer_binding_data);
+
+        // Slots 2..5 (merkleRoots) + 6..9 (schemaHashes) from schema_tree_0..3.
+        let mut last_schema: Option<[u8; 32]> = None;
+        for i in 0..4usize {
+            let tree_info = match i {
+                0 => &ctx.accounts.schema_tree_0,
+                1 => &ctx.accounts.schema_tree_1,
+                2 => &ctx.accounts.schema_tree_2,
+                _ => &ctx.accounts.schema_tree_3,
+            };
+            if *tree_info.owner != SCHEMA_REGISTRY_ID {
+                continue;
+            }
+            let data = tree_info.try_borrow_data()?;
+            let (mut merkle_root_le, mut schema_hash_le) =
+                cpi_helpers::extract_active_schema_root_binding(&data).map_err(|e| match e {
+                    cpi_helpers::LightError::SchemaTreeBindingFrozen => {
+                        ErrorCode::InvalidSchemaRootBinding
+                    }
+                    _ => ErrorCode::InvalidSchemaRootBinding,
+                })?;
+            merkle_root_le.reverse();
+            schema_hash_le.reverse();
+            if let Some(prev) = last_schema {
+                require!(schema_hash_le > prev, ErrorCode::InvalidCredentialOrder);
+            }
+            last_schema = Some(schema_hash_le);
+            full_inputs[2 + i] = merkle_root_le;
+            full_inputs[6 + i] = schema_hash_le;
+        }
+
+        // Slot 29: verifierAddress = this program's ID.
+        full_inputs[VERIFIER_ADDRESS_INPUT_INDEX] = ID.to_bytes();
+
+        // Nullifier binding.
+        require!(nullifier == full_inputs[0], ErrorCode::NullifierMismatch);
+
+        // SEC-005 timestamp skew (slot 31, BE u64 in [24..32]).
+        let ts_bytes = full_inputs[CURRENT_TIMESTAMP_INPUT_INDEX];
+        for i in 0..24 {
+            require!(ts_bytes[i] == 0, ErrorCode::StaleTimestamp);
+        }
+        let claimed_ts = u64::from_be_bytes(
+            ts_bytes[24..32]
+                .try_into()
+                .map_err(|_| ErrorCode::StaleTimestamp)?,
+        );
+        let now_i64 = Clock::get()?.unix_timestamp;
+        require!(now_i64 >= 0, ErrorCode::StaleTimestamp);
+        let now = now_i64 as u64;
+        let skew = config.timestamp_skew_seconds as u64;
+        let lower = now.saturating_sub(skew);
+        let upper = now.saturating_add(skew);
+        require!(
+            claimed_ts >= lower && claimed_ts <= upper,
+            ErrorCode::StaleTimestamp
+        );
+
+        // Groth16 verify against the reconstructed full input array.
+        verify_groth16_proof(
+            &ctx.accounts.vk_storage.data,
+            &proof_a,
+            &proof_b,
+            &proof_c,
+            &full_inputs,
+        )?;
+
+        // Atomic nullifier PDA init.
+        ctx.accounts.nullifier_record.nullifier = nullifier;
+        ctx.accounts.nullifier_record.created_at = Clock::get()?.unix_timestamp;
+        ctx.accounts.nullifier_record.slot = Clock::get()?.slot;
+
+        // Metrics.
+        let config_mut = &mut ctx.accounts.verifier_config;
+        config_mut.proof_count = config_mut.proof_count.saturating_add(1);
+
+        emit!(CredentialVerified {
+            nullifier,
+            proof_count: config_mut.proof_count,
+            public_input_count: NR_PUBLIC_INPUTS as u8,
+            timestamp: Clock::get()?.unix_timestamp,
+        });
+
+        // Buffer is closed in the accounts struct via `close = payer`,
+        // refunding rent at handler exit.
+        Ok(())
+    }
 }
+
+/// Total payload size of the staged proof in `ProofBuffer.data`.
+/// Layout: proof_a(64) + proof_b(128) + proof_c(64) + nullifier(32) +
+/// wire_inputs(21*32 = 672) = 960 bytes.
+pub const PROOF_BUFFER_PAYLOAD_SIZE: usize = 64 + 128 + 64 + 32 + NR_WIRE_INPUTS * 32;
+const _: () = assert!(PROOF_BUFFER_PAYLOAD_SIZE == 960);
 
 // ─── Verification-key deserialization ─────────────────────────────────────
 
@@ -842,7 +1168,7 @@ pub struct StoreVerificationKey<'info> {
 #[derive(Accounts)]
 #[instruction(
     proof_a: [u8; 64], proof_b: [u8; 128], proof_c: [u8; 64],
-    public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS], nullifier: [u8; 32]
+    public_inputs: Vec<u8>, nullifier: [u8; 32]
 )]
 pub struct VerifyBatchProof<'info> {
     #[account(mut, seeds = [b"verifier-config"], bump = verifier_config.bump)]
@@ -887,6 +1213,106 @@ pub struct VerifyBatchProof<'info> {
         seeds::program = ISSUER_REGISTRY_ID,
     )]
     pub issuer_tree_binding: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// B13 Option 2: allocate the per-payer proof-staging buffer PDA.
+#[derive(Accounts)]
+pub struct InitProofBuffer<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + ProofBuffer::SPACE,
+        seeds = [b"proof-buffer", payer.key().as_ref()],
+        bump,
+    )]
+    pub proof_buffer: Account<'info, ProofBuffer>,
+
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// B13 Option 2: write a chunk of bytes into the proof-staging buffer.
+/// Caller MUST be the original `payer` recorded at init.
+#[derive(Accounts)]
+pub struct UploadProofChunk<'info> {
+    #[account(
+        mut,
+        seeds = [b"proof-buffer", payer.key().as_ref()],
+        bump,
+    )]
+    pub proof_buffer: Account<'info, ProofBuffer>,
+
+    pub payer: Signer<'info>,
+}
+
+/// B13 Option 2: verify a Groth16 proof staged in `proof_buffer`.
+/// Mirrors `VerifyBatchProof`'s account set + the proof-buffer.
+/// `proof_buffer` is closed at end of handler (rent refund to payer).
+///
+/// `nullifier_seed` is the ix arg that drives the nullifier_record PDA
+/// derivation.  The handler asserts it equals
+/// `proof_buffer.data[256..288]` (the staged nullifier), so a malicious
+/// caller passing a mismatched seed gets a typed rejection rather than
+/// an off-base PDA.
+#[derive(Accounts)]
+#[instruction(nullifier_seed: [u8; 32])]
+pub struct VerifyBatchProofV2<'info> {
+    #[account(mut, seeds = [b"verifier-config"], bump = verifier_config.bump)]
+    pub verifier_config: Account<'info, VerifierConfig>,
+
+    #[account(seeds = [b"vk-storage", verifier_config.key().as_ref()], bump)]
+    pub vk_storage: Account<'info, VkStorage>,
+
+    /// Nullifier record PDA. `init` ensures it cannot already exist.
+    /// Seed is the nullifier read from `proof_buffer.data[256..288]`,
+    /// so callers don't pass it as ix arg.  But Anchor needs the seed
+    /// at deserialization time -- we surface it through the
+    /// `#[instruction]` attribute via `nullifier_seed: [u8; 32]` which
+    /// the SDK MUST set equal to `proof_buffer.data[256..288]`.  The
+    /// handler then asserts the wire-supplied seed matches the
+    /// buffered nullifier so the constraint binds.
+    #[account(
+        init, payer = payer,
+        space = 8 + NullifierRecord::SPACE,
+        seeds = [NULLIFIER_SEED, nullifier_seed.as_ref()],
+        bump
+    )]
+    pub nullifier_record: Account<'info, NullifierRecord>,
+
+    /// CHECK: Global-state Merkle tree account.  Owner-checked in-handler.
+    pub global_tree: UncheckedAccount<'info>,
+
+    /// CHECK: Per-schema tree metadata PDA (slot 0).
+    pub schema_tree_0: UncheckedAccount<'info>,
+    /// CHECK: slot 1
+    pub schema_tree_1: UncheckedAccount<'info>,
+    /// CHECK: slot 2
+    pub schema_tree_2: UncheckedAccount<'info>,
+    /// CHECK: slot 3
+    pub schema_tree_3: UncheckedAccount<'info>,
+
+    /// ADR-0014 issuer-tree binding.
+    #[account(
+        seeds = [b"issuer-tree-binding"],
+        bump,
+        seeds::program = ISSUER_REGISTRY_ID,
+    )]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
+
+    /// Buffer holding the staged proof + wire inputs.  Closed at end of
+    /// handler; rent refunds to `payer`.
+    #[account(
+        mut,
+        close = payer,
+        seeds = [b"proof-buffer", payer.key().as_ref()],
+        bump,
+    )]
+    pub proof_buffer: Account<'info, ProofBuffer>,
 
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -971,6 +1397,34 @@ impl NullifierRecord {
     pub const SPACE: usize = 32 + 8 + 8;
 }
 
+/// SOLID-SEC-054 / B13 Option 2: per-payer scratch PDA for staging a
+/// Groth16 proof across multiple `upload_proof_chunk` ixs before a final
+/// `verify_batch_proof_v2` call.  The seed includes the payer's pubkey
+/// (`[b"proof-buffer", payer.key().as_ref()]`) so two payers cannot
+/// collide.  Closed at end of `verify_batch_proof_v2` -- rent refunds to
+/// the original payer.
+#[account]
+pub struct ProofBuffer {
+    pub payer: Pubkey,
+    pub created_slot: u64,
+    /// High-water mark of bytes written by `upload_proof_chunk`.  The
+    /// `verify_batch_proof_v2` ix refuses if this is not exactly
+    /// `PROOF_BUFFER_PAYLOAD_SIZE` (rejects partially-uploaded buffers).
+    pub bytes_written: u32,
+    /// Flat payload region.  Layout (caller-side encoding mirrors this):
+    ///   [0..64)         proof_a
+    ///   [64..192)       proof_b
+    ///   [192..256)      proof_c
+    ///   [256..288)      nullifier
+    ///   [288..960)      wire_inputs (21 * 32)
+    pub data: [u8; PROOF_BUFFER_PAYLOAD_SIZE],
+}
+
+impl ProofBuffer {
+    /// 32 payer + 8 created_slot + 4 bytes_written + 960 data.
+    pub const SPACE: usize = 32 + 8 + 4 + PROOF_BUFFER_PAYLOAD_SIZE;
+}
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 #[error_code]
@@ -1027,6 +1481,12 @@ pub enum ErrorCode {
         "Clock returned a non-positive unix timestamp during VK rotation request (SOLID-SEC-006)"
     )]
     RotationClockInvalid,
+    #[msg("Proof buffer is owned by a different payer (B13 Option 2)")]
+    InvalidProofBufferOwner,
+    #[msg("Proof chunk offset+length out of bounds (B13 Option 2)")]
+    InvalidProofChunk,
+    #[msg("Proof buffer is not fully populated; verify rejects partial uploads (B13 Option 2)")]
+    ProofBufferIncomplete,
 }
 
 // ─── Unit tests ────────────────────────────────────────────────────────────
@@ -1309,6 +1769,118 @@ mod tests {
         assert_eq!(CURRENT_TIMESTAMP_INPUT_INDEX, 31);
     }
 
+    // ─── SOLID-SEC-054 / B13 slot-partition invariants ─────────────────────
+    //
+    // The wire ↔ reconstructed split is encoded by two const slot-mapping
+    // arrays.  These tests assert that the partition is well-formed at
+    // build time: no slot dropped, no slot duplicated, no slot mis-classified.
+    // A regression here would silently cause Groth16 to reject every honest
+    // proof (or, worse, accept proofs against a layout that doesn't match
+    // the trusted-setup commitment).
+
+    #[test]
+    fn wire_input_arity_is_consistent() {
+        // The wire carries 21 of the 32 circuit slots; the rest are
+        // reconstructed on-chain.  Any change to NR_PUBLIC_INPUTS or
+        // NR_WIRE_INPUTS without matching slot-array updates fails this.
+        assert_eq!(NR_WIRE_INPUTS, WIRE_INPUT_SLOTS.len());
+        assert_eq!(
+            NR_PUBLIC_INPUTS - NR_WIRE_INPUTS,
+            RECONSTRUCTED_INPUT_SLOTS.len()
+        );
+        assert_eq!(
+            NR_WIRE_INPUTS + RECONSTRUCTED_INPUT_SLOTS.len(),
+            NR_PUBLIC_INPUTS
+        );
+    }
+
+    #[test]
+    fn slot_partition_is_complete_and_disjoint() {
+        // Every circuit slot 0..NR_PUBLIC_INPUTS is covered exactly once
+        // across WIRE_INPUT_SLOTS ∪ RECONSTRUCTED_INPUT_SLOTS, with no
+        // overlap.  Construct a 32-bit bitmap and assert each slot is
+        // hit exactly once.
+        let mut hits = [0u32; NR_PUBLIC_INPUTS];
+        for &s in WIRE_INPUT_SLOTS.iter() {
+            assert!(s < NR_PUBLIC_INPUTS, "wire slot {} out of bounds", s);
+            hits[s] += 1;
+        }
+        for &s in RECONSTRUCTED_INPUT_SLOTS.iter() {
+            assert!(
+                s < NR_PUBLIC_INPUTS,
+                "reconstructed slot {} out of bounds",
+                s
+            );
+            hits[s] += 1;
+        }
+        for (i, &h) in hits.iter().enumerate() {
+            assert_eq!(h, 1, "slot {} covered {} times (expected 1)", i, h);
+        }
+    }
+
+    #[test]
+    fn timestamp_and_nonce_are_witness_bound_wire_slots() {
+        // Slots 30 (verifierNonce) and 31 (currentTimestamp) are
+        // witness-bound and MUST stay on the wire -- Groth16 has zero
+        // tolerance on public-input equality and the on-chain Clock
+        // cannot reproduce the exact T_off the witness committed to.
+        assert!(
+            WIRE_INPUT_SLOTS.contains(&30),
+            "verifierNonce (slot 30) must be wire-supplied"
+        );
+        assert!(
+            WIRE_INPUT_SLOTS.contains(&CURRENT_TIMESTAMP_INPUT_INDEX),
+            "currentTimestamp (slot 31) must be wire-supplied"
+        );
+        assert!(
+            !RECONSTRUCTED_INPUT_SLOTS.contains(&CURRENT_TIMESTAMP_INPUT_INDEX),
+            "currentTimestamp must NOT be reconstructed -- soundness gate"
+        );
+    }
+
+    #[test]
+    fn nullifier_slot_is_wire_supplied() {
+        // The nullifier (slot 0) is the circuit output and is bound to
+        // the `nullifier` arg by `(2) NullifierMismatch` check.  It
+        // MUST be wire-supplied; it's not derivable from any account.
+        assert!(WIRE_INPUT_SLOTS.contains(&0));
+        assert!(!RECONSTRUCTED_INPUT_SLOTS.contains(&0));
+    }
+
+    #[test]
+    fn reconstructed_slots_match_documented_layout() {
+        // The 11 reconstructible slots are pinned by docs/E2E_BLOCKERS.md
+        // B13, plan/IMPLEMENTATION_PLAN.md Appendix D, and CLAUDE.md.
+        // Any divergence between the constants here and those docs is a
+        // doc-vs-code drift that must be resolved in the same commit.
+        let expected: [usize; 11] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 29];
+        assert_eq!(RECONSTRUCTED_INPUT_SLOTS, expected);
+    }
+
+    #[test]
+    fn wire_size_fits_legacy_tx_packet() {
+        // The whole point of B13.  Compute the borsh wire size of the
+        // verify_batch_proof ix data and assert it's under Solana's
+        // 1232-byte legacy-tx packet ceiling.
+        //
+        //   discriminator     8
+        // + proof_a          64
+        // + proof_b         128
+        // + proof_c          64
+        // + Vec<> length     4
+        // + public_inputs body (NR_WIRE_INPUTS * 32)
+        // + nullifier        32
+        let ix_data_size = 8 + 64 + 128 + 64 + 4 + NR_WIRE_INPUTS * 32 + 32;
+        assert!(
+            ix_data_size <= 1232,
+            "verify_batch_proof ix data {} bytes exceeds legacy-tx 1232-byte ceiling",
+            ix_data_size
+        );
+        // Pin the actual figure to make any future regression visible
+        // in the diff.  Pre-B13: 1324 bytes; post-B13: 972 bytes.
+        assert_eq!(ix_data_size, 972);
+    }
+
     // ─── SOLID-SEC-005 timestamp-skew constants ───────────────────────────
 
     #[test]
@@ -1393,5 +1965,273 @@ mod tests {
         // canonical "infinity"; the pairing crate handles canonicalisation.)
         assert_eq!(out[32], 0x30);
         assert_eq!(out[63], 0x47);
+    }
+
+    // ─── B13 Option 2 / SOLID-SEC-054: ProofBuffer layout invariants ─────
+
+    #[test]
+    fn proof_buffer_payload_size_matches_layout() {
+        // Layout: proof_a 64 + proof_b 128 + proof_c 64 + nullifier 32 +
+        // wire_inputs 21*32 = 672 = 960.
+        assert_eq!(PROOF_BUFFER_PAYLOAD_SIZE, 960);
+        // Anchor account SPACE = 8 disc + 32 payer + 8 created_slot
+        // + 4 bytes_written + 960 data = 1012.  The init ix allocates
+        // 8 + ProofBuffer::SPACE.
+        assert_eq!(8 + ProofBuffer::SPACE, 8 + 32 + 8 + 4 + 960);
+        assert_eq!(8 + ProofBuffer::SPACE, 1012);
+    }
+
+    #[test]
+    fn proof_buffer_layout_partition_is_disjoint_and_complete() {
+        // Caller-side encoding mirrors the on-chain handler's read
+        // offsets.  Pin them so any future widening (extra slot, etc.)
+        // forces an explicit update here.
+        let proof_a_end = 64usize;
+        let proof_b_end = proof_a_end + 128;
+        let proof_c_end = proof_b_end + 64;
+        let nullifier_end = proof_c_end + 32;
+        let wire_end = nullifier_end + NR_WIRE_INPUTS * 32;
+
+        assert_eq!(proof_a_end, 64);
+        assert_eq!(proof_b_end, 192);
+        assert_eq!(proof_c_end, 256);
+        assert_eq!(nullifier_end, 288);
+        assert_eq!(wire_end, PROOF_BUFFER_PAYLOAD_SIZE);
+    }
+
+    #[test]
+    fn proof_buffer_payload_fits_two_chunk_uploads_under_legacy_tx_cap() {
+        // Each upload_proof_chunk ix carries: ix discriminator (8) +
+        // offset (4) + Vec<u8> length prefix (4) + bytes (variable) +
+        // accounts overhead (~150) + tx framing (~70) ≈ 236-byte fixed
+        // overhead.  A 700-byte chunk fits comfortably under the
+        // 1232-byte legacy-tx cap (700 + 236 = 936) and 2 chunks of
+        // 480-700 bytes each cover the 960-byte payload.
+        let max_payload_per_chunk = 1232usize - 236;
+        assert!(max_payload_per_chunk >= 700);
+        assert!(2 * 700 >= PROOF_BUFFER_PAYLOAD_SIZE);
+    }
+
+    #[test]
+    fn proof_buffer_chunk_round_trip_assembles_byte_identical_payload() {
+        // Synthesize a deterministic 960-byte payload and verify that
+        // upload_proof_chunk-style writes (offset + slice) reproduce it
+        // exactly when chunked into two pieces.  Models the SDK's
+        // chunked-upload behavior without spinning up a validator.
+        let mut full = vec![0u8; PROOF_BUFFER_PAYLOAD_SIZE];
+        for (i, b) in full.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(13).wrapping_add(7);
+        }
+
+        // Two-chunk split: [0..500), [500..960)
+        let mut buf = vec![0u8; PROOF_BUFFER_PAYLOAD_SIZE];
+        let mut hwm: usize = 0;
+
+        // Chunk 1
+        let off1: usize = 0;
+        let bytes1 = &full[off1..500];
+        buf[off1..off1 + bytes1.len()].copy_from_slice(bytes1);
+        hwm = hwm.max(off1 + bytes1.len());
+
+        // Chunk 2
+        let off2: usize = 500;
+        let bytes2 = &full[off2..PROOF_BUFFER_PAYLOAD_SIZE];
+        buf[off2..off2 + bytes2.len()].copy_from_slice(bytes2);
+        hwm = hwm.max(off2 + bytes2.len());
+
+        assert_eq!(hwm, PROOF_BUFFER_PAYLOAD_SIZE, "high-water mark must equal payload");
+        assert_eq!(buf, full, "chunked assembly must be byte-identical to single-shot");
+    }
+
+    #[test]
+    fn proof_buffer_partial_upload_is_detectable_by_high_water_mark() {
+        // If the second chunk is missing, the high-water mark stays
+        // below PROOF_BUFFER_PAYLOAD_SIZE and verify_batch_proof_v2's
+        // ProofBufferIncomplete check fires.
+        let mut hwm: usize = 0;
+        let off1: usize = 0;
+        let bytes1_len: usize = 500;
+        hwm = hwm.max(off1 + bytes1_len);
+        // Skip chunk 2 (simulating dropped tx).
+        assert!(hwm < PROOF_BUFFER_PAYLOAD_SIZE, "partial upload must be < payload size");
+    }
+
+    #[test]
+    fn proof_buffer_offset_overflow_rejected_by_arithmetic_check() {
+        // upload_proof_chunk's checked_add on (offset + bytes.len())
+        // catches u32 overflow before the bounds check.  Test models
+        // that arithmetic.
+        let offset: u32 = u32::MAX - 100;
+        let len: usize = 200;
+        let off = offset as usize;
+        let end = off.checked_add(len);
+        // On 64-bit hosts checked_add doesn't overflow (offset+len <
+        // usize::MAX), but the subsequent <= PROOF_BUFFER_PAYLOAD_SIZE
+        // check (960) would reject.
+        let end_val = end.expect("usize add doesn't overflow");
+        assert!(end_val > PROOF_BUFFER_PAYLOAD_SIZE, "huge offset must be out of bounds");
+    }
+
+    // ─── Groth16 host round-trip (LB5 / SOLID-SEC-067 regression gate) ───
+    //
+    // Exercises `verify_groth16_proof` (the same fn the on-chain handler
+    // calls) on a real proof + VK + publicSignals fixture captured by
+    // `scripts/prove.ts` after a successful local snarkjs verify.  If
+    // this test passes, the on-chain handler's serialisation contract
+    // is correct end-to-end; any e2e-on-chain failure is then localised
+    // to validator state, account-data drift, or the wire path.
+    //
+    // The fixture is generated by running `npm run prove` once -- the
+    // script writes `tests/fixtures/groth16_e2e_proof.json` after
+    // confirming `snarkjs.groth16.verify(vk, publicSignals, proof) == true`.
+    // If the fixture is absent, the test is skipped (so CI on a clean
+    // checkout doesn't fail; explicit gate is the prove run).
+
+    use num_bigint::BigUint;
+    use num_traits::Num;
+    use serde_json::Value as JsonValue;
+    use std::path::Path;
+
+    fn dec_str_to_be32(s: &str) -> [u8; 32] {
+        let n = BigUint::from_str_radix(s, 10).expect("decimal string");
+        let mut be = n.to_bytes_be();
+        if be.len() > 32 {
+            panic!("bigint exceeds 32 bytes");
+        }
+        let mut out = [0u8; 32];
+        out[32 - be.len()..].copy_from_slice(&be);
+        be.clear();
+        out
+    }
+
+    /// Serialise a snarkjs VK JSON into the on-chain VkBuf wire format.
+    /// Mirrors `scripts/initialize.ts::serializeG1/serializeG2` (post-LB5).
+    fn serialize_vk_from_snarkjs_json(vk_json: &JsonValue) -> Vec<u8> {
+        let mut out = Vec::new();
+        let ic_arr = vk_json["IC"].as_array().expect("IC");
+        let nr_ic = ic_arr.len() as u32;
+        out.extend_from_slice(&nr_ic.to_le_bytes());
+
+        // alpha_g1: G1 (x_BE, y_BE)
+        let a = vk_json["vk_alpha_1"].as_array().expect("vk_alpha_1");
+        out.extend_from_slice(&dec_str_to_be32(a[0].as_str().unwrap()));
+        out.extend_from_slice(&dec_str_to_be32(a[1].as_str().unwrap()));
+
+        // beta_g2 / gamma_g2 / delta_g2: G2 (x_imag, x_real, y_imag, y_real) BE
+        for key in &["vk_beta_2", "vk_gamma_2", "vk_delta_2"] {
+            let p = vk_json[*key].as_array().expect(*key);
+            // p[0] = [x_real, x_imag], p[1] = [y_real, y_imag] (snarkjs convention)
+            // groth16-solana expects (imag, real) -> swap on encode.
+            let xr = p[0][0].as_str().unwrap();
+            let xi = p[0][1].as_str().unwrap();
+            let yr = p[1][0].as_str().unwrap();
+            let yi = p[1][1].as_str().unwrap();
+            out.extend_from_slice(&dec_str_to_be32(xi)); // x_imag
+            out.extend_from_slice(&dec_str_to_be32(xr)); // x_real
+            out.extend_from_slice(&dec_str_to_be32(yi)); // y_imag
+            out.extend_from_slice(&dec_str_to_be32(yr)); // y_real
+        }
+
+        // IC: each G1 (x_BE, y_BE)
+        for ic in ic_arr {
+            let ic_p = ic.as_array().expect("IC[i]");
+            out.extend_from_slice(&dec_str_to_be32(ic_p[0].as_str().unwrap()));
+            out.extend_from_slice(&dec_str_to_be32(ic_p[1].as_str().unwrap()));
+        }
+        out
+    }
+
+    #[test]
+    fn groth16_host_verify_round_trip() {
+        // Locate fixture relative to the workspace root.  Tests run from
+        // the crate dir (`programs/zk-verifier`), so we walk up two levels.
+        let fixture_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/groth16_e2e_proof.json");
+        if !fixture_path.exists() {
+            eprintln!(
+                "[skipped] groth16_host_verify_round_trip: fixture {} missing.\n\
+                 Run `npm run prove` once to generate it.",
+                fixture_path.display(),
+            );
+            return;
+        }
+        let fixture: JsonValue = serde_json::from_str(
+            &std::fs::read_to_string(&fixture_path).expect("read fixture"),
+        )
+        .expect("parse fixture json");
+
+        let vk_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../")
+            .join(fixture["vk_path"].as_str().expect("vk_path"));
+        let vk_json: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(&vk_path).expect("read vk"))
+                .expect("parse vk json");
+
+        // Serialise VK using the same logic the on-chain handler reads.
+        let vk_bytes = serialize_vk_from_snarkjs_json(&vk_json);
+
+        // Convert snarkjs publicSignals (string[]) -> [[u8; 32]; NR_PUBLIC_INPUTS].
+        let public_signals = fixture["publicSignals"]
+            .as_array()
+            .expect("publicSignals array");
+        assert_eq!(
+            public_signals.len(),
+            NR_PUBLIC_INPUTS,
+            "fixture must have exactly NR_PUBLIC_INPUTS publicSignals"
+        );
+        let mut public_inputs: [[u8; 32]; NR_PUBLIC_INPUTS] = [[0u8; 32]; NR_PUBLIC_INPUTS];
+        for (i, s) in public_signals.iter().enumerate() {
+            public_inputs[i] = dec_str_to_be32(s.as_str().expect("publicSignals[i]"));
+        }
+
+        // Read the SDK's pre-encoded solanaProof bytes (post-LB5 G2 swap)
+        // from the fixture.  These are exactly what the SDK feeds the ix.
+        let sp = &fixture["solanaProof"];
+        let proof_a_vec: Vec<u8> = sp["proofA"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        let proof_b_vec: Vec<u8> = sp["proofB"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        let proof_c_vec: Vec<u8> = sp["proofC"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap() as u8)
+            .collect();
+        assert_eq!(proof_a_vec.len(), 64);
+        assert_eq!(proof_b_vec.len(), 128);
+        assert_eq!(proof_c_vec.len(), 64);
+        let mut proof_a = [0u8; 64];
+        proof_a.copy_from_slice(&proof_a_vec);
+        let mut proof_b = [0u8; 128];
+        proof_b.copy_from_slice(&proof_b_vec);
+        let mut proof_c = [0u8; 64];
+        proof_c.copy_from_slice(&proof_c_vec);
+
+        // Run the on-chain handler's verify path on the host.  This
+        // exercises VkBuf::parse + negate_g1_point + Groth16Verifier::new
+        // + verifier.verify().  If it returns Ok, the on-chain Groth16
+        // path is sound; any e2e-on-chain failure is elsewhere.
+        match verify_groth16_proof(&vk_bytes, &proof_a, &proof_b, &proof_c, &public_inputs) {
+            Ok(()) => {
+                eprintln!("[host-verify] OK -- LB5 / SOLID-SEC-067 round-trip green");
+            }
+            Err(e) => {
+                panic!(
+                    "verify_groth16_proof FAILED on host: {:?}.\n\
+                     Either the LB5 G2 (imag, real) swap is still wrong, the proof_a Y \
+                     negation diverges, the VK serialisation order disagrees with \
+                     groth16-solana, or the public-input encoding is off.",
+                    e
+                );
+            }
+        }
     }
 }

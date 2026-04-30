@@ -115,6 +115,77 @@ export function poseidonHashBytes(inputs: Uint8Array[]): Uint8Array {
   return new Uint8Array(wasmModule.poseidonHashBytes(flat));
 }
 
+// ─── Schema hash (SOLID-SEC-002 + SOLID-SEC-063 / H5) ──────────────────────
+//
+// Mirror of `solid_core::schema::compute_schema_hash_from_parts` and
+// `poseidon_compress_bytes`.  Produces byte-identical output so the
+// SDK-computed schema_hash passes `register_schema`'s on-chain check.
+//
+// Derivation:
+//   name_h    = poseidonCompressBytes(utf8(name))
+//   version_e = [version, 0, 0, ..., 0]                     // 32 bytes, byte 0 = version
+//   count_e   = [u64 LE field_names.length, 0, 0, ..., 0]  // 32 bytes
+//   fnames_h  = poseidonCompressBytes(canonical(field_names))
+//                where canonical = (u32 LE count) || (u32 LE len || bytes)*
+//   cat_h     = poseidonCompressBytes(utf8(category))
+//   schema_hash = poseidonHashBytes([name_h, version_e, count_e, fnames_h, cat_h])
+
+export function poseidonCompressBytes(data: Uint8Array): Uint8Array {
+  let state: Uint8Array = new Uint8Array(32);
+  for (let off = 0; off < data.length; off += 31) {
+    const elem = new Uint8Array(32);
+    const slice = data.subarray(off, Math.min(off + 31, data.length));
+    elem.set(slice, 0);
+    elem[31] = slice.length; // canonical chunk-length tag at byte 31
+    state = new Uint8Array(poseidonHashBytes([state, elem]));
+  }
+  const lenTag = new Uint8Array(32);
+  new DataView(lenTag.buffer).setBigUint64(0, BigInt(data.length), true);
+  state = new Uint8Array(poseidonHashBytes([state, lenTag]));
+  return state;
+}
+
+export function computeSchemaHash(
+  name: string,
+  version: number,
+  fieldNames: string[],
+  category: string,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const nameH = poseidonCompressBytes(enc.encode(name));
+
+  // Canonical field-names byte stream: count-prefix + per-name length-prefix + bytes.
+  const fbParts: Uint8Array[] = [];
+  const countBuf = new Uint8Array(4);
+  new DataView(countBuf.buffer).setUint32(0, fieldNames.length, true);
+  fbParts.push(countBuf);
+  for (const n of fieldNames) {
+    const nb = enc.encode(n);
+    const lenBuf = new Uint8Array(4);
+    new DataView(lenBuf.buffer).setUint32(0, nb.length, true);
+    fbParts.push(lenBuf);
+    fbParts.push(nb);
+  }
+  let totalLen = 0;
+  for (const p of fbParts) totalLen += p.length;
+  const fb = new Uint8Array(totalLen);
+  let off = 0;
+  for (const p of fbParts) {
+    fb.set(p, off);
+    off += p.length;
+  }
+  const fnamesH = poseidonCompressBytes(fb);
+  const catH = poseidonCompressBytes(enc.encode(category));
+
+  const versionE = new Uint8Array(32);
+  versionE[0] = version & 0xff;
+
+  const countE = new Uint8Array(32);
+  new DataView(countE.buffer).setBigUint64(0, BigInt(fieldNames.length), true);
+
+  return poseidonHashBytes([nameH, versionE, countE, fnamesH, catH]);
+}
+
 // ─── BabyJubJub ────────────────────────────────────────────────────────────
 
 // The WASM bridge serialises BJJ keypairs with `#[serde(rename_all =
@@ -454,7 +525,16 @@ export class QueryBuilder {
     };
   }
 
-  /** Convert to circuit public inputs (Solana verifier expects 31 inputs) */
+  /** Convert to circuit public inputs.
+   *
+   *  The circuit's public-input arity is `NR_PUBLIC_INPUTS = 32` post
+   *  ADR-0014 (issuerTreeRoot inserted at slot [10]).  Pre-ADR-0014 it
+   *  was 31; the comment here used to say "31" and was stale.
+   *
+   *  The on-chain `verify_batch_proof` ix transmits only 21 of those
+   *  slots on the wire (SOLID-SEC-054 / B13); the other 11 are
+   *  reconstructed from accounts.  But the witness still uses the
+   *  full 32-element array, which is what this method returns. */
   toCircuitInputs() {
     const q = this.build();
     

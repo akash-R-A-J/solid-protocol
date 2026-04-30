@@ -4,67 +4,235 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-04-28 late session (circuit/ZK audit +
-  e2e bring-up + SEC-053 close-out).  Major code session;
-  see "2026-04-28 -- circuit/ZK audit + e2e bring-up" below for the
-  full receipts.  Quick state:
-  - **HEAD:** `ac84deb SEC-053: EdDSA-Poseidon cofactor-8 fix; prove
-    now generates a valid Groth16 proof` (committed; will be pushed
-    at end-of-session).  Pushed branch: `main`.
+- **Last updated:** 2026-04-29 (B13 (1)+(3) attempt; latent-bug
+  fixes; pivot to Option 2 for tomorrow).  See
+  `plan/SESSION_LOG_2026-04-29.md` for the full receipts.  Quick
+  state:
+  - **HEAD:** `c240b90` plus uncommitted WIP across 12
+    semantically-modified files (handler + SDK + scripts + 5 docs).
+    Per-file ledger in the session log §6.  No commit yet --
+    tomorrow's first action should split this into atomic
+    commits per L9 of the session log's discipline rules.
   - **E2E status:** `npm run e2e` walks through `init-onchain ->
     backfill-issuer-tree -> bootstrap-schema-tree ->
-    bootstrap-issuer -> issue -> prove (Groth16 proof generated
-    in 5.09s)` ALL GREEN through proof generation.  Live edge is
-    the on-chain submission half of `npm run prove`: **B13**
-    (`verify_batch_proof` ix data 1324 bytes exceeds Solana's
-    1232-byte legacy-tx wire size).  See `docs/E2E_BLOCKERS.md`
-    B13 for the architectural-blocker remediation analysis.
-    Recommended path is documented in `plan/IMPLEMENTATION_PLAN.md`
-    Appendix D.
-  - **Closures this session:**
-    - SOLID-SEC-045 (atomic binding update; helper +
-      keccak path-recompute + 7 unit tests + write-binding
-      regression suite).
-    - SOLID-SEC-049 NEW (wrong `replace_leaf` discriminator;
-      `0xe388...` -> `0xcca5...`).
-    - SOLID-SEC-050 NEW (schema-canonicality bypass via
-      interleaved padding; circuit constraint + 17 witness-
-      tester regressions; trusted-setup re-run; new VK pin
-      `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`).
-    - SOLID-SEC-052 NEW partial (BPF / cross-layer coord-form
-      drift; `is_on_curve` rewritten + WASM bridge rebuilt;
-      process gate at `docs/E2E_BLOCKERS.md` B11).
-    - SOLID-SEC-053 NEW (EdDSA-Poseidon cofactor-8 mismatch
-      between off-chain `sign` and circomlib's in-circuit
-      verifier; `S = r + h * 8 * sk`; regression gate
-      `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`).
-    - `docs/E2E_BLOCKERS.md` O4 (padding_slot test) verified
-      green and closed.
-    - `docs/E2E_BLOCKERS.md` B12 (EdDSA witness drift) closed
-      via SEC-053.
-    - SOLID-SEC-041 confirmed in-code (VK sha256 pin
-      gated `initialize.ts`).
-  - **Open trackers introduced this session:** SOLID-SEC-051
-    (all-padding circuit; LOW; defer to next setup cycle), B11
-    (WASM rebuild gate; documented + process gate added), B13
-    (legacy-tx wire size; live e2e edge -- promotes to
-    SOLID-SEC-054 once remediation choice sanctioned).
-  - **Workspace tests:** 169/169 cargo + 39/39 circuit witness-
-    tester (mocha) green; +1 host-side ignored forensic snapshot.
+    bootstrap-issuer -> issue -> prove (Groth16 proof generated)`
+    ALL GREEN through proof generation.  On-chain
+    `verify_batch_proof` submission via the (1)+(3) path is
+    **architecturally 37 bytes over** Solana's 1232-byte
+    legacy-tx packet cap once a `setComputeUnitLimit` ix is
+    prepended (which is required because the default 200K CU is
+    insufficient for `verify_batch_proof`'s ~285K-345K baseline).
+    See `docs/E2E_BLOCKERS.md` B13 for the byte-by-byte ledger.
+    Live edge has shifted from "implement (1)+(3)" to "implement
+    Option 2 (buffer-account / chunked upload)".
+  - **What landed in code this session (uncommitted WIP):**
+    - 11 of 32 public-input slots reconstructed on-chain in
+      `programs/zk-verifier/src/lib.rs` (B13 (1)).
+    - SDK encoder (`ts-sdk/packages/verifier/src/index.ts`) sends
+      21-input wire (972 bytes).
+    - Address Lookup Table support: `ensureLookupTable` helper +
+      v0 transaction path in `verifyOnChain` (B13 (3)).
+    - 19 new cargo unit tests (13 in solid-light extract helpers,
+      6 in zk-verifier slot-partition invariants).  Cargo
+      workspace: **189/189 host tests green**, up from 169.
+    - Three latent-bug fixes (LB1-LB3) the session uncovered.
+      See §1.3 of the session log for the full story; short form:
+      - **LB1.** Anchor 0.30.1's `Vec<[u8; 32]>` BorshDeserialize
+        fails on BPF.  Fix: change `public_inputs` arg to
+        `Vec<u8>`, chunk in handler.  Why exactly the per-element
+        deser path breaks on BPF is unverified -- the fix is
+        empirical and durable.
+      - **LB2.** SEC-005 timestamp slot was being read as `LE u64`
+        from bytes [0..8], but the SDK BE-encodes every public
+        input.  Fix: read `from_be_bytes(ts_bytes[24..32])`,
+        zero-check `[0..24]`.  Pre-existing latent since SEC-005
+        landed (no proof had ever reached the on-chain handler).
+      - **LB3.** Reconstructed Merkle roots / schema hashes are
+        stored on-chain in LE byte-form (holder uses `bufToDecimal`
+        LE-decode), but Groth16 expects BE.  Fix: byte-reverse on
+        copy for slots 1, 2..5, 6..9, 10.  `verifierAddress`
+        (slot 29) is the exception because the holder uses
+        `bufToDecimalBE` for it (SOLID-SEC-031).  Pre-existing
+        latent in `verify_state_root_matches` /
+        `verify_schema_root_binding` /
+        `verify_issuer_tree_binding_for_proof` -- those compare
+        wire BE bytes to stored LE bytes and would have failed
+        the same way had they ever been exercised.
+    - SOLID-SEC-054 row added to registry (status: should be
+      downgraded to "Open (interim partial)" tomorrow -- see §3
+      of the session log).
+    - New `docs/REMEDIATION_OPTIONS_ARCHIVE.md` capturing
+      rejected paths.
+  - **Other findings logged for future work** (NOT introduced
+    this session, see session log §4):
+    - Pre-existing `cargo clippy -p solid-core -- -D warnings`
+      breakage on `main` (5 dead-code warnings).  User said they
+      will fix in a separate commit.
+    - LB2 / LB3 implies `verify_state_root_matches` family has
+      latent BE/LE bugs too.  Audit + remove or fix when
+      pre-reconstruction code paths are no longer reachable.
+    - SOLID-SEC-031 should grow into a full cross-layer
+      byte-encoding table (which slot uses which convention).
+  - **Workspace tests at session close:** 189/189 cargo (host).
+    Mocha witness-tester not re-run.  ts-sdk builds clean.
 
-## Pickup tomorrow (2026-04-29 morning)
+## Pickup tomorrow (2026-04-30 morning)
 
-1. Read `plan/IMPLEMENTATION_PLAN.md` Appendix D ("Next session
-   pickup").  That section has the full B13 remediation steps.
-2. Implement on-chain reconstruction of the 12 redundant public
-   inputs in `programs/zk-verifier/src/lib.rs::verify_batch_proof`.
-3. Update the SDK encoder
-   `ts-sdk/packages/verifier/src/index.ts::buildVerifyBatchProofIx`
-   to send only the 20-input subset.
-4. Promote to **SOLID-SEC-054** in `sec/SECURITY_REGISTRY.md`.
-5. Run e2e end-to-end; expect `verified: true` tail.
-6. Then SOLID-SEC-046 CU gate; SOLID-SEC-010 vectors 3->10;
-   integration suite 02..11.
+**Before any code change**: read `plan/SESSION_LOG_2026-04-29.md`
+end-to-end, especially §5 (learnings).  The discipline rules L7,
+L8, L9 in that section are new and load-bearing for tomorrow's
+arc -- they exist precisely because this session violated them.
+
+### Step 1.  Commit-split the WIP (atomic, per finding)
+
+Per L9 of the session log: the current uncommitted WIP bundles
+the B13 reconstruction, three latent-bug fixes (LB1, LB2, LB3),
+the ALT helpers, and doc updates into one diff.  Split into:
+
+1. Doc-only corrections (arc 1 work).  Cheapest review.
+2. Options archive doc.  Pure new file.
+3. LB2 (timestamp BE/LE fix).  Single-file zk-verifier change +
+   regression test that asserts a BE-encoded u64 round-trips.
+   Promote to its own SEC-XXX entry (sibling of SEC-031).
+4. LB3 (Merkle-root BE/LE fix).  Multi-file (handler + tests).
+   Sibling SEC-XXX.
+5. LB1 + B13 (1) -- the wire shrink + Vec<u8> fix + reconstruction.
+   These are coupled.  Promote to **SOLID-SEC-054** with the
+   "(1)+(3) ceiling, pivot to Option 2 in next commit" caveat in
+   the registry entry.
+
+Each commit lands its regression gate in the same commit (L4).
+
+### Step 2.  Implement B13 Option 2 (buffer-account / chunked upload)
+
+The architectural escape valve documented at
+`docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1.1 + `docs/E2E_BLOCKERS.md`
+B13 ("(2) Buffer-account upload").  See `plan/SESSION_LOG_2026-04-29.md`
+§2 for the full design.  Short form:
+
+1. Add three new ixs to `programs/zk-verifier/src/lib.rs`:
+   - `init_proof_buffer(payer)` -- allocates a scratch PDA
+     `[b"proof-buffer", payer.key]`, ~1024 bytes.
+   - `upload_proof_chunk(buffer, offset: u32, bytes: Vec<u8>)` --
+     writes bytes into the buffer; idempotent on
+     re-upload-same-bytes.
+   - `verify_batch_proof_v2(buffer)` -- reads staged proof from
+     buffer, performs B13 reconstruction (reuse the existing
+     extract helpers), runs Groth16, atomically inits nullifier
+     PDA, closes buffer.
+2. SDK orchestration in `verifyOnChain`:
+   - `ensureLookupTable` (already implemented; reuse)
+   - `init_proof_buffer` (1 tx, fits trivially)
+   - `upload_proof_chunk` * N (~2 chunks of ~700 bytes each)
+   - `verify_batch_proof_v2(buffer)` (1 tx, small enough for
+     cuIx + ALT + the proof-buffer PDA reference)
+3. Regression gates:
+   - cargo unit test: chunked upload assembles to byte-identical
+     payload as the legacy direct-tx wire.
+   - cargo unit test: missing chunk in buffer -> `_v2` rejects.
+   - integration test (when bankrun harness lands): full 3-tx
+     flow -> `verified: true`.
+4. Run `npm run e2e`; assert `verified: true` tail.
+5. Promote SEC-054 from "Open (interim partial)" to "Fixed" once
+   green.  "Verified" after one full sprint of the integration
+   regression test in CI per CLAUDE.md non-negotiable #2.
+
+### Step 3.  Arc 4 -- SOLID-SEC-046 (CU regression gate)
+
+Spec is fully laid out in
+`sec/audits/2026-04-26_v0.6.1_modular_audit/04_compute/cu_budget.md`
+§5.  Implementation, not design.
+
+- Generate `tests/vectors/cu_baseline_proof.json` (deterministic
+  test vector; record `(proof_a, proof_b, proof_c, public_inputs,
+  nullifier)` from a successful Option-2 e2e run).
+- Write `docs/CU_BUDGET.md` with starter baselines for
+  `verify_batch_proof_v2`, `register_issuer` (bypass build),
+  `append_issuer_leaf`, `revoke_issuer_atomic`,
+  `request_withdrawal_atomic`, `issue_credential`.  Schema in
+  cu_budget.md §5.
+- New CI step: `setComputeUnitLimit({ units: 800_000 })`; submit
+  the test-vector proof; parse `consumed X of 800000 compute
+  units` from `solana confirm`; assert `X <= baseline * 1.10`.
+
+### Step 4.  Arc 5 -- SOLID-SEC-048 Option E (in-circuit subgroup constraint + ceremony)
+
+Major arc.  See task #5 description.  Shape A (just SEC-048 Option
+E) was the agreed scope; SEC-006 Part 2 / SEC-051 / predicate-operand
+range checks are co-traveler candidates that should NOT be batched
+unless the user explicitly says yes (this is a constraint surface
+that gets harder to review the bigger it gets).
+
+Steps:
+
+1. Modify `circuits/batch_credential_query.circom`: add an
+   in-circuit subgroup check on the issuer pubkey witness (one
+   EdDSA-style scalar mul, ~30K constraints, ~250ms proving cost
+   per the cu_budget audit §4).
+2. Re-run `node circuits/scripts/setup.js`.  New
+   `circuits/build/verification_key.json` + `.zkey`.  Update
+   `circuits/build/verification_key.sha256`.
+3. Anchor program changes:
+   - Remove `sec007-skip-onchain` Cargo feature in
+     `programs/issuer-registry/Cargo.toml`.
+   - Remove the `#[cfg(not(feature = "sec007-skip-onchain"))]`
+     gate around `require_in_prime_order_subgroup` in
+     `register_issuer`.  Decision: keep `is_on_curve +
+     !is_identity` as cheap defense-in-depth (~3.5K CU); the
+     in-circuit constraint is the load-bearing soundness gate.
+   - Remove `Sec007Bypass` event.
+4. Bootstrap script change: keep the SDK-side
+   `isInPrimeOrderSubgroup` predicate as fail-fast UX (no longer
+   load-bearing soundness, but a friendly pre-submit error).
+5. Witness-tester regression: torsion-tainted issuer pubkey ->
+   witness gen aborts on the new subgroup constraint.
+6. Cross-language vector (`tests/vectors/subgroup_check.json`):
+   closes 1 of 7 SOLID-SEC-010 missing primitives.
+7. Registry: SEC-048 -> Closed; SEC-007 re-flipped from
+   "host-only" to "in-circuit" closure; SEC-052 partial close
+   completes (the `pubkey_to_affine` BPF-iso path becomes dead
+   code).
+8. CLAUDE.md hard-invariants update for the new VK pin sha256.
+
+Once SEC-048 closes, the `register_issuer` localnet/devnet
+runbook drops the `--features sec007-skip-onchain` step; mainnet
+posture is unblocked.
+
+### Step 5.  Arc 6 -- full sweep + e2e
+
+`cargo test -p solid-core -p solid-light -p zk-verifier
+-p issuer-registry -p schema-registry`; `cargo fmt + clippy
+-p solid-core -p solid-light -- -D warnings` (after the
+pre-existing dead-code cleanup the user said they would do
+separately); `bash scripts/sync_program_keypairs.sh && anchor
+build --no-idl`; `npm test` in circuits and ts-sdk; full
+`npm run e2e` to `verified: true`.
+
+Update `plan/RESUME.md` with the receipts.
+
+### Step 6.  After arcs 4-5-6
+
+- SOLID-SEC-010 cross-language vectors 3 -> 10 (closes the
+  remaining primitives that didn't get vectored as side-effects
+  of the above arcs).
+- Integration suite 02..11 (per `tests/integration/README.md`).
+  Bankrun + jest harness stand-up.
+- SOLID-SEC-051 (one-constraint padding fix) -- batches with the
+  next sanctioned trusted-setup cycle if SEC-048 ceremony was
+  Shape A; already shipped if Shape B/C was chosen.
+- M02-H02 (CI gate against shipping `sec007-skip-onchain` to
+  mainnet) -- becomes moot once SEC-048 Option E lands; can be
+  retired.
+- AUDIT-2026-04-28-002 (integration tests 02..11 incomplete) and
+  AUDIT-2026-04-28-003 (mutable action tags in CI) from the
+  2026-04-28 audit follow-up.
+
+### Step 7.  Pre-existing CI breakage (separate commit)
+
+The user has explicitly asked to handle the pre-existing
+`cargo clippy -p solid-core -- -D warnings` failures (5 dead-code
+warnings, mostly the `attester` field of `SasAttestationBuilder`)
+as their own commit.  Do NOT bundle with B13 / SEC-046 / SEC-048.
 
 (The 2026-04-27 strategy-session notes below are preserved as
 historical context; they were unchanged technically from the

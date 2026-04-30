@@ -31,11 +31,11 @@
  * scripts/check_program_ids.py.
  */
 
-import { Connection, Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import { Connection, Keypair, PublicKey, SystemProgram, ComputeBudgetProgram } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
 import * as crypto from 'crypto';
 import { createMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
-import { initWasm, poseidonHash, PROGRAM_IDS } from '@solid-protocol/core';
+import { initWasm, computeSchemaHash, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -85,11 +85,23 @@ function serializeG1(point: string[]): Uint8Array {
 }
 
 function serializeG2(point: string[][]): Uint8Array {
+  // LB5 / SOLID-SEC-067 (closed 2026-04-30): snarkjs JSON dumps G2
+  // points as `[[c0_real, c1_imag], [c0_real, c1_imag], [1, 0]]` --
+  // i.e. (real, imag) ordering for each F_q² coefficient.  Solana's
+  // alt_bn128 syscall (which groth16-solana wraps for verify) decodes
+  // each F_q² element in (imag, real) order: bytes [0..32] = x_imag,
+  // [32..64] = x_real, [64..96] = y_imag, [96..128] = y_real.  The
+  // pre-fix serialiser used (real, imag) ordering -- 50% chance of
+  // landing on a valid-but-different curve point, 50% chance of
+  // off-curve, and either way the on-chain Groth16 pairing rejected
+  // every proof.  Latent because no proof had reached the on-chain
+  // verify path until SOLID-SEC-054 / B13 Option 2 closed the
+  // wire-size cap.
   const buf = new Uint8Array(128);
-  buf.set(fieldToBytesBE(point[0][0]), 0);
-  buf.set(fieldToBytesBE(point[0][1]), 32);
-  buf.set(fieldToBytesBE(point[1][0]), 64);
-  buf.set(fieldToBytesBE(point[1][1]), 96);
+  buf.set(fieldToBytesBE(point[0][1]), 0);   // x_imag
+  buf.set(fieldToBytesBE(point[0][0]), 32);  // x_real
+  buf.set(fieldToBytesBE(point[1][1]), 64);  // y_imag
+  buf.set(fieldToBytesBE(point[1][0]), 96);  // y_real
   return buf;
 }
 
@@ -233,34 +245,35 @@ async function main() {
 
   // 2. Register schema.
   //
-  // The schema_hash MUST be computed by the canonical formula in
-  // `solid_core::schema::compute_schema_hash_from_parts(name, version,
-  // field_count)` so the on-chain `register_schema` integrity check at
-  // programs/schema-registry/src/lib.rs:119-122 passes. The preimage is
-  //   [name_le_u64_chunks..., version_u64, field_count_u64]
-  // truncated to ≤16 inputs (Poseidon arity cap is 12, but the Rust
-  // helper carries a 16-cap that we mirror for safety), then hashed via
-  // `poseidon::hash_fields_to_bytes` (= `poseidonHash` in the WASM
-  // bridge). Cross-language vector coverage tracked in
-  // SOLID-SEC-010.
+  // SOLID-SEC-002 + SOLID-SEC-063 / H5: the schema_hash is computed by
+  // `computeSchemaHash(name, version, field_names, category)` which is
+  // a TypeScript mirror of `solid_core::schema::compute_schema_hash_from_parts`.
+  // The preimage now binds field_names + category in addition to
+  // (name, version, field_count); see CRITs above for the
+  // collision-vulnerability that motivated the widening.
+  // Cross-language vector coverage tracked in SOLID-SEC-010.
   console.log('\n[2/7] register_schema');
-  const schemaHashInputs: bigint[] = [];
-  const nameBytes = Buffer.from(SCHEMA_NAME, 'utf-8');
-  for (let i = 0; i < nameBytes.length; i += 8) {
-    const buf = Buffer.alloc(8);
-    nameBytes.subarray(i, i + 8).copy(buf);
-    schemaHashInputs.push(buf.readBigUInt64LE(0));
-  }
-  schemaHashInputs.push(BigInt(SCHEMA_VERSION));
-  schemaHashInputs.push(BigInt(SCHEMA_FIELDS.length));
-  if (schemaHashInputs.length > 16) schemaHashInputs.length = 16;
-  const schemaHash = poseidonHash(schemaHashInputs);
+  const schemaHash = computeSchemaHash(
+    SCHEMA_NAME,
+    SCHEMA_VERSION,
+    SCHEMA_FIELDS,
+    'Identity',
+  );
   console.log(`   schema_hash: ${Buffer.from(schemaHash).toString('hex')}`);
   const [schemaPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('schema'), Buffer.from(SCHEMA_NAME), Buffer.from([SCHEMA_VERSION])],
     PROGRAM_PUBKEYS.schemaRegistry,
   );
   try {
+    // SOLID-SEC-063 / H5: the widened compute_schema_hash_from_parts
+    // does a Poseidon-Merkle-Damgard absorb over name + field_names +
+    // category.  On BPF each absorb round costs ~10K CU
+    // (bytes_le_to_fr canonicalisation + fr_to_bytes_le + sol_poseidon
+    // syscall), and the 8-field schema lands ~10 absorb rounds
+    // (~100K CU) on top of the ~50K CU baseline.  Default per-ix
+    // budget is 200K -- not enough headroom.  Prepend a
+    // setComputeUnitLimit to give the handler 400K which is
+    // ~2x the measured cost.
     await schemaProgram.methods.registerSchema(
       SCHEMA_NAME,
       SCHEMA_VERSION,
@@ -271,7 +284,11 @@ async function main() {
       schemaAccount: schemaPda,
       authority: wallet.publicKey,
       systemProgram: SystemProgram.programId,
-    }).rpc();
+    })
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ])
+      .rpc();
     console.log('   ok (registered)');
   } catch (e: any) {
     if (!isAlreadyInitialised(e)) throw e;

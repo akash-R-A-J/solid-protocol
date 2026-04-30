@@ -21,11 +21,75 @@ import {
   deriveVerifierConfigPda,
   deriveVkStoragePda,
   checkIssuerStatus,
+  extractWirePublicInputs,
 } from '@solid-protocol/verifier';
 import { SOLID_CONFIG } from './config';
 import { ResilientConnection } from './rpc';
+import {
+  verifyArtifactSha256,
+  WASM_PIN,
+  ZKEY_PIN,
+  VK_PIN,
+  type ArtifactPin,
+} from './artifact_integrity';
 import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/**
+ * Read an `<artifact>.sha256` sidecar file if present.  Returns the
+ * lowercase-hex content (trimmed) or `undefined` if the file is missing
+ * or unreadable.  64-char validation is done by `verifyArtifactSha256`.
+ */
+function readSidecar(sidecarPath: string): string | undefined {
+  try {
+    if (!fs.existsSync(sidecarPath)) return undefined;
+    return fs.readFileSync(sidecarPath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Load an artifact from a URL or local path and verify its SHA-256
+ * against the configured pin sources.  Throws on mismatch.  Returns the
+ * raw bytes (suitable for passing to `snarkjs.groth16.fullProve`).
+ *
+ * SOLID-SEC-058 / CRIT-3.  See `artifact_integrity.ts` for the pin
+ * resolution order and the `SOLID_CIRCUIT_ARTIFACT_INTEGRITY=skip`
+ * dev escape hatch.
+ */
+async function loadAndVerifyArtifact(
+  pathOrUrl: string,
+  pin: ArtifactPin,
+  name: string,
+): Promise<Uint8Array> {
+  const isHttp = /^https?:\/\//.test(pathOrUrl);
+  const cameFromCdn =
+    isHttp && pathOrUrl.startsWith(SOLID_CONFIG.ARTIFACT_BASE_URL);
+
+  let bytes: Uint8Array;
+  if (isHttp) {
+    const res = await fetch(pathOrUrl);
+    if (!res.ok) {
+      throw new Error(
+        `[artifact-integrity] ${name}: failed to fetch ${pathOrUrl} ` +
+          `(HTTP ${res.status})`,
+      );
+    }
+    const buf = await res.arrayBuffer();
+    bytes = new Uint8Array(buf);
+  } else {
+    const resolved = path.isAbsolute(pathOrUrl)
+      ? pathOrUrl
+      : path.resolve(process.cwd(), pathOrUrl);
+    bytes = new Uint8Array(fs.readFileSync(resolved));
+  }
+
+  verifyArtifactSha256(bytes, pin, readSidecar, name, cameFromCdn);
+  return bytes;
+}
 
 /**
  * SolID Protocol SDK
@@ -93,17 +157,34 @@ export class SolID {
     circuitPaths?: { wasmPath: string; zkeyPath: string };
   }): Promise<BatchProofResult> {
     if (!this._initialized) await this.initialize();
-    const circuitPaths = params.circuitPaths ?? {
+    const sourcePaths = params.circuitPaths ?? {
       wasmPath: `${SOLID_CONFIG.ARTIFACT_BASE_URL}${SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.WASM_PATH}`,
       zkeyPath: `${SOLID_CONFIG.ARTIFACT_BASE_URL}${SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.ZKEY_PATH}`,
     };
+
+    // SOLID-SEC-058 / CRIT-3: load each artifact, compute SHA-256, refuse
+    // on mismatch / refuse on missing pin for CDN-loaded artifacts.  Pass
+    // the verified bytes (Uint8Array) downstream -- snarkjs.groth16.fullProve
+    // accepts Buffer/Uint8Array as well as path/URL strings.  This removes
+    // the TOCTOU between hash check and snarkjs's own re-fetch.
+    const wasmBytes = await loadAndVerifyArtifact(
+      sourcePaths.wasmPath,
+      WASM_PIN,
+      'batch_credential_query.wasm',
+    );
+    const zkeyBytes = await loadAndVerifyArtifact(
+      sourcePaths.zkeyPath,
+      ZKEY_PIN,
+      'batch_credential_query.zkey',
+    );
+
     return generateBatchProof(
       params.query,
       params.credentials,
       params.masterPrivateKey,
       params.masterPublicKey,
       params.revocationNonce,
-      circuitPaths,
+      { wasmPath: wasmBytes as unknown as string, zkeyPath: zkeyBytes as unknown as string },
       {
         merkleProofAdapter: params.merkleProofAdapter,
         globalStateTree: params.globalStateTree,
@@ -128,15 +209,19 @@ export class SolID {
   }): Promise<VerificationResult> {
     if (!this._initialized) await this.initialize();
 
+    // SOLID-SEC-054 / B13: extract the 21-element wire subset from the
+    // full 32-element snarkjs publicSignals output.  The on-chain handler
+    // reconstructs the remaining 11 slots from accounts.
+    const fullPublicInputs = params.proof.publicSignals.map(s =>
+      bigintToBytes32BE(BigInt(s)),
+    );
     const request: VerificationRequest = {
       query: params.query,
       proofData: {
         proof_a: params.proof.solanaProof.proofA,
         proof_b: params.proof.solanaProof.proofB,
         proof_c: params.proof.solanaProof.proofC,
-        publicInputs: params.proof.publicSignals.map(s =>
-          bigintToBytes32BE(BigInt(s)),
-        ),
+        publicInputs: extractWirePublicInputs(fullPublicInputs),
         nullifier: params.proof.nullifier,
       },
     };
@@ -250,3 +335,20 @@ export type {
   VerificationResult,
 } from '@solid-protocol/verifier';
 export { SOLID_CONFIG } from './config';
+
+// SOLID-SEC-058 / CRIT-3: artifact integrity helpers re-exported so
+// downstream callers (scripts/prove.ts, third-party integrators) can
+// verify off-chain prover artifacts before handing them to snarkjs.
+export {
+  loadAndVerifyArtifact,
+};
+export {
+  verifyArtifactSha256,
+  resolveExpectedSha256,
+  sha256Hex,
+  WASM_PIN,
+  ZKEY_PIN,
+  VK_PIN,
+  type ArtifactPin,
+  type ArtifactKind,
+} from './artifact_integrity';

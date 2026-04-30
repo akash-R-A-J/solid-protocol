@@ -34,6 +34,7 @@ import {
   SystemProgram,
   Transaction,
   LAMPORTS_PER_SOL,
+  ComputeBudgetProgram,
 } from '@solana/web3.js';
 import * as anchor from '@coral-xyz/anchor';
 import {
@@ -330,12 +331,12 @@ async function main() {
   }
   console.log(`   ${approved.length} approved issuer(s)`);
 
-  // Seed a local replica so we can push `update_issuer_tree_root` after
-  // each append (the on-chain SPL AC tree root is expensive to read
-  // back; the replica's root matches as long as no one else mutates
-  // the tree).
+  // SOLID-SEC-059 / H1 (2026-04-30, atomic + integrity-checked):
+  // `appendIssuerLeaf` updates the binding atomically via on-chain
+  // Poseidon-Merkle recompute against `poseidon_proof_path`.  Caller
+  // supplies the Poseidon siblings the new leaf would have at its
+  // assigned index; the on-chain handler verifies via Poseidon-recompute.
   const replica = new LocalReplicaAdapter(ISSUER_TREE_DEPTH, poseidonHashPair);
-
   for (const { pda, account: acc } of approved) {
     if (acc.isTreeEnrolled) {
       console.log(`   skip ${pda.toBase58()} (already enrolled)`);
@@ -348,23 +349,32 @@ async function main() {
       BigInt(acc.statusEpoch.toString()),
       BigInt(acc.revocationNonce.toString()),
     );
-    await issuerProgram.methods.appendIssuerLeaf().accounts({
-      registryConfig: new PublicKey(state.registryPda),
-      issuerAccount: pda,
-      issuerTreeAuthority: treeAuthorityPda,
-      merkleTree: treeKeypair.publicKey,
-      logWrapper: SPL_NOOP_PROGRAM_ID,
-      compressionProgram: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-      authority: wallet.publicKey,
-    }).rpc();
     replica.appendLeaf(leaf);
-    const newRoot = replica.getRoot();
-    await issuerProgram.methods.updateIssuerTreeRoot(
-      Array.from(newRoot),
-    ).accounts({
-      issuerTreeBinding: bindingPda,
-      authority: wallet.publicKey,
-    }).rpc();
+    const proof = await replica.fetch(treeKeypair.publicKey, leaf);
+    const flatPath = new Uint8Array(ISSUER_TREE_DEPTH * 32);
+    for (let i = 0; i < ISSUER_TREE_DEPTH; i++) {
+      flatPath.set(proof.siblings[i], i * 32);
+    }
+    await issuerProgram.methods
+      .appendIssuerLeaf(Buffer.from(flatPath))
+      .accounts({
+        registryConfig: new PublicKey(state.registryPda),
+        issuerAccount: pda,
+        issuerTreeAuthority: treeAuthorityPda,
+        merkleTree: treeKeypair.publicKey,
+        issuerTreeBinding: bindingPda,
+        logWrapper: SPL_NOOP_PROGRAM_ID,
+        compressionProgram: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+        authority: wallet.publicKey,
+      })
+      .preInstructions([
+        // SOLID-SEC-059 / H1: 800K covers the on-chain Poseidon-Merkle
+        // recompute cost (~380K CU at depth 16) plus the SPL AC append
+        // CPI (~20K CU) plus the binding write + bookkeeping (~5K CU),
+        // with headroom under the 1.4M per-tx ceiling.
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+      ])
+      .rpc();
     console.log(`   enrolled ${pda.toBase58()} -> leaf_index ${(await issuerNs.fetch(pda)).issuerTreeLeafIndex}`);
   }
 

@@ -2054,6 +2054,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "solid-core",
+ "solid-light",
 ]
 
 [[package]]
@@ -2504,6 +2505,7 @@ dependencies = [
  "anchor-lang",
  "borsh 0.10.4",
  "hex",
+ "solid-core",
 ]
 
 [[package]]
@@ -3201,6 +3203,9 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "groth16-solana",
+ "num-bigint",
+ "num-traits",
+ "serde_json",
  "solid-light",
 ]
 

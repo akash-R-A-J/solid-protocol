@@ -7,8 +7,7 @@ use anchor_lang::solana_program::{
 };
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 use solid_light::cpi_helpers::{
-    compute_concurrent_merkle_root_keccak, verify_schema_tree_binding_for_issue, LightError,
-    ISSUER_TREE_DEPTH, SCHEMA_REGISTRY_ID,
+    verify_schema_tree_binding_for_issue, LightError, ISSUER_TREE_DEPTH, SCHEMA_REGISTRY_ID,
 };
 // SOLID-SEC-003: bring in the typed `SchemaAccount` from schema-registry
 // so Anchor auto-verifies the PDA's discriminator, owner program, and
@@ -283,6 +282,22 @@ pub mod issuer_registry {
         // Mainnet builds MUST NOT enable this feature.  Tracking:
         // docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048,
         // docs/IMPROVEMENTS_ROADMAP.md (P0).
+        // SOLID-SEC-062 / H4: reject non-canonical BN254 field encodings on
+        // the BJJ pubkey x/y BEFORE the on-curve / subgroup checks coerce
+        // them via mod-p reduction.  Without this gate, a malicious
+        // issuer can submit two distinct 32-byte encodings (`v1 != v2`,
+        // `v1 mod p == v2 mod p`) that both pass `is_on_curve` and produce
+        // colliding leaves in the issuer tree -- nullifier confusion under
+        // revocation.  Cheap (<200 CU): two MSB-first 32-byte compares.
+        require!(
+            solid_core::poseidon::is_canonical_bn254_le(&bjj_pub_key_x),
+            ErrorCode::InvalidBJJPubKey
+        );
+        require!(
+            solid_core::poseidon::is_canonical_bn254_le(&bjj_pub_key_y),
+            ErrorCode::InvalidBJJPubKey
+        );
+
         let bjj_pub_key = solid_core::babyjubjub::BJJPublicKey {
             x: bjj_pub_key_x,
             y: bjj_pub_key_y,
@@ -516,7 +531,10 @@ pub mod issuer_registry {
             .checked_add(amount)
             .ok_or(ErrorCode::Overflow)?;
         staker_account.last_stake_slot = clock_slot;
-        msg!("stake_tokens: writeback-ready, total_staked={}", staker_account.amount_staked);
+        msg!(
+            "stake_tokens: writeback-ready, total_staked={}",
+            staker_account.amount_staked
+        );
 
         Ok(())
     }
@@ -615,6 +633,81 @@ pub mod issuer_registry {
             "Withdrawal requested. Cooldown ends at {}",
             issuer.cooldown_ends_at
         );
+        Ok(())
+    }
+
+    /// SOLID-SEC-061 / H3: drain stake for a Revoked issuer once the
+    /// 24h DAO dispute window has closed.
+    ///
+    /// Pre-fix, an enrolled issuer who voluntarily exited via
+    /// `request_withdrawal_atomic` -> Cooldown ended up in a stuck-stake
+    /// trap: `withdraw_after_cooldown` refused to fully drain the stake
+    /// for tree-enrolled issuers (the legacy path required a Revoked
+    /// transition), and `revoke_issuer_atomic` flipped them to Revoked
+    /// without any refund handler.  Net: the only paths that touched
+    /// stake refused to handle the well-behaved exit case.  This ix is
+    /// the missing piece.
+    ///
+    /// Preconditions:
+    ///   * Issuer status == Revoked.
+    ///   * `staked_amount > 0`.
+    ///   * The 24h dispute window opened by `revoke_issuer_atomic` has
+    ///     elapsed (`cooldown_ends_at` is set on revoke; if a DAO slash
+    ///     is in flight, the slash handler runs first and seizes the
+    ///     stake before this ix can drain it).
+    ///   * Caller signs as `issuer.authority`.
+    ///
+    /// Behaviour:
+    ///   * Transfers `amount` lamports from `stake_vault` to
+    ///     `issuer_authority`.
+    ///   * Decrements `issuer.staked_amount` by `amount`; status remains
+    ///     Revoked.
+    ///   * Emits `StakeWithdrawn`.
+    pub fn withdraw_after_revoke(
+        ctx: Context<WithdrawAfterRevoke>,
+        amount: u64,
+    ) -> Result<()> {
+        let issuer = &mut ctx.accounts.issuer_account;
+        require!(
+            issuer.status == IssuerStatus::Revoked,
+            ErrorCode::IssuerNotRevoked
+        );
+        require!(issuer.staked_amount > 0, ErrorCode::InsufficientStake);
+        require!(amount > 0, ErrorCode::InsufficientStake);
+        require!(amount <= issuer.staked_amount, ErrorCode::InsufficientStake);
+        // 24h dispute window from revoke timestamp.
+        require!(
+            Clock::get()?.unix_timestamp >= issuer.cooldown_ends_at,
+            ErrorCode::DisputeWindowOpen
+        );
+        require_keys_eq!(
+            ctx.accounts.issuer_authority.key(),
+            issuer.authority,
+            ErrorCode::Unauthorized
+        );
+
+        **ctx
+            .accounts
+            .stake_vault
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= amount;
+        **ctx
+            .accounts
+            .issuer_authority
+            .to_account_info()
+            .try_borrow_mut_lamports()? += amount;
+
+        issuer.staked_amount = issuer
+            .staked_amount
+            .checked_sub(amount)
+            .ok_or(ErrorCode::Overflow)?;
+
+        emit!(StakeWithdrawn {
+            issuer: issuer.authority,
+            amount,
+            remaining: issuer.staked_amount,
+            slot: Clock::get()?.slot,
+        });
         Ok(())
     }
 
@@ -1073,17 +1166,43 @@ pub mod issuer_registry {
         Ok(())
     }
 
-    /// Mirror the current SPL AC Merkle root into the issuer-tree binding.
+    /// Update the issuer-tree binding's `current_root` to a new
+    /// Poseidon root, integrity-checked on-chain.
     ///
-    /// Same authority-gated push model as schema-registry's
-    /// `update_tree_root`: the recorded authority (or an indexer acting on
-    /// its behalf) pushes the new root after CPIing into the SPL AC tree.
-    /// Monotonicity is enforced on `last_updated_slot`; without it a
-    /// compromised authority (or a replayed tx) could regress the root to
-    /// a pre-revocation value, re-admitting a revoked issuer's old proofs.
+    /// SOLID-SEC-059 / H1 (closes 2026-04-30): pre-fix, this ix accepted
+    /// a caller-supplied `new_root: [u8; 32]` from a single-key authority
+    /// with no on-chain integrity check.  Combined with SEC-043
+    /// (single-key blast radius), that was a proof-forging primitive:
+    /// the authority could push any 32-byte value `R` and verify_batch_proof
+    /// would accept proofs whose `issuerTreeRoot = R`.
+    ///
+    /// Robust fix: the caller supplies `(new_root, new_leaf, leaf_index,
+    /// poseidon_proof_path)`.  The handler runs an on-chain Poseidon-Merkle
+    /// recompute and refuses any push whose recompute does not match
+    /// `new_root`.  An attacker controlling the authority key can still
+    /// install a root, but only one consistent with a real Poseidon path
+    /// they constructed -- pushing a fabricated root with no
+    /// corresponding leaf set is no longer possible.
+    ///
+    /// Architecture (LB4 closure, 2026-04-30): the binding stores the
+    /// POSEIDON root because the in-circuit `MerkleInclusion` template
+    /// (circuits/lib/merkle_inclusion.circom) uses Poseidon(2) for path
+    /// recompute and the witness commits to a Poseidon root.  The
+    /// on-chain SPL AC tree is Keccak-hashed and serves as the
+    /// leaf-presence ledger; its root is NOT the canonical root for
+    /// proof verification.  The earlier "read SPL AC header" attempt
+    /// at H1/CRIT-2 conflated the two and surfaced as Groth16 verify
+    /// failure once B13 Option 2 closed the wire-size cap.
+    ///
+    /// `poseidon_proof_path` is sent as a flat `Vec<u8>` (16 * 32 = 512
+    /// bytes for ISSUER_TREE_DEPTH=16) to avoid Anchor 0.30.1's
+    /// `Vec<[u8; 32]>` BorshDeserialize-on-BPF issue (LB1).
     pub fn update_issuer_tree_root(
         ctx: Context<UpdateIssuerTreeRoot>,
         new_root: [u8; 32],
+        new_leaf: [u8; 32],
+        leaf_index: u64,
+        poseidon_proof_path: Vec<u8>,
     ) -> Result<()> {
         let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
         require_keys_eq!(
@@ -1091,6 +1210,33 @@ pub mod issuer_registry {
             crate::ID,
             ErrorCode::InvalidIssuerTreeBindingOwner
         );
+
+        // Path arity gate: the caller MUST supply exactly
+        // ISSUER_TREE_DEPTH siblings (no canopy reliance, since this is
+        // the off-chain Poseidon side).
+        require!(
+            poseidon_proof_path.len() == ISSUER_TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(ISSUER_TREE_DEPTH);
+        for i in 0..ISSUER_TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
+
+        // On-chain Poseidon recompute integrity check (closes H1's
+        // root-injection attack).  Cost: ~50-80K CU (16 sol_poseidon
+        // syscalls + canonicalisation rounds); comfortably under the
+        // 200K default per-ix budget.
+        let computed_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
+                .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
+        require!(
+            computed_root == new_root,
+            ErrorCode::IssuerTreeRootMismatch
+        );
+
         let mut data = binding_info.try_borrow_mut_data()?;
         require!(
             data.len() >= ISSUER_TREE_BINDING_SIZE,
@@ -1197,29 +1343,40 @@ pub mod issuer_registry {
 
     /// First-time enrolment of an issuer into the singleton issuer tree.
     ///
+    /// SOLID-SEC-059 / H1 (closes 2026-04-30, atomic + integrity-checked).
+    /// The handler appends the leaf into the SPL AC tree (leaf-presence
+    /// ledger; Keccak-hashed) AND atomically updates the
+    /// `IssuerTreeBinding.current_root` to the new Poseidon root,
+    /// integrity-checked via on-chain Poseidon-Merkle recompute against
+    /// `poseidon_proof_path`.  No "caller MUST follow up" pattern; no
+    /// trust in a caller-supplied root value.
+    ///
+    /// Architecture note (LB4 closure 2026-04-30): the binding stores
+    /// the POSEIDON root because the in-circuit `MerkleInclusion`
+    /// template uses Poseidon(2) for path-recompute and the witness
+    /// commits to a Poseidon root.  SPL AC's Keccak root is the
+    /// leaf-presence ledger and is NOT the canonical root for proof
+    /// verification.  The earlier "read SPL AC header" attempt at
+    /// H1/CRIT-2 surfaced as Groth16 verify failure once B13 Option 2
+    /// closed the wire-size cap.
+    ///
     /// Preconditions:
     ///   * Issuer status must be `Approved`.
     ///   * Issuer must not already be enrolled (`is_tree_enrolled == false`).
-    ///   * Caller signs as `registry_config.authority` (the DAO / tree
-    ///     operator); this is the same authority that runs
-    ///     `initialize_issuer_tree_binding` and `update_issuer_tree_root`.
+    ///   * Caller signs as `registry_config.authority`.
+    ///   * `poseidon_proof_path` MUST be the Poseidon-Merkle path of
+    ///     siblings against the empty leaf at `next_issuer_leaf_index`
+    ///     (= the path that would witness "no leaf at this slot" pre-append).
+    ///     Callers derive this off-chain via
+    ///     `@solid-protocol/light::LocalReplicaAdapter`.
     ///
-    /// Behaviour:
-    ///   1. Computes the issuer leaf on-chain via Poseidon(5) of
-    ///      (authority, bjj_x, bjj_y, status_epoch, revocation_nonce).
-    ///   2. CPIs `spl_account_compression::append` signed by the
-    ///      `[b"issuer-tree-authority"]` PDA; SPL AC appends the leaf
-    ///      and emits its `ChangeLog` through `spl-noop`.
-    ///   3. Bumps `registry_config.next_issuer_leaf_index` by 1 and
-    ///      records the assigned index in `issuer.issuer_tree_leaf_index`.
-    ///   4. Flips `issuer.is_tree_enrolled = true`.
-    ///
-    /// The caller is expected to invoke `update_issuer_tree_root` in the
-    /// same transaction (either directly or via the tree-authority
-    /// operator); `IssuerTreeBinding.current_root` is the on-chain gate
-    /// the verifier reads, and only the binding update makes this
-    /// enrolment effective for proofs.
-    pub fn append_issuer_leaf(ctx: Context<AppendIssuerLeaf>) -> Result<()> {
+    /// Path encoding: flat `Vec<u8>` of `ISSUER_TREE_DEPTH * 32` bytes
+    /// (each 32-byte chunk is one Poseidon sibling).  Avoids the
+    /// `Vec<[u8; 32]>` BorshDeserialize-on-BPF issue (LB1).
+    pub fn append_issuer_leaf(
+        ctx: Context<AppendIssuerLeaf>,
+        poseidon_proof_path: Vec<u8>,
+    ) -> Result<()> {
         // Authority gate mirrors the binding lifecycle instructions.
         require_keys_eq!(
             ctx.accounts.authority.key(),
@@ -1288,9 +1445,45 @@ pub mod issuer_registry {
             &[signer_seeds],
         )?;
 
+        // SOLID-SEC-059 / H1 atomic binding update via on-chain Poseidon
+        // recompute.  Caller-supplied `poseidon_proof_path` is verified
+        // by computing Poseidon-Merkle(new_leaf, leaf_index, path) and
+        // writing that root to the binding.  No trust in a caller
+        // root; the recompute is the gate.
+        require!(
+            poseidon_proof_path.len() == ISSUER_TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(ISSUER_TREE_DEPTH);
+        for i in 0..ISSUER_TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
+        let assigned_index = ctx.accounts.registry_config.next_issuer_leaf_index;
+        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
+            &leaf,
+            assigned_index,
+            &path,
+        )
+        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        {
+            let mut binding_data = binding_info.try_borrow_mut_data()?;
+            write_issuer_tree_binding_root(
+                &mut binding_data,
+                &new_root,
+                Clock::get()?.slot,
+            )?;
+        }
+
         // ─── Bump counter + record assignment ─────────────────────────
         let config = &mut ctx.accounts.registry_config;
-        let assigned_index = config.next_issuer_leaf_index;
         config.next_issuer_leaf_index = config
             .next_issuer_leaf_index
             .checked_add(1)
@@ -1340,6 +1533,7 @@ pub mod issuer_registry {
     pub fn revoke_issuer_atomic<'info>(
         ctx: Context<'_, '_, '_, 'info, RevokeIssuerAtomic<'info>>,
         old_root: [u8; 32],
+        poseidon_proof_path: Vec<u8>,
     ) -> Result<()> {
         require_keys_eq!(
             ctx.accounts.authority.key(),
@@ -1366,6 +1560,16 @@ pub mod issuer_registry {
 
         // (3) Flip status.
         issuer.status = IssuerStatus::Revoked;
+
+        // SOLID-SEC-061 / H3: open the 24h dispute window during which
+        // the DAO can file a slash via `slash_issuer` / `submit_fraud_proof`.
+        // After the window closes, the issuer (or any signer authorised
+        // for stake recovery) can call `withdraw_after_revoke` to drain
+        // remaining unslashed stake.  Reuses the existing
+        // `cooldown_ends_at` slot since (a) Cooldown and Revoked are
+        // disjoint and (b) the field's semantic ("when the current
+        // restrictive state lifts") fits both cases.
+        issuer.cooldown_ends_at = Clock::get()?.unix_timestamp + 24 * 60 * 60;
 
         // (4) NEW leaf (reflects bumped state).
         let new_leaf = compute_issuer_leaf_bytes(issuer)?;
@@ -1424,14 +1628,28 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
-        // SOLID-SEC-045 pre-CPI gate: enforce full proof path so the
-        // on-chain root recomputation below is sound.  SPL AC accepts a
-        // shorter path (canopy fills the rest), but a shorter path makes
-        // our recomputation diverge from the real post-CPI root.
+        // SOLID-SEC-045 / CRIT-2 pre-CPI hygiene: require a full proof
+        // path for the SPL AC `replace_leaf` CPI.  Issuer tree has
+        // canopy=0 so SPL AC needs every sibling on-wire.
         require!(
             ctx.remaining_accounts.len() == ISSUER_TREE_DEPTH,
             ErrorCode::InvalidProofPathLength
         );
+
+        // SOLID-SEC-059 / H1 closure (atomic + integrity-checked, 2026-04-30):
+        // verify the Poseidon-Merkle path before spending CU on the SPL
+        // AC CPI.  Binding stores the Poseidon root the circuit expects;
+        // SPL AC's Keccak root is leaf-presence ledger only.
+        require!(
+            poseidon_proof_path.len() == ISSUER_TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(ISSUER_TREE_DEPTH);
+        for i in 0..ISSUER_TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
 
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
@@ -1445,27 +1663,18 @@ pub mod issuer_registry {
         }
         invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
 
-        // (6) SOLID-SEC-045 / NEW-01.  Atomic binding update.
-        //
-        // The CPI succeeded, which means SPL AC validated the proof
-        // against the live tree.  Recompute the new root with `new_leaf`
-        // along the same authenticated path -- by Keccak256 collision
-        // resistance + `replace_leaf`'s pre-image gate, this MUST equal
-        // the root SPL AC just committed to.  Write it directly into
-        // `IssuerTreeBinding.current_root` so `verify_batch_proof`
-        // immediately sees the post-revoke tree state.  No follow-up
-        // `update_issuer_tree_root` call is required.
-        let proof_path_keys: Vec<[u8; 32]> = ctx
-            .remaining_accounts
-            .iter()
-            .map(|a| a.key().to_bytes())
-            .collect();
-        let computed_new_root = compute_concurrent_merkle_root_keccak(
+        // SOLID-SEC-045 / CRIT-2 / H1 atomic binding update via on-chain
+        // Poseidon recompute.  The new_leaf already reflects the
+        // post-bump issuer state (status_epoch + revocation_nonce); the
+        // path is supplied by the caller and verified by the recompute.
+        // No reliance on SPL AC's Keccak path; no concurrent-semantics
+        // concern because Poseidon recompute is single-input-determined.
+        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
             &new_leaf,
-            leaf_index_u32,
-            &proof_path_keys,
-        );
-
+            leaf_index,
+            &path,
+        )
+        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
         require_keys_eq!(
             *binding_info.owner,
@@ -1476,10 +1685,13 @@ pub mod issuer_registry {
             let mut binding_data = binding_info.try_borrow_mut_data()?;
             write_issuer_tree_binding_root(
                 &mut binding_data,
-                &computed_new_root,
+                &new_root,
                 Clock::get()?.slot,
             )?;
         }
+        // `old_root` is consumed by SPL AC `replace_leaf` for the
+        // Keccak-side leaf-presence check.  Suppress unused-var warn.
+        let _ = old_root;
 
         // (7) Registry bookkeeping.
         let config = &mut ctx.accounts.registry_config;
@@ -1547,6 +1759,7 @@ pub mod issuer_registry {
     pub fn request_withdrawal_atomic<'info>(
         ctx: Context<'_, '_, '_, 'info, RequestWithdrawalAtomic<'info>>,
         old_root: [u8; 32],
+        poseidon_proof_path: Vec<u8>,
     ) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
 
@@ -1634,11 +1847,23 @@ pub mod issuer_registry {
             data: ix_data,
         };
 
-        // SOLID-SEC-045 pre-CPI gate (mirrors revoke_issuer_atomic).
+        // SOLID-SEC-045 / CRIT-2 hygiene + SOLID-SEC-059 / H1 atomic
+        // Poseidon-recompute (mirrors revoke_issuer_atomic).  See that
+        // handler's commentary for the full soundness story.
         require!(
             ctx.remaining_accounts.len() == ISSUER_TREE_DEPTH,
             ErrorCode::InvalidProofPathLength
         );
+        require!(
+            poseidon_proof_path.len() == ISSUER_TREE_DEPTH * 32,
+            ErrorCode::InvalidProofPathLength
+        );
+        let mut path: Vec<[u8; 32]> = Vec::with_capacity(ISSUER_TREE_DEPTH);
+        for i in 0..ISSUER_TREE_DEPTH {
+            let mut s = [0u8; 32];
+            s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
+            path.push(s);
+        }
 
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
@@ -1652,20 +1877,14 @@ pub mod issuer_registry {
         }
         invoke_signed(&cpi_ix, &invoke_accounts, &[signer_seeds])?;
 
-        // SOLID-SEC-045 / NEW-01.  Atomic binding update; mirrors
-        // revoke_issuer_atomic.  See the sibling handler for the full
-        // soundness argument.
-        let proof_path_keys: Vec<[u8; 32]> = ctx
-            .remaining_accounts
-            .iter()
-            .map(|a| a.key().to_bytes())
-            .collect();
-        let computed_new_root = compute_concurrent_merkle_root_keccak(
+        // SOLID-SEC-045 / CRIT-2 / H1 atomic binding update via on-chain
+        // Poseidon recompute.  Mirrors revoke_issuer_atomic.
+        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
             &new_leaf,
-            leaf_index_u32,
-            &proof_path_keys,
-        );
-
+            leaf_index,
+            &path,
+        )
+        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
         require_keys_eq!(
             *binding_info.owner,
@@ -1676,10 +1895,11 @@ pub mod issuer_registry {
             let mut binding_data = binding_info.try_borrow_mut_data()?;
             write_issuer_tree_binding_root(
                 &mut binding_data,
-                &computed_new_root,
+                &new_root,
                 Clock::get()?.slot,
             )?;
         }
+        let _ = old_root;
 
         // Note: registry_config.active_issuers is NOT decremented
         // here -- a Cooldown issuer is still "active" for bookkeeping
@@ -1744,6 +1964,17 @@ pub mod issuer_registry {
         // Poseidon output and effectively collision-free with these patterns.
         require!(
             commitment != [0u8; 32] && commitment != [0xFFu8; 32],
+            ErrorCode::InvalidCommitment
+        );
+
+        // SOLID-SEC-062 / H4: reject non-canonical BN254 field encodings.
+        // An honest commitment is a Poseidon output already in [0, p), but
+        // a malicious issuer can hand-craft a 32-byte commitment with
+        // `c1 != c2` and `c1 mod p == c2 mod p`, producing two on-chain
+        // leaves the circuit treats as one (nullifier confusion).  This
+        // gate refuses anything ≥ p before the leaf is appended.
+        require!(
+            solid_core::poseidon::is_canonical_bn254_le(&commitment),
             ErrorCode::InvalidCommitment
         );
 
@@ -2075,11 +2306,18 @@ pub struct InitializeIssuerTreeBinding<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// ADR-0014.  Accounts for `update_issuer_tree_root` + reused by
-/// `set_issuer_tree_binding_status`.  The PDA seed proves program
-/// provenance; the stored-authority byte range inside the binding
-/// (offset [81..113)) is what the handler actually enforces as the
-/// gate.
+/// ADR-0014.  Accounts for `set_issuer_tree_binding_status`.  The PDA
+/// seed proves program provenance; the stored-authority byte range
+/// inside the binding (offset [81..113)) is what the handler actually
+/// enforces as the gate.
+///
+/// Historical note: this struct was named `UpdateIssuerTreeRoot` and
+/// was shared by the deleted `update_issuer_tree_root` ix
+/// (SOLID-SEC-059 / H1, 2026-04-29).  The `set_issuer_tree_binding_status`
+/// handler still uses the same shape (binding PDA + signing authority),
+/// so the accounts struct is kept under a renamed alias.  External
+/// IDL clients calling `set_issuer_tree_binding_status` see the new
+/// name in the Anchor IDL.
 #[derive(Accounts)]
 pub struct UpdateIssuerTreeRoot<'info> {
     /// CHECK: parsed raw; owner + discriminator + stored-authority
@@ -2088,6 +2326,7 @@ pub struct UpdateIssuerTreeRoot<'info> {
     pub issuer_tree_binding: UncheckedAccount<'info>,
     pub authority: Signer<'info>,
 }
+
 
 /// ADR-0014.  Accounts for `append_issuer_leaf`.
 ///
@@ -2120,6 +2359,14 @@ pub struct AppendIssuerLeaf<'info> {
     /// validates ownership + shape on CPI.
     #[account(mut)]
     pub merkle_tree: UncheckedAccount<'info>,
+
+    /// CHECK: SOLID-SEC-059 / H1 atomic binding update.  Owner +
+    /// discriminator + status checked in-handler via
+    /// `write_issuer_tree_binding_root`.  The post-CPI handler computes
+    /// the new Poseidon root from `poseidon_proof_path` (ix arg) and
+    /// writes it here atomically with the SPL AC append.
+    #[account(mut, seeds = [ISSUER_TREE_BINDING_SEED], bump)]
+    pub issuer_tree_binding: UncheckedAccount<'info>,
 
     /// CHECK: Must be `spl_noop_id::ID`; validated in-handler.
     pub log_wrapper: UncheckedAccount<'info>,
@@ -2368,6 +2615,25 @@ pub struct WithdrawAfterCooldown<'info> {
     #[account(mut, seeds = [b"issuer", issuer_authority.key().as_ref()], bump)]
     pub issuer_account: Account<'info, IssuerAccount>,
     /// CHECK: Stake vault PDA
+    #[account(mut, seeds = [b"stake-vault"], bump)]
+    pub stake_vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub issuer_authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// SOLID-SEC-061 / H3.  Accounts for `withdraw_after_revoke`.
+///
+/// The seed-bound `issuer_account` PDA + the explicit
+/// `require_keys_eq!(issuer_authority, issuer.authority)` in the
+/// handler enforce that only the legitimate issuer authority can drain
+/// the post-revoke stake.  Mirrors `WithdrawAfterCooldown` shape so a
+/// SDK helper can share the encoder layout.
+#[derive(Accounts)]
+pub struct WithdrawAfterRevoke<'info> {
+    #[account(mut, seeds = [b"issuer", issuer_authority.key().as_ref()], bump)]
+    pub issuer_account: Account<'info, IssuerAccount>,
+    /// CHECK: Stake vault PDA.
     #[account(mut, seeds = [b"stake-vault"], bump)]
     pub stake_vault: AccountInfo<'info>,
     #[account(mut)]
@@ -2628,6 +2894,14 @@ pub enum ErrorCode {
     InvalidBJJPubKey,
     #[msg("Proof path length does not match ISSUER_TREE_DEPTH; full path required, no canopy reliance (SOLID-SEC-045)")]
     InvalidProofPathLength,
+    #[msg("Submitted old_root does not match IssuerTreeBinding.current_root; retry against the live binding root (SEC-060 / H2)")]
+    IssuerTreeRootStale,
+    #[msg("Submitted new_root does not match the on-chain Poseidon-Merkle recompute against (new_leaf, leaf_index, poseidon_proof_path) (SEC-059 / H1)")]
+    IssuerTreeRootMismatch,
+    #[msg("Issuer is not in Revoked status; withdraw_after_revoke requires Revoked (SEC-061 / H3)")]
+    IssuerNotRevoked,
+    #[msg("DAO dispute window has not closed yet; wait until cooldown_ends_at to withdraw post-revoke (SEC-061 / H3)")]
+    DisputeWindowOpen,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -2747,6 +3021,17 @@ pub struct Sec007Bypass {
     pub slot: u64,
 }
 
+/// SOLID-SEC-061 / H3.  Emitted by `withdraw_after_revoke` for every
+/// successful post-revoke stake drain.  Lets indexers and DAO dashboards
+/// reconcile staked-amount totals without polling every IssuerAccount.
+#[event]
+pub struct StakeWithdrawn {
+    pub issuer: Pubkey,
+    pub amount: u64,
+    pub remaining: u64,
+    pub slot: u64,
+}
+
 /// Classifies the status transition that drove a
 /// `replace_leaf` event.  Kept distinct from `SlashingReason` since
 /// not every revoke comes from a slash (e.g. voluntary cooldown ->
@@ -2813,7 +3098,13 @@ mod tests {
     fn write_binding_root_happy_path_overwrites_root_and_slot() {
         let old_root = [0xAAu8; 32];
         let new_root = [0xBBu8; 32];
-        let mut buf = make_binding([1u8; 32], old_root, 100, ISSUER_TREE_STATUS_ACTIVE, [9u8; 32]);
+        let mut buf = make_binding(
+            [1u8; 32],
+            old_root,
+            100,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [9u8; 32],
+        );
 
         write_issuer_tree_binding_root(&mut buf, &new_root, 250).unwrap();
 
@@ -2832,7 +3123,13 @@ mod tests {
     #[test]
     fn write_binding_root_accepts_slot_zero() {
         // slot=0 is unusual but legal; helper must not reject.
-        let mut buf = make_binding([0u8; 32], [0u8; 32], 0, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        let mut buf = make_binding(
+            [0u8; 32],
+            [0u8; 32],
+            0,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
         let new_root = [0xCDu8; 32];
         write_issuer_tree_binding_root(&mut buf, &new_root, 0).unwrap();
         assert_eq!(&buf[40..72], &new_root[..]);
@@ -2847,7 +3144,13 @@ mod tests {
         // atomic ixs the root will always advance because the leaf
         // changes preimage.
         let same_root = [0x77u8; 32];
-        let mut buf = make_binding([0u8; 32], same_root, 50, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        let mut buf = make_binding(
+            [0u8; 32],
+            same_root,
+            50,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
         write_issuer_tree_binding_root(&mut buf, &same_root, 50).unwrap();
         assert_eq!(&buf[40..72], &same_root[..]);
     }
@@ -2865,7 +3168,13 @@ mod tests {
 
     #[test]
     fn write_binding_root_rejects_bad_discriminator() {
-        let mut buf = make_binding([0u8; 32], [0u8; 32], 1, ISSUER_TREE_STATUS_ACTIVE, [0u8; 32]);
+        let mut buf = make_binding(
+            [0u8; 32],
+            [0u8; 32],
+            1,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
         // Corrupt discriminator (e.g., to schmtree, the schema-tree one).
         buf[0..8].copy_from_slice(b"schmtree");
         let err = write_issuer_tree_binding_root(&mut buf, &[1u8; 32], 1).unwrap_err();

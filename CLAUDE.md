@@ -222,16 +222,33 @@ Open Phase 3 / Phase 4 scope:
   programs/zk-verifier/src/lib.rs:500-502. Defer to the next
   sanctioned trusted-setup cycle (batches with SEC-006 Part 2 +
   predicate-operand range checks); one-constraint fix prepared.
-- **B13 (live edge, 2026-04-28).** verify_batch_proof ix data
-  is 1324 bytes which exceeds Solana's 1232-byte legacy-tx wire
-  size. Architectural blocker for the on-chain submission half
-  of `npm run prove`. The Groth16 proof itself generates fine.
-  Recommended remediation: reconstruct redundant public inputs
-  on-chain from accounts already passed to the ix (saves 384
-  bytes; total shrinks to 940 bytes). See docs/E2E_BLOCKERS.md
-  B13 + plan/IMPLEMENTATION_PLAN.md Appendix D for the next-
-  session pickup. Promotes to **SOLID-SEC-054** once the
-  remediation choice is sanctioned.
+- **B13 (live edge, 2026-04-29).** verify_batch_proof ix data
+  was 1324 bytes which exceeded Solana's 1232-byte legacy-tx
+  wire size.  As of 2026-04-29 the (1) on-chain reconstruction
+  + (3) Versioned-tx + ALT path shipped in code (uncommitted
+  WIP) -- 11 redundant public inputs are reconstructed on-chain
+  (slot 1 globalRoot, 2..5 merkleRoots, 6..9 schemaHashes, 10
+  issuerTreeRoot, 29 verifierAddress); slots 30 verifierNonce
+  and 31 currentTimestamp stay on the wire (witness-bound;
+  Groth16 has zero-tolerance polynomial equality, the SEC-005
+  skew window is an additional on-chain freshness predicate,
+  not a substitute).  Three previously-latent bugs surfaced
+  and were fixed in the same arc: LB1 (Anchor 0.30.1's
+  Vec<[u8; 32]> BorshDeserialize fails on BPF -> handler arg
+  changed to Vec<u8>), LB2 (SEC-005 timestamp byte-order was
+  LE in handler vs BE on the wire -> read from_be_bytes(
+  ts_bytes[24..32])), LB3 (reconstructed Merkle slots stored
+  on-chain in LE byte form vs Groth16-expected BE -> byte-
+  reverse on copy).  Despite all of that, (1)+(3) is **37
+  bytes over** the 1232-byte cap once the required
+  setComputeUnitLimit ix is prepended (verify_batch_proof
+  needs ~285K-345K CU vs default 200K).  Pivoting to
+  **Option 2 (buffer-account / chunked upload)** in next
+  session per docs/REMEDIATION_OPTIONS_ARCHIVE.md §1.1.
+  See plan/SESSION_LOG_2026-04-29.md for the full receipts.
+  Tracked as **SOLID-SEC-054** (status: Open, interim
+  partial); flips to Fixed when the buffer-account flow lands
+  and npm run e2e returns verified: true.
 - Integration test suite 02..11. Ten scenarios specified in
   tests/integration/README.md, none implemented (bankrun + jest
   harness not yet stood up).
@@ -282,6 +299,35 @@ Read that section before starting a new debugging arc.
 - L6. Doc lies are tomorrow's bugs. "Caller MUST do X" without
   enforcement is one careless integration away from being
   enforcement-by-nothing. Promote convention to type or guard.
+- L7. Before touching anything that interacts with a hard
+  wire-size or CU cap, write down the byte / CU ledger
+  explicitly UP-FRONT, planning for the largest possible final
+  shape (cuIx, ALT struct, Versioned-tx framing, signature
+  section, all of it).  Solana's 1232-byte legacy-tx cap and
+  1.4M-CU per-tx ceiling leave no room for "approximate"
+  estimates -- a 37-byte miscalculation surfaces as a hard
+  protocol rejection at submit time.  Earned 2026-04-29 in the
+  B13 (1)+(3) attempt -- the doc estimated "fits with ~135 byte
+  margin" but did not include the cuIx, and the actual surface
+  came out 37 bytes over.
+- L8. Separate "what I observed" (load-bearing) from "why I
+  think it happened" (speculative until proven).  Don't lead
+  with the speculative root-cause story when the fix is
+  empirical.  Earned 2026-04-29 in the LB1 fix -- I wrote a
+  confident "Anchor 0.30.1's Vec<[u8; 32]> BorshDeserialize is
+  broken on BPF" narrative that may or may not be right (would
+  require disassembling the .so to confirm); the correct framing
+  was "I have an empirical fix; the actual root cause inside
+  Anchor's macro / borsh-derive / LLVM-BPF codegen is
+  unverified."
+- L9. When fixing a primary defect surfaces N latent bugs, each
+  latent-bug fix is its own atomic commit + own regression gate
+  + own registry entry.  Do not bundle into "the original arc."
+  Earned 2026-04-29 -- LB1 (Vec<u8> deser), LB2 (SEC-005
+  timestamp BE/LE), and LB3 (reconstruction-slot BE/LE) are
+  three independent latent bugs that were bundled with B13
+  (1)+(3) reconstruction; should ship as four separate commits
+  with four separate registry entries.
 
 ## Working-style notes
 
