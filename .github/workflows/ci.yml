@@ -516,14 +516,28 @@ jobs:
           done
           solana config set --url http://127.0.0.1:8899
           solana airdrop 100 || true
-      - name: Run E2E pipeline
+      - name: Run E2E pipeline (full)
+        env:
+          SOLID_RPC_URL: http://127.0.0.1:8899
+          SOLID_VOTING_PERIOD_SECONDS: '120'
+        run: |
+          # The full sequence: init-onchain -> backfill-issuer-tree ->
+          # bootstrap-schema-tree -> bootstrap-issuer -> issue -> prove.
+          # `prove` exercises the SOLID-SEC-054 / B13 Option 2 buffer-
+          # account flow + the on-chain Groth16 verify.  Green tail must
+          # include `verified: true` followed by `ok (replay rejected by
+          # nullifier PDA init constraint)`.  This is the load-bearing
+          # SOLID-SEC-011 regression gate.
+          npm run e2e
+      - name: SOLID-SEC-046 CU regression gate
         env:
           SOLID_RPC_URL: http://127.0.0.1:8899
         run: |
-          npm run init-onchain
-          npm run bootstrap-issuer
-          npm run issue
-          npm run prove
+          # Re-measure on-chain CU consumption per ix from the just-run
+          # e2e and compare against pinned baselines.  Fails the build
+          # on `consumed > baseline * 1.10`.  Baselines + tx hashes:
+          # `tests/cu_baselines.json` + `docs/CU_BUDGET.md`.
+          python3 scripts/measure_cu.py
       - name: Dump validator log on failure
         if: failure()
         run: tail -n 400 /tmp/validator.log || true

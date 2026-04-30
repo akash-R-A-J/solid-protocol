@@ -478,6 +478,44 @@ async function main() {
     `pin source: ${envPin ? 'SOLID_VK_SHA256 env' : vkSha256Path})`,
   );
 
+  // Idempotency guard: read verifier_config, skip the chunked upload
+  // entirely if the VK is already finalized (post-vk_initialized=true,
+  // post `finalize_verification_key`).  Catches the common
+  // `ChunkOutOfOrder` failure when the script is re-run against a
+  // validator that already has the VK on-chain (ledger persists across
+  // a state-file wipe).  If the upload is partially done
+  // (`next_vk_chunk > 0` but `vk_initialized=false`), refuse with an
+  // actionable error rather than corrupt the partial state -- the
+  // operator must `solana-test-validator --reset` (clean validator) or
+  // wait for the prior session to recover.
+  try {
+    const cfg = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
+    if (cfg.vkInitialized) {
+      console.log('   ok (VK already finalized on this validator; skipping upload)');
+      const stateFile = readStateOrNull('initialize') ?? {};
+      stateFile.vkStorageAddress = vkStoragePda.toBase58();
+      writeState(stateFile);
+      console.log(`\nWrote ${stateFilePath()}`);
+      console.log('Done.');
+      return;
+    }
+    if (cfg.nextVkChunk && cfg.nextVkChunk > 0) {
+      throw new Error(
+        `verifier_config has next_vk_chunk=${cfg.nextVkChunk} but vk_initialized=false; ` +
+        `a prior partial upload is on-chain.  Either restart with ` +
+        `solana-test-validator --reset, or call finalize_verification_key from the ` +
+        `chunk index where the prior run stopped.`,
+      );
+    }
+  } catch (e: any) {
+    // First-run path: verifier_config exists (just initialized in step 6) but
+    // `fetch` throws if the account isn't decodable.  Continue to upload below.
+    if (e?.message?.includes('Account does not exist') || e?.message?.includes('next_vk_chunk')) {
+      throw e;
+    }
+    // Otherwise treat as "freshly created; no chunks yet" -- proceed.
+  }
+
   const vkJson = JSON.parse(vkJsonBytes.toString('utf-8'));
   const icLen = vkJson.IC.length;
   const vkBytes = Buffer.concat([
