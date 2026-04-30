@@ -814,11 +814,26 @@ async function verifyOnChainV2(
 // ─── Issuer status check ──────────────────────────────────────────────────
 
 /**
+ * Anchor account-discriminator for `IssuerAccount`.
+ * Equals `sha256("account:IssuerAccount")[..8]`.  M7 / SOLID-SEC-075
+ * (closed 2026-05-01) regression gate: pin at module load + reject
+ * mismatched bytes before the parser walks the body.
+ */
+const ISSUER_ACCOUNT_DISCRIMINATOR: Buffer = createHash('sha256')
+  .update('account:IssuerAccount')
+  .digest()
+  .subarray(0, 8);
+
+/**
  * Check if an issuer is approved in the DAO registry.
  *
- * Reads the `IssuerAccount` PDA directly. Deserializes the first 8-byte Anchor
- * discriminator + the 32-byte authority + (4+n) name + (4+m) metadata_uri +
- * Ax/Ay + tier + status, which is enough to answer the common question.
+ * Reads the `IssuerAccount` PDA directly.  Validates the 8-byte Anchor
+ * discriminator before decoding to refuse arbitrary same-size accounts
+ * (M7 / SOLID-SEC-075, sibling class to M11 SOLID-SEC-073).  Body
+ * decoded as: 32-byte authority + (4+n) name + (4+m) metadata_uri +
+ * Ax/Ay + tier + status + stake -- enough to answer the common
+ * question without pulling in `@coral-xyz/anchor`'s full
+ * BorshAccountsCoder for one read.
  */
 export async function checkIssuerStatus(
   connection: Connection,
@@ -833,7 +848,22 @@ export async function checkIssuerStatus(
   const info = await connection.getAccountInfo(issuerPda);
   if (!info) return { approved: false, name: '', stakedAmount: 0n, tier: 0, status: 0 };
 
-  // Skip 8-byte Anchor discriminator + 32 byte authority.
+  // M7 / SOLID-SEC-075: validate Anchor discriminator BEFORE walking the
+  // body.  Pre-fix the parser blindly trusted the first 8 bytes were
+  // an IssuerAccount discriminator and decoded the body regardless;
+  // an attacker could plant a system-owned account at the same
+  // address (impossible if owner-checks land elsewhere, but the gate
+  // belongs at the SDK boundary too) with arbitrary bytes and the
+  // SDK would happily report a synthetic "approved" status.
+  if (info.data.length < 8 || !ISSUER_ACCOUNT_DISCRIMINATOR.equals(info.data.subarray(0, 8))) {
+    return { approved: false, name: '', stakedAmount: 0n, tier: 0, status: 0 };
+  }
+  // Defence-in-depth: also assert the program owner.
+  if (!info.owner.equals(registryProgramId)) {
+    return { approved: false, name: '', stakedAmount: 0n, tier: 0, status: 0 };
+  }
+
+  // Body: skip 8-byte discriminator + 32-byte authority.
   let cur = 8 + 32;
   const nameLen = info.data.readUInt32LE(cur); cur += 4;
   const name = info.data.slice(cur, cur + nameLen).toString('utf-8'); cur += nameLen;

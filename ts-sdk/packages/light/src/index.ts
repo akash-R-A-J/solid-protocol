@@ -48,6 +48,19 @@ import {
   ValidDepthSizePair,
 } from '@solana/spl-account-compression';
 import BN from 'bn.js';
+import { createHash } from 'crypto';
+
+/**
+ * Anchor `emit!` event-discriminator for `CredentialIssued`.
+ * Computed once at module load and pinned for hot-path comparison.
+ * Byte-equivalent to `sha256("event:CredentialIssued")[..8]` in the
+ * issuer-registry program.  M11 / SOLID-SEC-073 (closed 2026-05-01)
+ * regression gate.
+ */
+const CREDENTIAL_ISSUED_DISCRIMINATOR: Buffer = createHash('sha256')
+  .update('event:CredentialIssued')
+  .digest()
+  .subarray(0, 8);
 
 // ─── Canonical IDs ─────────────────────────────────────────────────────────
 
@@ -505,8 +518,15 @@ export interface CredentialIssuedEvent {
 export function parseCredentialIssuedEvent(dataB64: string): CredentialIssuedEvent | null {
   const bytes = Buffer.from(dataB64, 'base64');
   if (bytes.length < 152) return null;
-  // Discriminator bytes are caller's problem to match; we trust the caller
-  // filtered by program log already.
+  // M11 / SOLID-SEC-073 (closed 2026-05-01): validate the event
+  // discriminator before decoding the payload.  Pre-fix the parser
+  // accepted any 152+ byte buffer and decoded its body; an indexer
+  // listening to validator logs could then misread an unrelated
+  // event (with the same byte-length) as a CredentialIssued.  Pin
+  // the discriminator at module load and reject mismatches.
+  if (!CREDENTIAL_ISSUED_DISCRIMINATOR.equals(bytes.subarray(0, 8))) {
+    return null;
+  }
   return {
     issuer: new PublicKey(bytes.subarray(8, 40)),
     schemaHash: new Uint8Array(bytes.subarray(40, 72)),

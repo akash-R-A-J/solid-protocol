@@ -65,11 +65,18 @@ export const SOLID_CONFIG = {
   },
 
   // Circuit Settings
+  //
+  // M10 / SOLID-SEC-072 (closed 2026-05-01): PUBLIC_INPUTS was 31
+  // (pre-ADR-0014); ADR-0014 added `issuerTreeRoot` at slot [10] and
+  // grew the contract to 32.  The canonical authoritative source is
+  // `NR_PUBLIC_INPUTS` in `@solid-protocol/verifier`; this duplicate
+  // is removed.  Callers that referenced `SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.PUBLIC_INPUTS`
+  // should import `NR_PUBLIC_INPUTS` from `@solid-protocol/verifier`
+  // instead.
   CIRCUIT_METADATA: {
     BATCH_QUERY: {
       WASM_PATH: '/batch_credential_query.wasm',
       ZKEY_PATH: '/batch_credential_query.zkey',
-      PUBLIC_INPUTS: 31,
     },
   },
 };

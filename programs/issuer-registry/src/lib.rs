@@ -1007,6 +1007,17 @@ pub mod issuer_registry {
             anchor.tier == IssuerTier::Government || anchor.tier == IssuerTier::Regulated,
             ErrorCode::UnauthorizedTrustAnchor
         );
+        // M9 / SOLID-SEC-074 (closed 2026-05-01): mutual tier-floor.
+        // Pre-fix only the anchor's tier was gated -- a Regulated
+        // anchor could approve a Government target, silently
+        // up-tier-ing the target without the corresponding regulatory
+        // bar.  Post-fix: target.tier <= anchor.tier is required
+        // (rank-based comparison).  Government can approve any tier;
+        // Regulated can approve Regulated/Enterprise/Community.
+        require!(
+            target.tier.rank() <= anchor.tier.rank(),
+            ErrorCode::UnauthorizedTrustAnchor
+        );
         require!(
             anchor.status == IssuerStatus::Approved,
             ErrorCode::IssuerNotApproved
@@ -2696,6 +2707,22 @@ pub enum IssuerTier {
     Enterprise,
     Regulated,
     Government,
+}
+
+impl IssuerTier {
+    /// Numeric trust ordering used by `approve_via_trust_anchor`'s
+    /// mutual-floor check (M9 / SOLID-SEC-074).  Higher numeric
+    /// value == higher trust.  Government can approve any tier;
+    /// Regulated can approve up to Regulated; lower tiers cannot
+    /// trust-anchor at all.
+    pub fn rank(&self) -> u8 {
+        match self {
+            IssuerTier::Community => 0,
+            IssuerTier::Enterprise => 1,
+            IssuerTier::Regulated => 2,
+            IssuerTier::Government => 3,
+        }
+    }
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Debug)]

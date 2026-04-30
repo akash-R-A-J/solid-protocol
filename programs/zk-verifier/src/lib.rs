@@ -117,6 +117,15 @@ pub const MAX_TIMESTAMP_SKEW_SECONDS: u32 = 3_600;
 /// timelock composes with the multisig quorum for full DAO gating.
 pub const VK_ROTATION_TIMELOCK_SECONDS: i64 = 48 * 60 * 60;
 
+/// M6 / SOLID-SEC-070 (closed 2026-05-01): asymmetric timestamp drift
+/// tolerance.  Pre-fix the SEC-005 freshness gate accepted any
+/// `claimed_ts` in `[now - skew, now + skew]` -- but a proof from the
+/// FUTURE is suspicious, while a proof from the past up to `skew`
+/// seconds ago is normal (witness generation + tx propagation latency).
+/// Post-fix the upper bound is `now + MAX_FUTURE_DRIFT_SECONDS` (a
+/// small clock-jitter band), regardless of the configured `skew`.
+pub const MAX_FUTURE_DRIFT_SECONDS: u64 = 30;
+
 // Compile-time assertion: the stack-resident `VkBuf` shell must stay
 // well under Solana's 4 KB per-frame BPF stack budget.  The IC table
 // (`Vec<[u8; 64]>`) lives on the heap, so only fixed-size scalars
@@ -612,8 +621,12 @@ pub mod zk_verifier {
         require!(now_i64 >= 0, ErrorCode::StaleTimestamp);
         let now = now_i64 as u64;
         let skew = config.timestamp_skew_seconds as u64;
+        // M6 / SOLID-SEC-070 asymmetric clamp: proofs from the past up
+        // to `skew` are normal (witness gen + tx-propagation latency);
+        // proofs from the future are suspicious -- allow only a small
+        // clock-jitter band.
         let lower = now.saturating_sub(skew);
-        let upper = now.saturating_add(skew);
+        let upper = now.saturating_add(MAX_FUTURE_DRIFT_SECONDS);
         require!(
             claimed_ts >= lower && claimed_ts <= upper,
             ErrorCode::StaleTimestamp
@@ -870,8 +883,12 @@ pub mod zk_verifier {
         require!(now_i64 >= 0, ErrorCode::StaleTimestamp);
         let now = now_i64 as u64;
         let skew = config.timestamp_skew_seconds as u64;
+        // M6 / SOLID-SEC-070 asymmetric clamp: proofs from the past up
+        // to `skew` are normal (witness gen + tx-propagation latency);
+        // proofs from the future are suspicious -- allow only a small
+        // clock-jitter band.
         let lower = now.saturating_sub(skew);
-        let upper = now.saturating_add(skew);
+        let upper = now.saturating_add(MAX_FUTURE_DRIFT_SECONDS);
         require!(
             claimed_ts >= lower && claimed_ts <= upper,
             ErrorCode::StaleTimestamp
@@ -965,8 +982,12 @@ impl VkBuf {
     /// stay inline in the returned struct.
     ///
     /// Bounds-checked at every cursor advance; malformed input returns a typed
-    /// error rather than panicking.  `nr_ic` is capped at `MAX_IC` to prevent
-    /// a malicious / miscalibrated VK from driving an out-of-bounds copy.
+    /// error rather than panicking.  `nr_ic` MUST equal `MAX_IC` exactly
+    /// (= `NR_PUBLIC_INPUTS + 1`).  Pre-fix the parser tolerated any
+    /// `0 < nr_ic <= MAX_IC`; that's a soundness gap because a VK with
+    /// fewer IC points than the circuit declares would silently accept
+    /// a proof against the wrong public-input contract.  See M5 /
+    /// SOLID-SEC-069 (closed 2026-05-01).
     pub fn parse(bytes: &[u8]) -> core::result::Result<Self, VkParseError> {
         const HEADER: usize = 4 + 64 + 128 * 3;
         if bytes.len() < HEADER {
@@ -975,7 +996,8 @@ impl VkBuf {
 
         // Header
         let nr_ic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        if nr_ic == 0 || nr_ic > MAX_IC {
+        // M5 / SOLID-SEC-069: strict equality against MAX_IC = NR_PUBLIC_INPUTS + 1.
+        if nr_ic != MAX_IC {
             return Err(VkParseError::IcOverflow);
         }
         if bytes.len() < HEADER + nr_ic * 64 {
@@ -1186,7 +1208,19 @@ pub struct VerifyBatchProof<'info> {
     )]
     pub nullifier_record: Account<'info, NullifierRecord>,
 
-    /// CHECK: Global-state Merkle tree account (Light Protocol or SolID-native).
+    /// CHECK: Singleton `GlobalStateBinding` PDA owned by
+    /// `schema-registry` (seed `b"global-binding"`).  M4 / SOLID-SEC-068
+    /// (closed 2026-05-01): pre-fix this field had no `seeds::program`
+    /// constraint, so an attacker who could craft a system-owned
+    /// account at the same key (impossible in practice but the gate
+    /// belongs at compile time anyway) could forge the global-state
+    /// root.  The handler still owner-checks against `SCHEMA_REGISTRY_ID`,
+    /// but Anchor's seeds gate is the structural defense.
+    #[account(
+        seeds = [b"global-binding"],
+        bump,
+        seeds::program = SCHEMA_REGISTRY_ID,
+    )]
     pub global_tree: UncheckedAccount<'info>,
 
     /// CHECK: Per-schema tree metadata PDA (slot 0).
@@ -1284,7 +1318,15 @@ pub struct VerifyBatchProofV2<'info> {
     )]
     pub nullifier_record: Account<'info, NullifierRecord>,
 
-    /// CHECK: Global-state Merkle tree account.  Owner-checked in-handler.
+    /// CHECK: M4 / SOLID-SEC-068 (closed 2026-05-01): seeds-gated
+    /// against `schema-registry` so the global-binding PDA can only
+    /// resolve to the canonical seed under the canonical program id.
+    /// Owner-check in-handler is the second-layer defence.
+    #[account(
+        seeds = [b"global-binding"],
+        bump,
+        seeds::program = SCHEMA_REGISTRY_ID,
+    )]
     pub global_tree: UncheckedAccount<'info>,
 
     /// CHECK: Per-schema tree metadata PDA (slot 0).
@@ -1516,24 +1558,17 @@ mod tests {
     }
 
     #[test]
-    fn vk_parse_round_trips_minimum_size() {
-        let bytes = synth_vk_bytes(2);
+    fn vk_parse_round_trips_max_ic() {
+        // Canonical batch VK: 32 public inputs → 33 IC points.
+        // Post M5 / SOLID-SEC-069: this is the ONLY accepted nr_ic value.
+        let bytes = synth_vk_bytes(MAX_IC);
         let buf = VkBuf::parse(&bytes).expect("parse");
-        assert_eq!(buf.nr_ic, 2);
+        assert_eq!(buf.nr_ic, MAX_IC);
         assert_eq!(buf.alpha, [1u8; 64]);
         assert_eq!(buf.beta, [2u8; 128]);
         assert_eq!(buf.gamma, [3u8; 128]);
         assert_eq!(buf.delta, [4u8; 128]);
         assert_eq!(buf.ic[0], [0u8; 64]);
-        assert_eq!(buf.ic[1], [1u8; 64]);
-    }
-
-    #[test]
-    fn vk_parse_round_trips_max_ic() {
-        // Standard batch VK: 31 public inputs → 32 IC points.
-        let bytes = synth_vk_bytes(MAX_IC);
-        let buf = VkBuf::parse(&bytes).expect("parse");
-        assert_eq!(buf.nr_ic, MAX_IC);
         assert_eq!(buf.ic[MAX_IC - 1], [(MAX_IC - 1) as u8; 64]);
     }
 
@@ -1545,7 +1580,9 @@ mod tests {
 
     #[test]
     fn vk_parse_rejects_truncated_ic_region() {
-        let mut bytes = synth_vk_bytes(5);
+        // M5 / SOLID-SEC-069: synth a bytes buffer with the canonical
+        // nr_ic = MAX_IC but truncate the IC region.
+        let mut bytes = synth_vk_bytes(MAX_IC);
         bytes.truncate(bytes.len() - 10);
         assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::TruncatedIc));
     }
@@ -1553,13 +1590,14 @@ mod tests {
     #[test]
     fn vk_parse_rejects_zero_ic() {
         let bytes = synth_vk_bytes(0);
-        // Header alone is valid size; nr_ic == 0 must be rejected.
+        // Header alone is valid size; nr_ic != MAX_IC must be rejected.
         assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::IcOverflow));
     }
 
     #[test]
     fn vk_parse_rejects_ic_overflow() {
-        // Claim more IC points than the stack buffer can hold.
+        // Claim more IC points than the canonical count.  Post M5 /
+        // SOLID-SEC-069: any nr_ic != MAX_IC is rejected.
         let too_many = MAX_IC + 1;
         let mut bytes = Vec::with_capacity(4 + 64 + 128 * 3 + too_many * 64);
         bytes.extend_from_slice(&(too_many as u32).to_le_bytes());
@@ -1568,12 +1606,33 @@ mod tests {
     }
 
     #[test]
+    fn vk_parse_rejects_nr_ic_below_max() {
+        // M5 / SOLID-SEC-069 regression gate: nr_ic less than MAX_IC
+        // must be rejected even though the prior parser accepted it.
+        // Pre-fix, a VK with `nr_ic = MAX_IC - 1` parsed cleanly and
+        // the `Groth16Verifyingkey` view returned `nr_pubinputs =
+        // MAX_IC - 2`, silently accepting proofs against the wrong
+        // public-input contract.
+        for too_few in &[1usize, 2, MAX_IC - 1] {
+            let bytes = synth_vk_bytes(*too_few);
+            assert_eq!(
+                VkBuf::parse(&bytes),
+                Err(VkParseError::IcOverflow),
+                "nr_ic = {} must be rejected (only MAX_IC = {} is accepted)",
+                too_few,
+                MAX_IC,
+            );
+        }
+    }
+
+    #[test]
     fn vk_view_borrows_from_buffer() {
-        let bytes = synth_vk_bytes(4);
+        // Post M5 / SOLID-SEC-069: only nr_ic = MAX_IC is accepted.
+        let bytes = synth_vk_bytes(MAX_IC);
         let buf = VkBuf::parse(&bytes).expect("parse");
         let vk = buf.as_verifying_key();
-        assert_eq!(vk.nr_pubinputs, 3);
-        assert_eq!(vk.vk_ic.len(), 4);
+        assert_eq!(vk.nr_pubinputs, MAX_IC - 1);
+        assert_eq!(vk.vk_ic.len(), MAX_IC);
         assert_eq!(vk.vk_alpha_g1, [1u8; 64]);
     }
 
