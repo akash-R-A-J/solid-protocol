@@ -4,28 +4,45 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-01 (e2e first reaches `verified: true`;
-  9 P0/P1 audit findings closed; LB4/LB5 surfaced + fixed; B13 Option
-  2 (buffer-account flow) lands; SEC-046 CU regression gate +
-  baselines committed).  See `plan/SESSION_LOG_2026-04-30.md` for
-  the full receipts.  Quick state:
-  - **HEAD:** `fb447ff` ("SEC-054 + LB1..LB5: e2e green end-to-end +
-    9 audit findings (P0/P1) closed").  211/211 host tests green.
-  - **E2E:** `npm run e2e` returns `verified: true` followed by
-    `ok (replay rejected by nullifier PDA init constraint)` on a
-    fresh localnet validator.  Reference green tx:
-    `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
-  - **CU baselines:** `docs/CU_BUDGET.md` + `tests/cu_baselines.json`
-    (machine-readable).  Largest consumer: `AppendIssuerLeaf` at
-    427,518 CU (47% headroom under 800K cuIx).  All ixs land below
-    50% of Solana's 1.4M per-tx ceiling.
-  - **SEC-046 CI gate:** `.github/workflows/ci.yml::cu_regression`
-    re-measures every ix per PR; fails on `consumed > baseline * 1.10`.
-  - **What's next** (Pickup tomorrow): task #12 M2-M11 batch (no-
-    ceremony correctness fixes), then task #14 Lane B circuit
-    revision (CRIT-1, CRIT-1b, M1/SEC-048 Option E, H7, M3, SEC-051,
-    L3, SEC-006 Part 2 -- one ceremony covers all), then task #15
-    drop `sec007-skip-onchain`, then task #16 re-validate e2e.
+- **Last updated:** 2026-05-01 late (post-NF-batch + 3 fix arcs +
+  SEC-048 Phase A/B/D-1).  This session shipped SEC-017 (prover
+  OsRng + workspace rebuild), SEC-081 (TS pubkey-literal CI gate +
+  5 regression tests), SEC-080 (schema-registry pre-CPI binding
+  anchor mirroring SEC-077, +5 host tests), the doc-consistency
+  sweep, and SEC-048 Option B Phases A/B/D-1 (spec correction,
+  isolated subgroup-check circuit + 6 mocha tests, parameterised
+  setup script + ceremony reusing the existing PTAU, end-to-end
+  snarkjs prove+verify smoke green).  E2E still reaches
+  `verified: true` end-to-end on a clean validator.  Quick state:
+  - **HEAD:** `27d46ba` ("SEC-048 Phase D-1: parameterize setup.js
+    + run subgroup ceremony").  Five commits this session:
+    `f985b1e` (SEC-017 + prover rebuild) -> `1b7643a` (SEC-081) ->
+    `4a8d8d6` (SEC-080) -> `07449c3` (SEC-048 A+B) -> `27d46ba`
+    (SEC-048 D-1).  All on `origin/main`.
+  - **Host tests:** 217+ across solid-core / solid-light /
+    zk-verifier / issuer-registry / schema-registry; 45/45 circuit
+    witness tests (was 39 + 6 new SEC-048 cases); 5/5 SEC-081
+    regression tests; 1/1 SEC-017 RNG tripwire.
+  - **E2E:** `npm run e2e` returns `verified: true` + replay
+    rejection.  Last reference green tx for `verify_batch_proof_v2`:
+    `5i3DzrRFXCXQmuEi...` (fresh post-SEC-080).
+  - **CU baselines:** refreshed twice this session (post-M-batch
+    `+3K` constant overhead on buffer-account ixs; post-SEC-080
+    `+356/+320 CU` on UpdateTreeRoot/UpdateGlobalRoot sentinel
+    path).  21/21 ixs within 1.10x tolerance.  Largest consumer
+    still `AppendIssuerLeaf` at ~428K CU.
+  - **SEC-046 CI gate:** active and clean; re-measures per PR.
+  - **SEC-081 CI gate:** added; runs `scripts/test_check_program_ids.py`
+    after the live tree gate.
+  - **SEC-048 status:** Phase A (spec) + B (circuit + tests) +
+    D-1 (subgroup ceremony) all green.  Bypass
+    (`sec007-skip-onchain`) STILL active; Phase E lands the
+    on-chain wiring + drops the bypass + closes SEC-048.
+  - **What's next:** the trusted-setup batch -- SEC-048 Phase E
+    (on-chain) + SEC-006 Part 2 + SEC-051, then ts-sdk jest
+    baseline.  Detailed handoff at the new section
+    "Pickup next session: Phase E + SEC-006 P2 + SEC-051 +
+    ts-sdk jest baseline" below.
 
 - **Previous update:** 2026-04-29 (B13 (1)+(3) attempt; latent-bug
   fixes; pivot to Option 2 for tomorrow).  See
@@ -98,6 +115,585 @@ authoritative.
       byte-encoding table (which slot uses which convention).
   - **Workspace tests at session close:** 189/189 cargo (host).
     Mocha witness-tester not re-run.  ts-sdk builds clean.
+
+## Pickup next session: Phase E + SEC-006 P2 + SEC-051 + ts-sdk jest baseline
+
+**Read first:** this section, then `plan/BACKLOG_2026-05-01.md`
+Tier-1 entries 2a + 4 + 5, then `sec/SECURITY_REGISTRY.md` SEC-048
+"Real fix candidates" Option B section (corrected spec) + SEC-006
++ SEC-051.  Discipline rules L1, L4, L7, L8, L9 from this file's
+Learnings log apply directly.
+
+### Pre-flight invariants (do NOT proceed if any of these are wrong)
+
+1. `git log --oneline -5` shows `27d46ba` at HEAD on main.
+2. `circuits/build/bjj_subgroup_verification_key.sha256` reads
+   `938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9`.
+   If absent, regenerate via:
+   ```
+   cd circuits && PATH="$(cd .. && pwd)/.toolchain/bin:$PATH" \
+     circom bjj_subgroup_proof.circom --r1cs --wasm --sym --c \
+            --output build/ -l node_modules/circomlib/circuits
+   node scripts/setup.js --circuit bjj_subgroup_proof
+   ```
+   The sha256 will differ on each run (fresh OS entropy); **pin
+   the hash you generate as the new in-tree pin** before
+   committing.
+3. `cd circuits && npm test` returns 45/45.  If not, the existing
+   subgroup tests broke -- diagnose before any new work.
+4. `cargo test -p solid-light --lib` returns 54/54 (49 +
+   5 SEC-080 helper tests).  If not, the SEC-080 anchor
+   regressed and Phase E pulls something incompatible.
+5. `bash scripts/sync_program_keypairs.sh --reset-state` runs
+   clean.  Validator can be `solana-test-validator --reset` and
+   re-deployed via the CLAUDE.md / DEPLOYMENT_AND_TESTING.md
+   runbook.
+
+If any invariant fails, **fix that first** -- do NOT attempt Phase
+E on a broken baseline (L1: cascade is the diagnostic).
+
+### Architecture (locked, don't second-guess)
+
+The user approved **Option 1 (registration-time subgroup proof)**
+over **Option 2 (in-batch-circuit subgroup constraints)** at the
+2026-05-01 check-in.  Decision recorded in
+`sec/SECURITY_REGISTRY.md` SEC-048 entry.  The reasons are:
+
+1. Registry state itself becomes the trust set ("every registered
+   issuer has a subgroup-validated key").  Auditors can reason
+   about SEC-048 from registry state alone.
+2. Per-credential proving cost stays unchanged forever (no
+   10-15% tax on every proof).
+3. Clean Option C (Solana SIMD `sol_babyjubjub_*` syscall)
+   migration -- the syscall replaces just this small circuit's
+   on-chain verify; main batch circuit doesn't move and doesn't
+   need a re-ceremony.
+
+The **spec correction** is also locked: the invariant is
+`on_curve(P) AND P != (0, 1) AND [r] * P == (0, 1)` where
+`r = 2736030358979909402780800718157159386076813972158567259200215660948447373041`
+is the BJJ subgroup prime order.  The earlier `[8] * P == P`
+framing in older commits/comments is wrong; do NOT revive it.
+
+### Phase E -- on-chain wiring for SEC-048 (recommended commit shape)
+
+This is **~400 lines** of Rust + ~150 lines of TS + script
+updates.  Below is the order that minimises blast radius and keeps
+the tree buildable at every commit boundary.
+
+#### E.1 -- Refactor: lift `verify_groth16_proof` + `VkBuf` + `negate_g1_point` to `solid-light::groth16`
+
+**Why a refactor instead of duplication:** SEC-048's verify path
+needs the same alt_bn128 syscall machinery zk-verifier already
+has, but for a different `NR_PUBLIC_INPUTS` value (2 instead of
+33).  Three options were considered:
+
+- **CPI from issuer-registry to a new ix on zk-verifier**:
+  rejected.  CPI overhead (~50K CU) + trust-boundary noise + ix
+  surface bloat in zk-verifier.
+- **Duplicate the verify code in issuer-registry**: rejected.
+  150 lines of cryptographic primitives duplicated across
+  programs is a maintenance liability and a real-not-toy red
+  flag.  L6 (doc lies) generalises here: "two copies of the
+  same hot crypto path" is tomorrow's silent divergence.
+- **Lift to `solid-light` and parameterise over const `N`**:
+  CHOSEN.  Cleanest long-term home for shared crypto.
+
+**File touchpoints:**
+
+- New: `crates/solid-light/src/groth16.rs`
+  - Contains `pub fn verify_groth16_proof<const N: usize>(...)`,
+    `pub struct VkBuf<const N: usize>`, `pub fn negate_g1_point(...)`.
+  - All adapted from `programs/zk-verifier/src/lib.rs:1073-1130`.
+    Make `VkBuf` const-generic over `N` (the public-input count).
+    `MAX_IC = N + 1` becomes a const expr inside the type.
+  - Compile-time assertion the existing zk-verifier code carries
+    (file:line `programs/zk-verifier/src/lib.rs:140-145`,
+    `VkBuf` size < 1 KB stack budget) MUST move with it.  Use a
+    `const _: () = ...` or `static_assertions::const_assert!`.
+  - Re-export from `crates/solid-light/src/lib.rs`.
+- Modify: `programs/zk-verifier/src/lib.rs`
+  - Replace local `verify_groth16_proof` + `VkBuf` +
+    `negate_g1_point` with `use solid_light::groth16::*;` and
+    callsite parameterisation `verify_groth16_proof::<NR_PUBLIC_INPUTS>(...)`.
+  - The local definitions can be deleted entirely.
+  - Existing host test
+    `programs::zk-verifier::src::lib.rs::tests::groth16_host_verify_round_trip`
+    (file:line ~2204) must still pass; the underlying logic is
+    unchanged, just relocated.
+- No change to: any consumer of `zk-verifier`'s public ix surface.
+
+**Regression test:** `cargo test -p zk-verifier --lib` MUST stay
+at 42/42.  The existing
+`groth16_host_verify_round_trip` consumes
+`tests/fixtures/groth16_e2e_proof.json` (32 publicSignals,
+NR_PUBLIC_INPUTS=32 today) and verifies host-side.  After the
+refactor, this test is the witness that the move was clean.
+
+**Commit:** `refactor: lift Groth16 verify primitives to solid-light::groth16`.
+
+#### E.2 -- New `SubgroupVerifierConfig` PDA + chunked VK upload ixs in `programs/issuer-registry/`
+
+**Pattern source:** mirror `programs/zk-verifier/src/lib.rs`'s
+`VerifierConfig` PDA + `initialize` + `store_verification_key` +
+`finalize_verification_key` + `request_vk_rotation` +
+`rotate_verification_key` ixs.  The 48h freeze-gate timelock from
+ADR-0015 SHOULD apply identically to the subgroup VK -- it's the
+same VK-rotation soundness concern.
+
+**Concrete additions to `programs/issuer-registry/src/lib.rs`:**
+
+- New PDA seed: `b"subgroup-verifier-config"`.
+- New struct `SubgroupVerifierConfig` (mirror layout of
+  `VerifierConfig`):
+  - `authority: Pubkey` (32)
+  - `paused: bool` (1)
+  - `bump: u8` (1)
+  - `next_vk_chunk: u16` (2)
+  - `vk_finalized: bool` (1)
+  - `vk_generation: u16` (2)  -- own generation counter for the
+    subgroup VK
+  - `rotate_request_ts: i64` (8)
+  - SPACE: 32 + 1 + 1 + 2 + 1 + 2 + 8 = 47 bytes (no proof_count;
+    no timestamp_skew_seconds -- subgroup verify has no Clock
+    binding).
+- New ixs:
+  - `init_subgroup_verifier`
+  - `store_subgroup_vk_chunk`
+  - `finalize_subgroup_vk`
+  - `request_subgroup_vk_rotation` (48h timelock; reuse the
+    `VK_ROTATION_TIMELOCK_SECONDS` const from zk-verifier or
+    duplicate as `SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS`)
+  - `cancel_subgroup_vk_rotation`
+  - `rotate_subgroup_vk`
+- Storage layout:
+  - VK chunks live in a separate `subgroup_vk_storage` PDA seeded
+    `[b"subgroup-vk-storage"]`.  Mirror zk-verifier's
+    `VkStorage` pattern.
+
+**Why a chunked-upload PDA instead of `include_bytes!` const:**
+
+- Allows VK rotation without a program upgrade.
+- Symmetric with zk-verifier's pattern; no new mental model.
+- Operator runbook stays uniform.
+
+**Trade-off:** ~200 lines of new code, but it's mostly mechanical
+mirror-of-pattern work.  Each ix has an existing analog at known
+file:line.
+
+**Regression tests:** new host tests in
+`programs/issuer-registry/src/lib.rs::tests`:
+
+- `subgroup_vk_chunk_upload_idempotent` (re-upload same chunks
+  works; cursor advances correctly).
+- `subgroup_vk_finalize_locks_writes` (post-finalize,
+  `store_subgroup_vk_chunk` fails with the freeze error).
+- `subgroup_vk_rotation_timelock_enforced` (request +
+  attempted-rotate-before-48h fails; rotate-after-48h succeeds).
+
+**Commit:** `SEC-048 Phase E.2: SubgroupVerifierConfig PDA + chunked VK upload ixs`.
+
+#### E.3 -- Modify `register_issuer` to consume + verify the subgroup proof; drop the bypass
+
+**File:** `programs/issuer-registry/src/lib.rs`.
+
+**Signature change:** add `subgroup_proof: Vec<u8>` argument
+(256 bytes: proof_a [64] + proof_b [128] + proof_c [64];
+optionally pack as a typed `[u8; 256]` once Anchor 0.30.1's
+Vec<[u8; N]> deserialise issue is confirmed -- see LB1 in
+SESSION_LOG_2026-04-29.md).  Public inputs are reconstructed
+from the existing `bjj_pub_key_x` + `bjj_pub_key_y` ix args
+(both already canonical-encoded by the SEC-062 gate).
+
+**Verify path inside register_issuer:**
+
+1. Read `SubgroupVerifierConfig` (assert `vk_finalized == true`,
+   `paused == false`).
+2. Read `subgroup_vk_storage` PDA contents.
+3. Construct `public_inputs: [[u8; 32]; 2]` from
+   `(bjj_pub_key_x, bjj_pub_key_y)` -- byte-order MUST match the
+   circuit's expected encoding (LE -> BE conversion if the
+   circuit uses LE; see SEC-062 + SEC-067 receipts for the byte
+   contract).  **Don't assume; check** by running
+   `groth16_host_verify_round_trip`-style host test against a
+   captured fixture from `npm run prove` on the subgroup circuit
+   first.
+4. Call `solid_light::groth16::verify_groth16_proof::<2>(...)`.
+5. On verify success: existing register_issuer logic.
+6. On verify failure: reject with new
+   `ErrorCode::InvalidSubgroupProof`.
+
+**Bypass removal (the `sec007-skip-onchain` deletion):**
+
+- Delete the `sec007-skip-onchain` feature from
+  `programs/issuer-registry/Cargo.toml`.
+- Delete the `#[cfg(feature = "sec007-skip-onchain")]` arm in
+  `register_issuer` (around `programs/issuer-registry/src/lib.rs:189`).
+- Delete the `Sec007Bypass` event declaration.
+- Update `crates/solid-core/src/babyjubjub.rs::is_on_curve` and
+  `is_identity` doc-comments (these stay; they're now a CHEAP
+  always-on registration gate, not a "bypass consolation" gate).
+- Delete `--features sec007-skip-onchain` from CLAUDE.md and
+  AGENTS.md "Build sequence" + "End-to-end" runbooks.
+- Delete from `docs/DEPLOYMENT_AND_TESTING.md`.
+
+**CU expectations (predict, then measure):**
+
+- Pre-batch baseline (current): `RegisterIssuer = 76,057 CU`.
+- Predicted post-batch:
+  - Drop bypass arm: `-3K to -5K`.
+  - Add subgroup-VK-read + Groth16 verify:
+    `+285K to +320K` (one alt_bn128 pairing; constant per proof).
+  - Total: `~360-395K CU`.
+- cuIx: bump from 200K (current) to 500K for safety margin.
+- 1.4M per-tx ceiling: ~70% headroom.
+
+**Regression tests:**
+
+- New host test
+  `register_issuer_rejects_invalid_subgroup_proof`: pass a
+  random non-proof byte string, assert
+  `InvalidSubgroupProof` is returned.
+- New host test `register_issuer_accepts_valid_subgroup_proof`:
+  generate a real proof for Base8 via snarkjs, feed through,
+  assert success.
+- Integration test (real validator): a torsion-tainted issuer
+  pubkey CANNOT be registered.  Mirror the SEC-077 anchor
+  rejection pattern.
+
+**Commit:** `SEC-048 Phase E.3: register_issuer verifies subgroup proof; bypass dropped`.
+
+#### E.4 -- SDK + script updates
+
+- New helper in `ts-sdk/packages/issuer/src/index.ts`:
+  ```ts
+  export async function generateSubgroupProof(
+    bjjPubKey: { x: Uint8Array; y: Uint8Array },
+    artifacts: { wasm: string; zkey: string },
+  ): Promise<{ proof: Uint8Array; publicSignals: [string, string] }>
+  ```
+  Uses `snarkjs.groth16.fullProve` against the subgroup
+  zkey/wasm.  Format proof for Solana via the SEC-067 G2
+  byte-order swap (`formatProofForSolana` from holder package).
+- Modify `scripts/initialize.ts`:
+  - Upload subgroup VK chunks via the new
+    `init_subgroup_verifier` + `store_subgroup_vk_chunk` ixs.
+  - Call `finalize_subgroup_vk` post-loop, mirroring the
+    SEC-078 freeze-gate enforcement.
+  - Pin sha256 read from
+    `circuits/build/bjj_subgroup_verification_key.sha256` (mirror
+    of SEC-041).
+- Modify `scripts/bootstrap_issuer.ts`:
+  - Before the `register_issuer` call, generate the subgroup
+    proof using the new helper.
+  - Pass the proof bytes into `register_issuer`.
+  - The existing off-chain `isInPrimeOrderSubgroup` predicate
+    stays as a UX/early-failure gate (now defense-in-depth, not
+    load-bearing).
+- Update `tests/cu_baselines.json`: `RegisterIssuer` expected
+  ~360-395K (will be measured + auto-refreshed via
+  `python3 scripts/measure_cu.py --write-baselines --yes`).
+- Update `docs/CU_BUDGET.md`: replace the predicted ledger
+  section's predictions with the actual measurements after the
+  e2e green run.
+
+**Commit:** `SEC-048 Phase E.4: issuer SDK + scripts upload + consume subgroup proof`.
+
+#### E.5 -- E2E green + registry transition
+
+- Run `bash scripts/sync_program_keypairs.sh --reset-state`,
+  validator reset, anchor build (now WITHOUT
+  `--features sec007-skip-onchain`), anchor deploy.
+- `SOLID_VOTING_PERIOD_SECONDS=120 npm run e2e` -> reach
+  `verified: true` end-to-end.
+- Refresh CU baselines via `--write-baselines --yes`.
+- Update `sec/SECURITY_REGISTRY.md`:
+  - SEC-048 status: Open -> Fixed.  Add closure date 2026-05-XX,
+    summary of Option-1 (registration-time subgroup proof),
+    reference to the small-circuit ceremony VK pin.
+  - Decrement open-HIGH count.
+- Update `docs/CU_BUDGET.md` with measured numbers.
+- Update `docs/CURRENT_STATE.md` with a 2026-05-XX session delta.
+- Update CLAUDE.md / AGENTS.md "Open Phase 3 / Phase 4 scope"
+  closure entries.
+
+**Commit:** `SEC-048 close: bypass dropped + e2e green end-to-end`.
+**Push.**
+
+### SEC-006 Part 2 + SEC-051 -- the OTHER ceremony (separate from SEC-048's small circuit)
+
+These two findings live in the **main batch circuit**
+(`circuits/batch_credential_query.circom`), not in the SEC-048
+small circuit.  They share a separate ceremony with its own
+re-run.  Recommended order: land SEC-048 fully (Phases E.1
+through E.5 above) BEFORE touching the batch circuit -- the
+SEC-048 ceremony is independent and can land in isolation.  Once
+SEC-048 is closed, batch the SEC-006 P2 + SEC-051 changes
+together.
+
+#### Combined batch-circuit changes
+
+- **SEC-006 Part 2: bind `vk_generation` into circuit publics.**
+  - Add `signal input vkGeneration;` to
+    `batch_credential_query.circom` after `currentTimestamp` (the
+    new slot becomes index 32 of public inputs;
+    `NR_PUBLIC_INPUTS = 32 -> 33`).
+  - The slot is recovered by the circuit but doesn't need to be
+    constrained in any way internally; just exposing it as a
+    public input is enough -- the on-chain verifier's check
+    `public_inputs[32] == config.vk_generation` makes
+    cross-VK replay impossible.
+- **SEC-051: reject all-padding proofs.**
+  - Add the prepared 3-line snippet (registry SEC-051 entry has
+    the exact circom):
+    ```circom
+    component anySchemaSet = IsZero();
+    anySchemaSet.in <== schemaHashes[0];
+    anySchemaSet.out === 0;
+    ```
+  - Insert at the first STEP-0 constraint location in
+    `batch_credential_query.circom`.
+
+#### On-chain cascade (`programs/zk-verifier/src/lib.rs`)
+
+- `NR_PUBLIC_INPUTS: usize = 32 -> 33`.
+- `MAX_IC: usize = NR_PUBLIC_INPUTS + 1` auto-updates to 34.
+- `RECONSTRUCTED_INPUT_SLOTS` array: append slot 32.
+- Reconstruct slot 32 from
+  `verifier_config.vk_generation` (already a `u16` field at byte
+  offset 50-51; pad to 32 bytes BE).
+- `WIRE_INPUT_SLOTS`: NO change -- vk_generation is reconstructed
+  on-chain, NOT on the wire.
+- New `ErrorCode::VkGenerationMismatch`: emitted when
+  `public_inputs[32] != config.vk_generation` after public-input
+  assembly.
+- Test assertion at line ~1789 (`assert_eq!(NR_PUBLIC_INPUTS, 32)`)
+  flips to 33.
+- Stack buffer auto-resizes (`[[u8; 32]; NR_PUBLIC_INPUTS]`).
+
+#### TS SDK cascade
+
+- `ts-sdk/packages/verifier/src/index.ts:47`: `NR_PUBLIC_INPUTS = 32 -> 33`.
+- `WIRE_INPUT_SLOTS`: unchanged (slot 32 not on wire).
+- `extractWirePublicInputs()` assertion `publicSignals.length === NR_PUBLIC_INPUTS` updates from 32 to 33.
+- `holder/generateBatchProof`: extend witness to include
+  `vkGeneration` (read from on-chain `verifier_config` before
+  proving).
+
+#### Regression tests
+
+- Circuit witness-tester in `circuits/test/`:
+  - `vk_generation_propagates_through_publics`: prover witness
+    sets vkGeneration=N -> public-input slot 32 == N.
+  - `padding_zero_proof_rejected`: schemaHashes = [0,0,0,0]
+    fails at the new IsZero gate.
+- Host test in zk-verifier:
+  - `vk_generation_mismatch_rejected`: build a proof with
+    generation=N, flip on-chain `config.vk_generation` to N+1,
+    verify fails with `VkGenerationMismatch`.
+- E2E: `npm run e2e` reaches `verified: true` post-batch with
+  the new VK pin.
+
+#### Ceremony (re-run for batch circuit)
+
+- `cd circuits && PATH="..." npm run compile && \
+    PATH="..." node scripts/setup.js`  (default circuit, no flag).
+- New zkey + VK + sha256 written to `circuits/build/`.
+- The **PTAU file is shared** with the SEC-048 ceremony; no
+  PTAU regen.
+- New VK pin sha256: regenerate + commit.
+
+#### Mainnet posture (do NOT skip)
+
+For mainnet, the batch ceremony MUST be multi-party (SEC-012);
+the SEC-048 ceremony MUST also be multi-party.  Same shared PTAU
++ same contributor pool, just two consecutive Phase-2s in the
+same session.
+
+**Commit shape (per L9):**
+
+1. `SEC-006 P2 close: bind vk_generation into batch circuit publics + on-chain check`.
+2. `SEC-051 close: reject all-padding proofs in batch circuit`.
+3. `batch ceremony re-run + new VK pin + post-batch CU baselines`.
+
+### ts-sdk jest tests baseline
+
+This is BACKLOG Tier 2 #11.  Auditor-blocker; "auditors will
+flag jest configured but zero `.test.ts` files".  Estimated
+3-5 days of focused work; can land after SEC-048 closure.
+
+#### Scaffolding (one-time)
+
+- `ts-sdk/package.json`: add jest + ts-jest + @types/jest +
+  @types/node as devDependencies.  Pin versions compatible with
+  the workspaces' ESM setup (`"module": "ESNext"` in tsconfig).
+- New `ts-sdk/jest.config.cjs` (or .mjs) at the workspace root
+  with multi-project discovery covering all six packages.
+- ts-jest preset OR babel-jest with the right TS+ESM config.
+  jest's native ESM is fiddly; ts-jest with `useESM: true` is
+  the standard recipe.
+- New CI step in `.github/workflows/ci.yml::sdk` job to run
+  `cd ts-sdk && npm test`.
+
+#### Per-package tests (priority order)
+
+1. **`@solid-protocol/core`**: `computeSchemaHash` determinism
+   (same inputs -> same output) + cross-language vector match
+   against the Rust reference.  `PROGRAM_PUBKEYS` shape +
+   freeze.  Pure functions; easy.
+2. **`@solid-protocol/sdk`**: `artifact_integrity.ts` hash-gate
+   priority (env > sidecar > config) + tamper detection +
+   missing-pin error.  File-based; easy with tmpdir fixtures.
+3. **`@solid-protocol/light`**: `extract_active_issuer_tree_root`
+   parser; rejects frozen / wrong-discriminator buffers.
+   Pure-bytes; easy.
+4. **`@solid-protocol/issuer`**: `computeIssuerLeaf` matches the
+   on-chain Poseidon(5) consumed by `append_issuer_leaf`.
+   Cross-language fixture comparison.  Once SEC-048 Phase E
+   lands, also test `generateSubgroupProof` happy path.
+5. **`@solid-protocol/holder`**: `generateBatchProof` invariants
+   -- commitment determinism, schema-sort canonicality (proof
+   is invariant under input permutation), edge cases on the
+   Merkle replica.  More involved; needs zkey + wasm fixtures
+   in tests.
+6. **`@solid-protocol/verifier`**: `verifyOnChainV2` happy path
+   + replay path + buffer-overflow path.  Needs RPC mocking;
+   most invasive.  Defer to AFTER integration tests 02..11
+   stand up the bankrun harness.
+
+#### Non-goals (call out explicitly)
+
+- **No real validator dependency** in jest tests.  RPC-bound
+  flows belong in integration tests 02..11 (bankrun harness),
+  not jest.
+- **No coverage of WASM bridge byte-format** in jest -- that
+  contract is gated by `cross_language_vectors` CI job and the
+  Rust host tests, NOT by jest.
+
+### Performance opportunities (consider, don't blindly apply)
+
+These are notes for the next session.  Apply only if both
+"keeps it correct" and "keeps it robust" gates are clearly met;
+otherwise log + defer per L4 (regression gate FIRST).
+
+#### Subgroup circuit (post-Phase E)
+
+- **Hamming-weight win:** the current circuit uses 251 BabyDbl +
+  115 BabyAdd (Hamming weight of `r`).  `r` cannot be changed,
+  but a windowed double-and-add (e.g., 4-bit windows with
+  precomputed multiples of P) would reduce additions at the cost
+  of 16 precomputations per window.  Net savings unclear at
+  this constraint scale; probably NOT worth it for a one-time
+  per-issuer cost.
+- **Skip the on-curve check?** No.  `BabyCheck` is ~5
+  constraints and removing it weakens the gate (a non-curve
+  point with the right projective coords could spoof identity
+  on some implementations).  Keep it.
+
+#### Batch circuit (post-SEC-006-P2)
+
+- **Reconstruct slot 32 from `verifier_config.vk_generation`
+  rather than wire it.**  Already designed this way in the
+  handoff above; saves 32 bytes of ix data + matches the
+  pattern for slots 1..10 + 29.
+
+#### On-chain `verify_batch_proof_v2`
+
+- **VK pre-parse + cache.**  Currently `VkBuf::parse` runs every
+  call (~few thousand CU).  Caching the parsed `VkBuf` in a
+  scratch PDA IF the VK hasn't been rotated would save those CU
+  per call -- but adds rent + a stale-cache attack surface.
+  Probably NOT worth it for v1; revisit if verify_batch_proof_v2
+  CU breaches 500K.
+- **Reduce alt_bn128 pairing cost?** Out of our control; that's
+  the syscall.  Option C (`sol_babyjubjub_*` SIMD) is the only
+  way to push that down.
+
+#### `register_issuer` (post-Phase E)
+
+- **Combine subgroup verify + canonical-encoding gate into one
+  pass.**  Currently SEC-062 canonical-encoding gate is a
+  pre-check; the subgroup verify reads the same bytes.  No
+  meaningful CU saved by merging; keeps separation of concerns.
+
+#### CU baseline policy (general)
+
+The 10% tolerance in SEC-046 is generous; some baselines (e.g.,
+`VoteOnIssuer`) have shown +7% transient drift across runs.
+Consider tightening to 5% post-mainnet once stability is proven.
+
+### What MUST NOT happen during Phase E
+
+These are the L1-L9 + audit-specific landmines for this batch:
+
+1. **Do NOT re-introduce `[8] * P == P` framing.**  It's
+   mathematically wrong; the corrected spec is locked.
+2. **Do NOT re-add `sec007-skip-onchain` as a "fallback".**  L3
+   (no workarounds): if Phase E hits a hard blocker, debug the
+   blocker, do NOT keep the bypass.  CI gates from SEC-081 will
+   reject re-introduction anyway.
+3. **Do NOT skip the host-side Groth16 verify test before
+   on-chain wiring.**  L8 / 4.1 (don't speculate; observe):
+   first capture a fresh proof from `node scripts/setup.js
+   --circuit bjj_subgroup_proof`-derived artefacts via snarkjs,
+   run host-verify, observe pass; THEN write on-chain code.
+4. **Do NOT bundle SEC-006 P2 + SEC-051 with SEC-048 in one
+   ceremony.**  They're SEPARATE circuits.  One PTAU shared,
+   yes; one Phase-2 each, no.
+5. **Do NOT regenerate the in-tree
+   `circuits/build/verification_key.sha256`** without first
+   updating CLAUDE.md's "Hard invariants" section -- the pin
+   is load-bearing for `scripts/initialize.ts`'s SOLID-SEC-041
+   gate.
+6. **Do NOT commit `circuits/build/*` artifacts.**  The
+   directory is gitignored.  Pin hashes only.
+7. **L9 strict per-finding commits.**  SEC-048 closure is 5
+   commits (E.1 through E.5).  SEC-006 P2 + SEC-051 are 3
+   commits (one each + ceremony).  ts-sdk jest is 1-N commits
+   (per package).  Don't bundle to "save commit hygiene"; the
+   git history IS the audit trail.
+
+### Reproducing this session's artefacts (sanity check on Phase D-1)
+
+```
+cd /Users/rajakash/Desktop/testing/solid-protocol
+PATH="$(pwd)/.toolchain/bin:$PATH"
+
+# 1. Compile the subgroup circuit.
+cd circuits
+circom bjj_subgroup_proof.circom --r1cs --wasm --sym --c \
+       --output build/ -l node_modules/circomlib/circuits
+
+# 2. Verify constraint count.
+# Expected: ~2,191 non-linear + 7 linear = ~2,198 R1CS.
+# (Will print as part of compile output.)
+
+# 3. Run the trusted setup (reuses pot_final.ptau).
+node scripts/setup.js --circuit bjj_subgroup_proof
+# Expected output:
+#   VK   sha256 : <fresh hash; differs each run>
+#   zkey sha256 : <fresh hash; differs each run>
+#   VK          : circuits/build/bjj_subgroup_verification_key.json
+#   VK sha256   : circuits/build/bjj_subgroup_verification_key.sha256
+#   zkey        : circuits/build/bjj_subgroup_proof_final.zkey
+
+# 4. End-to-end snarkjs prove + verify smoke.
+cat > /tmp/subgroup_input.json <<'EOF'
+{
+  "Ax": "5299619240641551281634865583518297030282874472190772894086521144482721001553",
+  "Ay": "16950150798460657717958625567821834550301663161624707787222815936182638968203"
+}
+EOF
+cd build/bjj_subgroup_proof_js
+node generate_witness.js bjj_subgroup_proof.wasm /tmp/subgroup_input.json /tmp/sg.wtns
+cd ..
+snarkjs groth16 prove bjj_subgroup_proof_final.zkey /tmp/sg.wtns /tmp/sg_proof.json /tmp/sg_pub.json
+snarkjs groth16 verify bjj_subgroup_verification_key.json /tmp/sg_pub.json /tmp/sg_proof.json
+# Expected: [INFO]  snarkJS: OK!
+```
+
+If steps 1-4 all pass, the Phase A/B/D-1 baseline is intact and
+Phase E can proceed.
 
 ## Pickup tomorrow (2026-04-30 morning)
 
