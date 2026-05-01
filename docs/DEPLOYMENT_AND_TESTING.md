@@ -52,7 +52,7 @@ cd circuits && npm install && node scripts/setup.js && cd ..
 wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
 bash scripts/sync_program_keypairs.sh --reset-state    # hydrate keys + wipe state cache
-anchor build -- --features sec007-skip-onchain         # SEC-048 BPF CU bypass; localnet/devnet only
+anchor build                                            # SEC-048 closed (Phase E, 2026-05-XX); no `--features` flag
 (cd ts-sdk && npm ci && npm run build)
 npm install                                      # root (for tsx + scripts)
 

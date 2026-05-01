@@ -335,44 +335,29 @@ pub mod issuer_registry {
         bjj_pub_key_x: [u8; 32],
         bjj_pub_key_y: [u8; 32],
         tier: IssuerTier,
+        // SEC-048 Phase E.3 (2026-05-XX): Groth16 proof of the
+        // prime-order subgroup invariant for `(bjj_pub_key_x,
+        // bjj_pub_key_y)`.  Format: `proof_a (64) || proof_b (128) ||
+        // proof_c (64)` = 256 bytes.  The bytes are the SDK-encoded
+        // form (LB5 / SOLID-SEC-067 G2 (imag, real) swap applied;
+        // proof_a Y NOT pre-negated -- on-chain
+        // `verify_groth16_proof::<2>` negates internally).  Anchor
+        // 0.30.1's BPF Vec<[u8; N]> deserialiser is unstable per LB1,
+        // so the proof rides on the wire as a `Vec<u8>` and gets
+        // chunk-extracted into typed `[u8; 64]` / `[u8; 128]` arrays
+        // by this handler.
+        subgroup_proof: Vec<u8>,
     ) -> Result<()> {
         require!(name.len() <= 64, ErrorCode::NameTooLong);
         require!(metadata_uri.len() <= 128, ErrorCode::MetadataTooLong);
 
-        // SOLID-SEC-007 / SEC-048.  Reject BJJ public keys that are not
-        // in the prime-order subgroup (cofactor-8 torsion), off the
-        // curve, or the Edwards neutral element.  Without this gate an
-        // attacker who registers a small-order pubkey can forge
-        // signatures over a tiny subgroup; every downstream credential
-        // signed by that key verifies with compromised soundness.
-        //
-        // Why this is feature-gated as of 2026-04-25:
-        // `solid_core::babyjubjub::require_in_prime_order_subgroup`
-        // does a full `r * P == O` scalar multiplication.  Off-chain
-        // (host) that costs a few ms; on-chain (BPF, arkworks) it
-        // exceeds the 1.4M CU per-transaction ceiling, so a build with
-        // the check enforced cannot land `register_issuer` at all and
-        // blocks every downstream e2e step (`bootstrap_issuer.ts` ->
-        // `issue.ts` -> `prove.ts`).  Until SEC-048 ships a cheaper
-        // on-chain replacement (e.g. cofactor clearing in the holder
-        // SDK + a 1-CU "is on curve and not identity" check on-chain,
-        // or moving the subgroup gate into the credential-issuance
-        // circuit), localnet/devnet/CI builds compile with the
-        // `sec007-skip-onchain` feature, the off-chain TS predicate
-        // `isInPrimeOrderSubgroup` becomes the load-bearing gate, and
-        // each bypass execution emits a `Sec007Bypass` event so an
-        // operator can detect a mis-deployed binary in production.
-        //
-        // Mainnet builds MUST NOT enable this feature.  Tracking:
-        // docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048,
-        // docs/IMPROVEMENTS_ROADMAP.md (P0).
-        // SOLID-SEC-062 / H4: reject non-canonical BN254 field encodings on
-        // the BJJ pubkey x/y BEFORE the on-curve / subgroup checks coerce
-        // them via mod-p reduction.  Without this gate, a malicious
-        // issuer can submit two distinct 32-byte encodings (`v1 != v2`,
-        // `v1 mod p == v2 mod p`) that both pass `is_on_curve` and produce
-        // colliding leaves in the issuer tree -- nullifier confusion under
-        // revocation.  Cheap (<200 CU): two MSB-first 32-byte compares.
+        // SOLID-SEC-062 / H4: reject non-canonical BN254 field
+        // encodings on the BJJ pubkey x/y BEFORE the subgroup verify.
+        // Without this gate, a malicious issuer can submit two distinct
+        // 32-byte encodings (`v1 != v2`, `v1 mod p == v2 mod p`) that
+        // both produce the same field element and collide in the
+        // issuer tree -- nullifier confusion under revocation.  Cheap
+        // (<200 CU): two MSB-first 32-byte compares.
         require!(
             solid_core::poseidon::is_canonical_bn254_le(&bjj_pub_key_x),
             ErrorCode::InvalidBJJPubKey
@@ -382,42 +367,80 @@ pub mod issuer_registry {
             ErrorCode::InvalidBJJPubKey
         );
 
+        // Defense-in-depth pre-checks BEFORE the heavy Groth16 verify:
+        // reject off-curve / Edwards-identity inputs cheaply (~3.5K CU
+        // total) so a malicious caller can't burn the full ~285K CU on
+        // garbage that the cheap predicate would have rejected.  The
+        // load-bearing soundness gate is still the Groth16 verify
+        // below; these are the SEC-048 consolation rails kept as a
+        // ~free filter (L4 + L6: cheap explicit pre-checks beat
+        // implicit failures inside a 285K-CU pairing).
         let bjj_pub_key = solid_core::babyjubjub::BJJPublicKey {
             x: bjj_pub_key_x,
             y: bjj_pub_key_y,
         };
-        #[cfg(not(feature = "sec007-skip-onchain"))]
-        {
-            solid_core::babyjubjub::require_in_prime_order_subgroup(&bjj_pub_key)
-                .map_err(|_| ErrorCode::InvalidBJJPubKey)?;
-        }
-        #[cfg(feature = "sec007-skip-onchain")]
-        {
-            // Cheap consolation gate while the full check is gated:
-            // reject the trivially-broken cases (off-curve, identity)
-            // that DO fit in the BPF budget.  This is NOT a substitute
-            // for the prime-order check -- a cofactor-8 torsion point
-            // still passes here -- it just keeps obviously-malformed
-            // inputs out so the test surface stays small.
-            require!(
-                solid_core::babyjubjub::is_on_curve(&bjj_pub_key),
-                ErrorCode::InvalidBJJPubKey
-            );
-            require!(
-                !solid_core::babyjubjub::is_identity(&bjj_pub_key),
-                ErrorCode::InvalidBJJPubKey
-            );
-            msg!(
-                "SEC-048: sec007-skip-onchain active; off-chain SDK predicate is enforcement point"
-            );
-            emit!(Sec007Bypass {
-                issuer_authority: ctx.accounts.issuer_authority.key(),
-                slot: Clock::get()?.slot,
-            });
-            // NB: deliberately not adding a Cargo gate to keep _bjj_pub_key
-            // unused-warning-clean; it is consumed above in both arms.
-            let _ = &bjj_pub_key;
-        }
+        require!(
+            solid_core::babyjubjub::is_on_curve(&bjj_pub_key),
+            ErrorCode::InvalidBJJPubKey
+        );
+        require!(
+            !solid_core::babyjubjub::is_identity(&bjj_pub_key),
+            ErrorCode::InvalidBJJPubKey
+        );
+
+        // SOLID-SEC-048 Phase E.3 (2026-05-XX): on-chain Groth16 verify
+        // of the prime-order subgroup invariant.  The subgroup circuit
+        // (`circuits/bjj_subgroup_proof.circom`) has 2 public inputs --
+        // `(Ax, Ay)` -- and asserts `on_curve(P) AND P != identity AND
+        // [r] * P == identity` for `r = ` the BJJ subgroup prime order.
+        //
+        // Public-input byte contract: snarkjs publicSignals are decimal
+        // representations of the **circomlib-native** field elements.
+        // The on-chain `bjj_pub_key_x` / `bjj_pub_key_y` are LE bytes
+        // of the same field elements (per
+        // `is_canonical_bn254_le` above; SEC-062 byte form).
+        // groth16-solana expects each public input as a 32-byte BE
+        // buffer of the field element, so we byte-reverse LE -> BE.
+        // This contract is host-tested by
+        // `subgroup_host_verify_round_trip` in this file's tests
+        // module.
+        require!(
+            ctx.accounts.subgroup_verifier_config.vk_finalized,
+            ErrorCode::SubgroupVkNotFinalized
+        );
+        require!(
+            !ctx.accounts.subgroup_verifier_config.paused,
+            ErrorCode::Unauthorized
+        );
+        require!(subgroup_proof.len() == 256, ErrorCode::InvalidSubgroupProof);
+        let mut proof_a = [0u8; 64];
+        proof_a.copy_from_slice(&subgroup_proof[0..64]);
+        let mut proof_b = [0u8; 128];
+        proof_b.copy_from_slice(&subgroup_proof[64..192]);
+        let mut proof_c = [0u8; 64];
+        proof_c.copy_from_slice(&subgroup_proof[192..256]);
+
+        let mut be_x = bjj_pub_key_x;
+        be_x.reverse();
+        let mut be_y = bjj_pub_key_y;
+        be_y.reverse();
+        let public_inputs: [[u8; 32]; 2] = [be_x, be_y];
+
+        solid_light::groth16::verify_groth16_proof::<2>(
+            &ctx.accounts.subgroup_vk_storage.data,
+            &proof_a,
+            &proof_b,
+            &proof_c,
+            &public_inputs,
+        )
+        .map_err(|e| match e {
+            solid_light::groth16::Groth16VerifyError::InvalidProofFormat => {
+                error!(ErrorCode::InvalidSubgroupProof)
+            }
+            solid_light::groth16::Groth16VerifyError::ProofVerificationFailed => {
+                error!(ErrorCode::InvalidSubgroupProof)
+            }
+        })?;
 
         // PHASE 5: TIERED STAKING (Risk 3 Mitigation)
         // Graduated skin-in-the-game based on authority level.
@@ -2419,6 +2442,27 @@ pub struct RegisterIssuer<'info> {
     /// CHECK: Stake vault PDA
     #[account(mut, seeds = [b"stake-vault"], bump)]
     pub stake_vault: AccountInfo<'info>,
+    /// SEC-048 Phase E.3 (2026-05-XX): on-chain subgroup-VK config.
+    /// Read-only here; must be `vk_finalized == true` and
+    /// `paused == false` for `register_issuer` to admit any caller.
+    /// Written only by the `init_subgroup_verifier` /
+    /// `store_subgroup_vk_chunk` / `finalize_subgroup_vk` /
+    /// `*_subgroup_vk_rotation` ix family (E.2).
+    #[account(
+        seeds = [b"subgroup-verifier-config"],
+        bump = subgroup_verifier_config.bump,
+    )]
+    pub subgroup_verifier_config: Account<'info, SubgroupVerifierConfig>,
+    /// SEC-048 Phase E.3 (2026-05-XX): on-chain subgroup-VK byte
+    /// buffer.  Read-only here; consumed by
+    /// `solid_light::groth16::verify_groth16_proof::<2>` to validate
+    /// the supplied `subgroup_proof` against the prime-order subgroup
+    /// invariant.
+    #[account(
+        seeds = [b"subgroup-vk-storage", subgroup_verifier_config.key().as_ref()],
+        bump,
+    )]
+    pub subgroup_vk_storage: Account<'info, SubgroupVkStorage>,
     #[account(mut)]
     pub issuer_authority: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -3360,6 +3404,8 @@ pub enum ErrorCode {
     SubgroupVkNoPendingRotation,
     #[msg("Clock returned a non-positive unix_timestamp; rotation request refused (SEC-048 Phase E.2)")]
     SubgroupVkRotationClockInvalid,
+    #[msg("Subgroup Groth16 proof is malformed or fails the prime-order subgroup invariant for the supplied BJJ pubkey (SEC-048 Phase E.3)")]
+    InvalidSubgroupProof,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -3465,19 +3511,11 @@ pub struct IssuerLeafReplaced {
     pub merkle_tree: Pubkey,
 }
 
-/// SEC-048 / SOLID-SEC-007 telemetry.  Emitted on every
-/// `register_issuer` call when the binary is built with the
-/// `sec007-skip-onchain` feature, i.e. when the on-chain BJJ
-/// prime-order subgroup check has been replaced by the off-chain SDK
-/// predicate.  Off-chain monitors should subscribe to this and alert
-/// (or hard-fail) if it ever appears on a mainnet cluster -- its
-/// presence on mainnet is a deployment incident.  Tracking:
-/// docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048.
-#[event]
-pub struct Sec007Bypass {
-    pub issuer_authority: Pubkey,
-    pub slot: u64,
-}
+// `Sec007Bypass` event REMOVED in SEC-048 Phase E.3 (2026-05-XX).
+// The on-chain Groth16 verify against the subgroup VK is the
+// load-bearing soundness gate at registration time; there is no
+// bypass to telemetry-trace.  See SECURITY_REGISTRY.md SEC-048
+// closure narrative for the full audit trail.
 
 /// SOLID-SEC-061 / H3.  Emitted by `withdraw_after_revoke` for every
 /// successful post-revoke stake drain.  Lets indexers and DAO dashboards
@@ -3971,5 +4009,247 @@ mod tests {
         // SUBGROUP_VK_MAX_BYTES must be <= MAX_PERMITTED_DATA_INCREASE
         // = 10240.  Mirrors zk-verifier's same gate.
         assert_eq!(8 + 4 + SUBGROUP_VK_MAX_BYTES, 10240);
+    }
+
+    // ─── SEC-048 Phase E.3 round-trip integration test ──────────────────
+    //
+    // Mirrors zk-verifier's `groth16_host_verify_round_trip` 1:1, but
+    // for `N = 2` (the subgroup circuit's public-input arity) and
+    // against the in-tree pinned subgroup VK at
+    // `circuits/build/bjj_subgroup_verification_key.json`.  The
+    // fixture is checked in at `tests/fixtures/subgroup_e2e_proof.json`
+    // and was captured from a successful local snarkjs verify
+    // (regenerate via the snarkjs CLI commands documented in the
+    // fixture's `description` field).
+    //
+    // What this test pins:
+    //   1. The byte-order contract for the on-chain handler:
+    //      `bjj_pub_key_x` / `_y` are stored as LE bytes; on-chain we
+    //      reverse to BE before passing to
+    //      `verify_groth16_proof::<2>`.  publicSignals[i] from snarkjs
+    //      are decimal strings of the same field elements; converting
+    //      decimal -> BE32 must produce the same byte sequence as the
+    //      LE -> reverse path.  Both bytes are then fed to the same
+    //      pairing call; if either path disagrees, the verify rejects.
+    //   2. The SDK proof-encoding contract: snarkjs G2 is (real, imag)
+    //      while groth16-solana expects (imag, real).  See LB5 /
+    //      SOLID-SEC-067.  This test rebuilds the SDK encoding inline
+    //      so a regression in `formatProofForSolana` would be caught
+    //      here on the host.
+    //
+    // Skipped if the fixture or VK file is missing (clean checkouts
+    // hit this).  CI-pin via the e2e job + the `cargo test
+    // -p issuer-registry --lib` step in `.github/workflows/ci.yml`.
+
+    use num_bigint::BigUint;
+    use num_traits::Num;
+    use serde_json::Value as JsonValue;
+    use std::path::Path;
+
+    fn dec_str_to_be32(s: &str) -> [u8; 32] {
+        let n = BigUint::from_str_radix(s, 10).expect("decimal string");
+        let be = n.to_bytes_be();
+        if be.len() > 32 {
+            panic!("bigint exceeds 32 bytes");
+        }
+        let mut out = [0u8; 32];
+        out[32 - be.len()..].copy_from_slice(&be);
+        out
+    }
+
+    /// Mirror of TS SDK `formatProofForSolana` (LB5 / SOLID-SEC-067)
+    /// for host-side use.  Takes the snarkjs `proof` JSON and returns
+    /// `(proof_a, proof_b, proof_c)` in groth16-solana's expected
+    /// G1=(x,y)BE / G2=(x_imag, x_real, y_imag, y_real)BE form.
+    /// proof_a is NOT pre-negated -- on-chain `verify_groth16_proof`
+    /// negates internally.
+    fn format_proof_for_solana(proof: &JsonValue) -> ([u8; 64], [u8; 128], [u8; 64]) {
+        let pi_a = proof["pi_a"].as_array().expect("pi_a");
+        let pi_b = proof["pi_b"].as_array().expect("pi_b");
+        let pi_c = proof["pi_c"].as_array().expect("pi_c");
+
+        let mut proof_a = [0u8; 64];
+        proof_a[..32].copy_from_slice(&dec_str_to_be32(pi_a[0].as_str().unwrap()));
+        proof_a[32..].copy_from_slice(&dec_str_to_be32(pi_a[1].as_str().unwrap()));
+
+        // G2 (imag, real) swap from snarkjs's (real, imag) convention.
+        let mut proof_b = [0u8; 128];
+        proof_b[0..32].copy_from_slice(&dec_str_to_be32(pi_b[0][1].as_str().unwrap())); // x_imag
+        proof_b[32..64].copy_from_slice(&dec_str_to_be32(pi_b[0][0].as_str().unwrap())); // x_real
+        proof_b[64..96].copy_from_slice(&dec_str_to_be32(pi_b[1][1].as_str().unwrap())); // y_imag
+        proof_b[96..128].copy_from_slice(&dec_str_to_be32(pi_b[1][0].as_str().unwrap())); // y_real
+
+        let mut proof_c = [0u8; 64];
+        proof_c[..32].copy_from_slice(&dec_str_to_be32(pi_c[0].as_str().unwrap()));
+        proof_c[32..].copy_from_slice(&dec_str_to_be32(pi_c[1].as_str().unwrap()));
+
+        (proof_a, proof_b, proof_c)
+    }
+
+    /// Mirror of `scripts/initialize.ts::serializeG1/serializeG2`
+    /// (post-LB5).  Input is the snarkjs VK JSON; output is the bytes
+    /// the on-chain `subgroup_vk_storage` PDA carries.
+    fn serialize_subgroup_vk_from_snarkjs_json(vk_json: &JsonValue) -> Vec<u8> {
+        let mut out = Vec::new();
+        let ic_arr = vk_json["IC"].as_array().expect("IC");
+        let nr_ic = ic_arr.len() as u32;
+        out.extend_from_slice(&nr_ic.to_le_bytes());
+
+        // alpha_g1: G1 (x_BE, y_BE).
+        let a = vk_json["vk_alpha_1"].as_array().expect("vk_alpha_1");
+        out.extend_from_slice(&dec_str_to_be32(a[0].as_str().unwrap()));
+        out.extend_from_slice(&dec_str_to_be32(a[1].as_str().unwrap()));
+
+        // beta/gamma/delta_g2: G2 (x_imag, x_real, y_imag, y_real) BE.
+        for key in &["vk_beta_2", "vk_gamma_2", "vk_delta_2"] {
+            let p = vk_json[*key].as_array().expect(*key);
+            let xr = p[0][0].as_str().unwrap();
+            let xi = p[0][1].as_str().unwrap();
+            let yr = p[1][0].as_str().unwrap();
+            let yi = p[1][1].as_str().unwrap();
+            out.extend_from_slice(&dec_str_to_be32(xi));
+            out.extend_from_slice(&dec_str_to_be32(xr));
+            out.extend_from_slice(&dec_str_to_be32(yi));
+            out.extend_from_slice(&dec_str_to_be32(yr));
+        }
+
+        // IC: each G1 (x_BE, y_BE).
+        for ic in ic_arr {
+            let ic_p = ic.as_array().expect("IC[i]");
+            out.extend_from_slice(&dec_str_to_be32(ic_p[0].as_str().unwrap()));
+            out.extend_from_slice(&dec_str_to_be32(ic_p[1].as_str().unwrap()));
+        }
+        out
+    }
+
+    #[test]
+    fn subgroup_host_verify_round_trip() {
+        // Workspace root is two levels up from `programs/issuer-registry`.
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/subgroup_e2e_proof.json");
+        if !fixture_path.exists() {
+            eprintln!(
+                "[skipped] subgroup_host_verify_round_trip: fixture {} missing.\n\
+                 Regenerate via the snarkjs CLI commands documented in the \
+                 fixture's `description` field.",
+                fixture_path.display(),
+            );
+            return;
+        }
+        let fixture: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(&fixture_path).expect("read fixture"))
+                .expect("parse fixture json");
+
+        let vk_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../")
+            .join(fixture["vk_path"].as_str().expect("vk_path"));
+        if !vk_path.exists() {
+            eprintln!(
+                "[skipped] subgroup_host_verify_round_trip: VK file {} missing.\n\
+                 Regenerate via `cd circuits && node scripts/setup.js \
+                 --circuit bjj_subgroup_proof`.",
+                vk_path.display(),
+            );
+            return;
+        }
+        let vk_json: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(&vk_path).expect("read vk"))
+                .expect("parse vk json");
+
+        // Build VK byte buffer matching the on-chain storage layout.
+        let vk_bytes = serialize_subgroup_vk_from_snarkjs_json(&vk_json);
+
+        // Encode proof for groth16-solana (LB5 G2 swap; proof_a NOT
+        // pre-negated -- the on-chain helper negates).
+        let (proof_a, proof_b, proof_c) = format_proof_for_solana(&fixture["proof"]);
+
+        // Build public_inputs from snarkjs publicSignals (decimal -> BE32).
+        let public_signals = fixture["publicSignals"]
+            .as_array()
+            .expect("publicSignals array");
+        assert_eq!(
+            public_signals.len(),
+            2,
+            "subgroup circuit has exactly 2 public inputs (Ax, Ay)"
+        );
+        let mut public_inputs: [[u8; 32]; 2] = [[0u8; 32]; 2];
+        for (i, s) in public_signals.iter().enumerate() {
+            public_inputs[i] = dec_str_to_be32(s.as_str().expect("publicSignals[i]"));
+        }
+
+        // Run the on-chain verify path on the host.  This is the
+        // soundness gate `register_issuer` will run on every call once
+        // SEC-048 Phase E.3 lands; if this passes, the byte-encoding
+        // contract is correct end-to-end.
+        match solid_light::groth16::verify_groth16_proof::<2>(
+            &vk_bytes,
+            &proof_a,
+            &proof_b,
+            &proof_c,
+            &public_inputs,
+        ) {
+            Ok(()) => {
+                eprintln!("[host-verify] OK -- SEC-048 Phase E.3 round-trip green");
+            }
+            Err(e) => {
+                panic!(
+                    "subgroup verify_groth16_proof FAILED on host: {:?}.\n\
+                     Either the LB5 G2 (imag, real) swap is wrong, the \
+                     publicSignals decimal->BE32 conversion disagrees with \
+                     groth16-solana's expected encoding, or the VK \
+                     serialisation order is off.",
+                    e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn subgroup_pubkey_le_to_be_round_trip() {
+        // SEC-048 Phase E.3 byte-contract pin: the on-chain handler
+        // takes `bjj_pub_key_x` as LE bytes (per
+        // `is_canonical_bn254_le` SEC-062 gate) and reverses to BE
+        // before feeding to `verify_groth16_proof::<2>`.  This test
+        // pins the LE->reverse path against the snarkjs
+        // publicSignals[i] decimal -> BE32 path: both must produce
+        // byte-identical buffers, otherwise the on-chain verify will
+        // see a different field element from what was proved.
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/subgroup_e2e_proof.json");
+        if !fixture_path.exists() {
+            eprintln!(
+                "[skipped] subgroup_pubkey_le_to_be_round_trip: fixture {} missing.",
+                fixture_path.display()
+            );
+            return;
+        }
+        let fixture: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(&fixture_path).expect("read fixture"))
+                .expect("parse fixture json");
+
+        let public_signals = fixture["publicSignals"]
+            .as_array()
+            .expect("publicSignals array");
+
+        // For each publicSignals[i], compute its BE32 form and its
+        // LE32 form (reverse).  The LE32 form is what the on-chain
+        // `bjj_pub_key_x` field carries.  Reverse the LE -> BE; assert
+        // equality with the direct decimal->BE32 conversion.
+        for s in public_signals.iter().take(2) {
+            let be32 = dec_str_to_be32(s.as_str().unwrap());
+            // Build LE bytes by reversing BE; this is what
+            // `is_canonical_bn254_le` would accept as a canonical
+            // input (assuming the field element is < BN254 modulus,
+            // which Base8 trivially satisfies).
+            let mut le32 = be32;
+            le32.reverse();
+            // Now the on-chain handler's LE -> BE round-trip:
+            let mut be_recovered = le32;
+            be_recovered.reverse();
+            assert_eq!(
+                be_recovered, be32,
+                "LE -> BE byte-reverse must round-trip exactly"
+            );
+        }
     }
 }

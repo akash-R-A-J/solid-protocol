@@ -334,10 +334,12 @@ pub fn is_in_prime_order_subgroup(pk: &BJJPublicKey) -> bool {
 /// Cheap on-chain predicate: does `pk` (circomlib-form bytes) decode
 /// to a point on the BabyJubJub curve?  Costs a single curve-equation
 /// eval (no scalar mul), so fits comfortably in BPF compute budgets.
-/// This is the "consolation gate" used by the issuer-registry bypass
-/// build (see SEC-048 / `sec007-skip-onchain`); it is NOT a
-/// substitute for the full subgroup check, only a coarse sanity
-/// filter against off-curve garbage.
+/// Used as a fast pre-filter at `register_issuer` BEFORE the
+/// load-bearing Groth16 subgroup verify -- catches off-curve garbage
+/// in ~3K CU instead of paying ~285K CU for a Groth16 verify that
+/// would have rejected the same input anyway.  Post SEC-048 Phase E
+/// closure (2026-05-XX) the load-bearing soundness gate is the
+/// Groth16 verify, not this predicate.
 pub fn is_on_curve(pk: &BJJPublicKey) -> bool {
     // SOLID-SEC-052 (BPF-runtime regression closeout, 2026-04-28).
     //
@@ -374,8 +376,10 @@ pub fn is_on_curve(pk: &BJJPublicKey) -> bool {
 
 /// Cheap on-chain predicate: is `pk` (circomlib-form bytes) the
 /// Edwards neutral element (i.e. unusable as a signing key)?  Same
-/// BPF-affordable cost profile as `is_on_curve` and used in the same
-/// bypass path.  SEC-048.
+/// BPF-affordable cost profile as `is_on_curve`.  Post SEC-048 Phase
+/// E closure (2026-05-XX) used as a fast pre-filter at
+/// `register_issuer` alongside `is_on_curve`; the load-bearing
+/// soundness gate is the Groth16 subgroup verify.
 ///
 /// Note: the Edwards neutral element (0, 1) is invariant under the
 /// circomlib↔arkworks iso (`x = 0` maps to `x = 0`), so applying the

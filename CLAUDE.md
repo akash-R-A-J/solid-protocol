@@ -127,8 +127,7 @@ COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
 # stale `governanceMint` poisons `initialize_registry` and the script's
 # self-heal path fires (clear error + auto-clear cache + re-run).
 bash scripts/sync_program_keypairs.sh --reset-state   # hydrate target/deploy + wipe state cache
-anchor build -- --features sec007-skip-onchain   # SEC-048 BPF CU bypass; mainnet-blocking
-                                                 # (anchor 0.30.1 syntax keeps `--features` after `--`)
+anchor build   # SEC-048 closed (Phase E, 2026-05-XX); no `--features` flag
 anchor deploy --provider.cluster localnet
 
 # SOLID_VOTING_PERIOD_SECONDS MUST be the same for `initialize.ts` (which
