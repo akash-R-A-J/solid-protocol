@@ -15,9 +15,15 @@
 //!   pre-bound to `schemaHash`.
 
 use anchor_lang::prelude::*;
-use groth16_solana::groth16::{Groth16Verifier, Groth16Verifyingkey};
 use solid_light::cpi_helpers;
 use solid_light::cpi_helpers::{ISSUER_REGISTRY_ID, SCHEMA_REGISTRY_ID};
+// SEC-048 Phase E.1 (2026-05-XX): Groth16 verify primitives lifted to
+// `solid_light::groth16` so `programs/issuer-registry`'s register-time
+// subgroup verify can share the same syscall-driven path.  The
+// const-generic `N` is the public-input count; here we instantiate at
+// `NR_PUBLIC_INPUTS = 32` for the batch credential circuit via the
+// thin `verify_groth16_proof` wrapper defined below.
+use solid_light::groth16::Groth16VerifyError;
 
 declare_id!("DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb");
 
@@ -92,8 +98,12 @@ pub const VERIFIER_ADDRESS_INPUT_INDEX: usize = 29;
 /// Index of `currentTimestamp` in `public_inputs[]` post ADR-0014 shift.
 pub const CURRENT_TIMESTAMP_INPUT_INDEX: usize = 31;
 
-/// Maximum number of IC points the on-chain VK parser is willing to materialize
-/// on the stack. `IC` has `NR_PUBLIC_INPUTS + 1` entries by construction.
+/// Maximum number of IC points the on-chain VK parser is willing to
+/// materialize on the stack.  `IC` has `NR_PUBLIC_INPUTS + 1` entries
+/// by Groth16 construction.  Mirrors `solid_light::groth16::VkBuf::
+/// <NR_PUBLIC_INPUTS>::MAX_IC` (the actual parse-time gate); kept here
+/// as a top-level alias for the IDL comment block + the
+/// `MAX_IC == NR_PUBLIC_INPUTS + 1` regression test below.
 pub const MAX_IC: usize = NR_PUBLIC_INPUTS + 1;
 
 pub const NULLIFIER_SEED: &[u8] = b"null";
@@ -126,23 +136,9 @@ pub const VK_ROTATION_TIMELOCK_SECONDS: i64 = 48 * 60 * 60;
 /// small clock-jitter band), regardless of the configured `skew`.
 pub const MAX_FUTURE_DRIFT_SECONDS: u64 = 30;
 
-// Compile-time assertion: the stack-resident `VkBuf` shell must stay
-// well under Solana's 4 KB per-frame BPF stack budget.  The IC table
-// (`Vec<[u8; 64]>`) lives on the heap, so only fixed-size scalars
-// contribute to the stack-resident size.
-//
-//   VkBuf = 8 (nr_ic) + 64 (alpha) + 128 (beta) + 128 (gamma)
-//         + 128 (delta) + 24 (Vec) ≈ 480 bytes.  Comfortably below
-//         the 1 KB ceiling we want to leave for verify_batch_proof's
-//         other locals (Anchor's deserialized argument struct alone
-//         is ~1 312 bytes; the previous `[[u8; 64]; MAX_IC]` field
-//         pushed the inlined `__global::verify_batch_proof` frame
-//         past the 4 KB BPF limit by ~456 bytes).  See ADR-0014 +
-//         the SOLID-SEC-XXX entry for the regression history.
-const _: () = {
-    let sz = core::mem::size_of::<VkBuf>();
-    assert!(sz < 1024, "VkBuf shell exceeds 1 KB stack budget");
-};
+// Compile-time `VkBuf` size assertion lives in
+// `solid_light::groth16` (same file as the type itself, post Phase E.1
+// refactor).  See `crates/solid-light/src/groth16.rs`.
 
 #[program]
 pub mod zk_verifier {
@@ -929,146 +925,16 @@ pub mod zk_verifier {
 pub const PROOF_BUFFER_PAYLOAD_SIZE: usize = 64 + 128 + 64 + 32 + NR_WIRE_INPUTS * 32;
 const _: () = assert!(PROOF_BUFFER_PAYLOAD_SIZE == 960);
 
-// ─── Verification-key deserialization ─────────────────────────────────────
+// ─── Verification-key deserialization + Groth16 verify ───────────────────
+//
+// Both the VK byte parser (`solid_light::groth16::VkBuf<N>`), the
+// pairing wrapper (`solid_light::groth16::verify_groth16_proof::<N>`),
+// and the `negate_g1_point` helper now live in `solid-light` (Phase E.1
+// refactor, 2026-05-XX).  This thin local wrapper instantiates the
+// shared verify path at `N = NR_PUBLIC_INPUTS = 32` and maps the typed
+// error back into this program's `ErrorCode` so the on-wire failure
+// discriminants stay unchanged for downstream consumers.
 
-/// Stack-owned backing storage for a parsed Groth16 verification key.
-///
-/// `Groth16Verifyingkey<'a>` from `groth16-solana` borrows its `vk_ic` slice
-/// from the caller.  Rather than heap-allocating + `Box::leak`-ing that slice
-/// (the pre-remediation behavior: one unbounded leak per `verify_batch_proof`
-/// call), we materialize every field into this struct on the caller's stack
-/// frame and hand out a borrow of exactly the used prefix.
-///
-/// Expected byte layout of the stored VK (little-endian counts, big-endian
-/// curve points):
-/// ```text
-///   u32         nr_ic        — number of IC points (= nr_pubinputs + 1)
-///   [u8; 64]    alpha_g1
-///   [u8; 128]   beta_g2
-///   [u8; 128]   gamma_g2
-///   [u8; 128]   delta_g2
-///   [u8; 64]    ic[0..nr_ic]
-/// ```
-#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
-pub struct VkBuf {
-    nr_ic: usize,
-    alpha: [u8; 64],
-    beta: [u8; 128],
-    gamma: [u8; 128],
-    delta: [u8; 128],
-    /// IC table on the heap.  Length is exactly `nr_ic` after `parse`,
-    /// bounded by `MAX_IC`.  Heap residency is intentional: a fixed
-    /// `[[u8; 64]; MAX_IC]` field made the inlined
-    /// `__global::verify_batch_proof` BPF frame overflow the 4 KB
-    /// per-frame stack budget by ~456 bytes (the parent frame already
-    /// holds Anchor's ~1 312-byte deserialized argument struct).
-    /// `Vec` keeps the borrow lifetime tied to `self`, so
-    /// `as_verifying_key` is still safe with no `Box::leak`.
-    ic: Vec<[u8; 64]>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum VkParseError {
-    TooShort,
-    TruncatedIc,
-    IcOverflow,
-}
-
-impl VkBuf {
-    /// Parse the on-chain VK byte buffer into a `VkBuf` whose IC table
-    /// lives on the heap.  The fixed-size scalars (alpha/beta/gamma/delta)
-    /// stay inline in the returned struct.
-    ///
-    /// Bounds-checked at every cursor advance; malformed input returns a typed
-    /// error rather than panicking.  `nr_ic` MUST equal `MAX_IC` exactly
-    /// (= `NR_PUBLIC_INPUTS + 1`).  Pre-fix the parser tolerated any
-    /// `0 < nr_ic <= MAX_IC`; that's a soundness gap because a VK with
-    /// fewer IC points than the circuit declares would silently accept
-    /// a proof against the wrong public-input contract.  See M5 /
-    /// SOLID-SEC-069 (closed 2026-05-01).
-    pub fn parse(bytes: &[u8]) -> core::result::Result<Self, VkParseError> {
-        const HEADER: usize = 4 + 64 + 128 * 3;
-        if bytes.len() < HEADER {
-            return Err(VkParseError::TooShort);
-        }
-
-        // Header
-        let nr_ic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
-        // M5 / SOLID-SEC-069: strict equality against MAX_IC = NR_PUBLIC_INPUTS + 1.
-        if nr_ic != MAX_IC {
-            return Err(VkParseError::IcOverflow);
-        }
-        if bytes.len() < HEADER + nr_ic * 64 {
-            return Err(VkParseError::TruncatedIc);
-        }
-
-        let mut alpha = [0u8; 64];
-        let mut beta = [0u8; 128];
-        let mut gamma = [0u8; 128];
-        let mut delta = [0u8; 128];
-
-        let mut cursor = 4;
-        alpha.copy_from_slice(&bytes[cursor..cursor + 64]);
-        cursor += 64;
-        beta.copy_from_slice(&bytes[cursor..cursor + 128]);
-        cursor += 128;
-        gamma.copy_from_slice(&bytes[cursor..cursor + 128]);
-        cursor += 128;
-        delta.copy_from_slice(&bytes[cursor..cursor + 128]);
-        cursor += 128;
-
-        // Allocate the IC table directly on the heap with exact capacity.
-        // No intermediate `[[u8; 64]; MAX_IC]` ever lives on the stack.
-        let mut ic: Vec<[u8; 64]> = Vec::with_capacity(nr_ic);
-        for _ in 0..nr_ic {
-            let mut slot = [0u8; 64];
-            slot.copy_from_slice(&bytes[cursor..cursor + 64]);
-            cursor += 64;
-            ic.push(slot);
-        }
-
-        Ok(VkBuf {
-            nr_ic,
-            alpha,
-            beta,
-            gamma,
-            delta,
-            ic,
-        })
-    }
-
-    /// Produce a `Groth16Verifyingkey` that borrows from this buffer.  The
-    /// returned view is valid for the lifetime of `self`.
-    pub fn as_verifying_key(&self) -> Groth16Verifyingkey<'_> {
-        Groth16Verifyingkey {
-            // IC count = nr_pubinputs + 1.  Saturating for the edge case
-            // where a caller hands us a 1-element IC; the verifier will
-            // reject later.
-            nr_pubinputs: self.nr_ic.saturating_sub(1),
-            vk_alpha_g1: self.alpha,
-            vk_beta_g2: self.beta,
-            vk_gamme_g2: self.gamma,
-            vk_delta_g2: self.delta,
-            vk_ic: &self.ic[..self.nr_ic],
-        }
-    }
-}
-
-/// Run Groth16 verification in an isolated, never-inlined stack frame.
-///
-/// All heavy locals — the parsed `VkBuf` shell, the by-value
-/// `Groth16Verifyingkey` view, `proof_a_neg`, and the `Groth16Verifier`
-/// state — live here and disappear at function exit.  Because this helper
-/// is `#[inline(never)]`, LTO=fat cannot fold it into Anchor's
-/// `__global::verify_batch_proof` wrapper, so its frame doesn't merge
-/// with the wrapper's deserialized-argument frame.  This is the
-/// structural fix for the BPF 4 KB per-frame stack overflow described
-/// in the call-site comment in `verify_batch_proof`.
-///
-/// Inputs are taken by reference to avoid duplicating the (already
-/// argument-deserialized) ~1 312-byte payload across stack frames.
-/// Heap allocations: one `Vec<[u8; 64]>` of length `nr_ic` inside
-/// `VkBuf`, dropped at exit.  No `Box::leak`; no static state.
 #[inline(never)]
 fn verify_groth16_proof(
     vk_storage_data: &[u8],
@@ -1077,56 +943,17 @@ fn verify_groth16_proof(
     proof_c: &[u8; 64],
     public_inputs: &[[u8; 32]; NR_PUBLIC_INPUTS],
 ) -> Result<()> {
-    let vk_buf = VkBuf::parse(vk_storage_data).map_err(|_| ErrorCode::InvalidProofFormat)?;
-    let vk = vk_buf.as_verifying_key();
-    let proof_a_neg = negate_g1_point(proof_a).map_err(|_| ErrorCode::InvalidProofFormat)?;
-
-    let mut verifier = Groth16Verifier::<NR_PUBLIC_INPUTS>::new(
-        &proof_a_neg,
+    solid_light::groth16::verify_groth16_proof::<NR_PUBLIC_INPUTS>(
+        vk_storage_data,
+        proof_a,
         proof_b,
         proof_c,
         public_inputs,
-        &vk,
     )
-    .map_err(|_| ErrorCode::InvalidProofFormat)?;
-
-    verifier
-        .verify()
-        .map_err(|_| ErrorCode::ProofVerificationFailed)?;
-    Ok(())
-}
-
-/// Negate the Y coordinate of a G1 point for groth16-solana's expected
-/// `-A` representation. Assumes 32-byte big-endian X || Y.
-fn negate_g1_point(point: &[u8; 64]) -> std::result::Result<[u8; 64], ()> {
-    // BN254 base-field prime (alt_bn128), big-endian.
-    const P_BE: [u8; 32] = [
-        0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58,
-        0x5d, 0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c,
-        0xfd, 0x47,
-    ];
-
-    // Out = (X || P - Y), computed as big-endian subtraction.
-    let mut out = [0u8; 64];
-    out[..32].copy_from_slice(&point[..32]); // X unchanged.
-
-    let mut borrow: i16 = 0;
-    for i in (0..32).rev() {
-        let p = P_BE[i] as i16;
-        let y = point[32 + i] as i16;
-        let mut diff = p - y - borrow;
-        if diff < 0 {
-            diff += 256;
-            borrow = 1;
-        } else {
-            borrow = 0;
-        }
-        out[32 + i] = diff as u8;
-    }
-    if borrow != 0 {
-        return Err(());
-    }
-    Ok(out)
+    .map_err(|e| match e {
+        Groth16VerifyError::InvalidProofFormat => error!(ErrorCode::InvalidProofFormat),
+        Groth16VerifyError::ProofVerificationFailed => error!(ErrorCode::ProofVerificationFailed),
+    })
 }
 
 // ─── Events ────────────────────────────────────────────────────────────────
@@ -1539,111 +1366,14 @@ pub enum ErrorCode {
 mod tests {
     use super::*;
 
-    // Synthesize a plausibly-shaped VK byte buffer with `nr_ic` IC points.
-    // The values are not cryptographically meaningful — the test is about the
-    // parser, not about pairing correctness.
-    fn synth_vk_bytes(nr_ic: usize) -> Vec<u8> {
-        let mut v = Vec::with_capacity(4 + 64 + 128 * 3 + nr_ic * 64);
-        v.extend_from_slice(&(nr_ic as u32).to_le_bytes());
-        v.extend_from_slice(&[1u8; 64]); // alpha
-        v.extend_from_slice(&[2u8; 128]); // beta
-        v.extend_from_slice(&[3u8; 128]); // gamma
-        v.extend_from_slice(&[4u8; 128]); // delta
-        for i in 0..nr_ic {
-            v.extend_from_slice(&[i as u8; 64]);
-        }
-        v
-    }
-
-    #[test]
-    fn vk_parse_round_trips_max_ic() {
-        // Canonical batch VK: 32 public inputs → 33 IC points.
-        // Post M5 / SOLID-SEC-069: this is the ONLY accepted nr_ic value.
-        let bytes = synth_vk_bytes(MAX_IC);
-        let buf = VkBuf::parse(&bytes).expect("parse");
-        assert_eq!(buf.nr_ic, MAX_IC);
-        assert_eq!(buf.alpha, [1u8; 64]);
-        assert_eq!(buf.beta, [2u8; 128]);
-        assert_eq!(buf.gamma, [3u8; 128]);
-        assert_eq!(buf.delta, [4u8; 128]);
-        assert_eq!(buf.ic[0], [0u8; 64]);
-        assert_eq!(buf.ic[MAX_IC - 1], [(MAX_IC - 1) as u8; 64]);
-    }
-
-    #[test]
-    fn vk_parse_rejects_too_short_header() {
-        let bytes = vec![0u8; 4 + 64 + 128 * 3 - 1];
-        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::TooShort));
-    }
-
-    #[test]
-    fn vk_parse_rejects_truncated_ic_region() {
-        // M5 / SOLID-SEC-069: synth a bytes buffer with the canonical
-        // nr_ic = MAX_IC but truncate the IC region.
-        let mut bytes = synth_vk_bytes(MAX_IC);
-        bytes.truncate(bytes.len() - 10);
-        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::TruncatedIc));
-    }
-
-    #[test]
-    fn vk_parse_rejects_zero_ic() {
-        let bytes = synth_vk_bytes(0);
-        // Header alone is valid size; nr_ic != MAX_IC must be rejected.
-        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::IcOverflow));
-    }
-
-    #[test]
-    fn vk_parse_rejects_ic_overflow() {
-        // Claim more IC points than the canonical count.  Post M5 /
-        // SOLID-SEC-069: any nr_ic != MAX_IC is rejected.
-        let too_many = MAX_IC + 1;
-        let mut bytes = Vec::with_capacity(4 + 64 + 128 * 3 + too_many * 64);
-        bytes.extend_from_slice(&(too_many as u32).to_le_bytes());
-        bytes.extend_from_slice(&[0u8; 64 + 128 * 3 + 64]); // partial payload
-        assert_eq!(VkBuf::parse(&bytes), Err(VkParseError::IcOverflow));
-    }
-
-    #[test]
-    fn vk_parse_rejects_nr_ic_below_max() {
-        // M5 / SOLID-SEC-069 regression gate: nr_ic less than MAX_IC
-        // must be rejected even though the prior parser accepted it.
-        // Pre-fix, a VK with `nr_ic = MAX_IC - 1` parsed cleanly and
-        // the `Groth16Verifyingkey` view returned `nr_pubinputs =
-        // MAX_IC - 2`, silently accepting proofs against the wrong
-        // public-input contract.
-        for too_few in &[1usize, 2, MAX_IC - 1] {
-            let bytes = synth_vk_bytes(*too_few);
-            assert_eq!(
-                VkBuf::parse(&bytes),
-                Err(VkParseError::IcOverflow),
-                "nr_ic = {} must be rejected (only MAX_IC = {} is accepted)",
-                too_few,
-                MAX_IC,
-            );
-        }
-    }
-
-    #[test]
-    fn vk_view_borrows_from_buffer() {
-        // Post M5 / SOLID-SEC-069: only nr_ic = MAX_IC is accepted.
-        let bytes = synth_vk_bytes(MAX_IC);
-        let buf = VkBuf::parse(&bytes).expect("parse");
-        let vk = buf.as_verifying_key();
-        assert_eq!(vk.nr_pubinputs, MAX_IC - 1);
-        assert_eq!(vk.vk_ic.len(), MAX_IC);
-        assert_eq!(vk.vk_alpha_g1, [1u8; 64]);
-    }
-
-    #[test]
-    fn vk_buf_fits_in_stack_budget() {
-        // Mirrors the const assertion at the top of the file; runtime form
-        // gives a readable failure message.  After moving the IC table to
-        // the heap, the stack-resident shell is ~480 bytes.  The 1 KB
-        // ceiling leaves the rest of the BPF 4 KB per-frame budget for
-        // Anchor's deserialized argument struct (~1 312 bytes) plus the
-        // verifier's other locals.
-        assert!(core::mem::size_of::<VkBuf>() < 1024);
-    }
+    // VkBuf parser tests (synth_vk_bytes + vk_parse_* + vk_view_* +
+    // vk_buf_fits_in_stack_budget) and negate_g1_point arithmetic tests
+    // moved to `crates/solid-light/src/groth16.rs::tests` along with
+    // the implementations in Phase E.1 (2026-05-XX).  The only
+    // VkBuf-related coverage that stays here is the `MAX_IC ==
+    // NR_PUBLIC_INPUTS + 1` source-level pin in
+    // `public_input_count_is_32` below, which is the regression gate
+    // for accidental IDL drift in this crate.
 
     // ─── SOLID-SEC-006 freeze-gate + timelock regression gates ──────────
 
@@ -1751,30 +1481,9 @@ mod tests {
         assert_eq!(VK_ROTATION_TIMELOCK_SECONDS, 48 * 3600);
     }
 
-    #[test]
-    fn negate_g1_zero_y_is_field_prime() {
-        // Y = 0 should negate to Y = P (mod P) = 0 too, but our byte-level
-        // routine writes P - 0 = P, which is accepted because groth16-solana
-        // canonicalizes before pairing.  The key invariant: no panic, correct
-        // bitwidth.
-        let mut point = [0u8; 64];
-        point[0] = 0x12; // X
-        let out = negate_g1_point(&point).expect("negate");
-        assert_eq!(&out[..32], &point[..32], "X must be unchanged");
-    }
-
-    #[test]
-    fn negate_g1_is_involutive_modulo_p() {
-        // Pick a Y strictly less than P so P - (P - Y) = Y.
-        let mut point = [0u8; 64];
-        point[0] = 0xAB;
-        for (i, b) in point[32..].iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(7);
-        }
-        let once = negate_g1_point(&point).expect("negate once");
-        let twice = negate_g1_point(&once).expect("negate twice");
-        assert_eq!(point, twice, "double negation is identity");
-    }
+    // negate_g1_* tests moved to
+    // `crates/solid-light/src/groth16.rs::tests` along with
+    // `negate_g1_point` itself in Phase E.1 (2026-05-XX).
 
     // ─── ADR-0014 public-input layout pins ────────────────────────────────
     //
@@ -1989,40 +1698,9 @@ mod tests {
         );
     }
 
-    // ─── Negate-G1 known-answer ───────────────────────────────────────────
-
-    #[test]
-    fn negate_g1_known_answer_y_one() {
-        // X = 0, Y = 1 (BE).  P - 1 (BE) is BN254_FQ - 1.
-        // BN254_FQ in hex (BE):
-        //   0x30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47
-        // P - 1 = ...d46 (last byte: 0x47 - 0x01 = 0x46).
-        let mut point = [0u8; 64];
-        point[63] = 0x01; // Y = 1 in big-endian
-        let out = negate_g1_point(&point).expect("negate");
-        // X must be unchanged.
-        assert_eq!(&out[..32], &[0u8; 32]);
-        // Y must be P - 1 (BE).  Last byte of P is 0x47 -> P-1 ends 0x46.
-        assert_eq!(out[63], 0x46);
-        // High byte of Y must be 0x30 (matches BN254_FQ first byte).
-        assert_eq!(out[32], 0x30);
-    }
-
-    #[test]
-    fn negate_g1_zero_zero_no_panic() {
-        // The (0, 0) "infinity sentinel" must not panic.  groth16-solana
-        // canonicalises before use; whatever bytes we produce, the
-        // pairing layer must accept or reject without us crashing.
-        let point = [0u8; 64];
-        let out = negate_g1_point(&point).expect("negate (0,0)");
-        // X is unchanged.
-        assert_eq!(&out[..32], &[0u8; 32]);
-        // Y becomes P - 0 = P.
-        // (Documenting expected output, not asserting equality with a
-        // canonical "infinity"; the pairing crate handles canonicalisation.)
-        assert_eq!(out[32], 0x30);
-        assert_eq!(out[63], 0x47);
-    }
+    // negate_g1_known_answer_y_one + negate_g1_zero_zero_no_panic
+    // moved to `crates/solid-light/src/groth16.rs::tests` along with
+    // the `negate_g1_point` implementation in Phase E.1 (2026-05-XX).
 
     // ─── B13 Option 2 / SOLID-SEC-054: ProofBuffer layout invariants ─────
 

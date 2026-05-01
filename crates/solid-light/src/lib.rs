@@ -11,3 +11,4 @@
 
 pub mod cpi_helpers;
 pub mod credential_tree;
+pub mod groth16;

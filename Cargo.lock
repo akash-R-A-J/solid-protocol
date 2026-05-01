@@ -2504,6 +2504,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "borsh 0.10.4",
+ "groth16-solana",
  "hex",
  "solid-core",
 ]

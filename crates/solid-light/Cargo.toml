@@ -17,3 +17,10 @@ hex = "0.4"
 # syscall, host light-poseidon).  The cycle is broken because solid-core
 # does not depend on solid-light.
 solid-core = { path = "../solid-core" }
+# SEC-048 Phase E.1 (2026-05-XX): on-chain Groth16 verify primitives.
+# Lifted out of `programs/zk-verifier/src/lib.rs` so a second consumer
+# (`programs/issuer-registry`'s `register_issuer` subgroup verify) can
+# share the same syscall-driven path without duplicating ~150 lines of
+# cryptographic code across programs.  Const-generic over the public-
+# input count `N`; see `groth16.rs`.
+groth16-solana = "0.2"
