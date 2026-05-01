@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Auto-loaded context for Claude Code sessions working in this repo.
+Auto-loaded context for Codex sessions working in this repo.
 
 ## What this repo is
 

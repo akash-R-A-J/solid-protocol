@@ -1,22 +1,23 @@
 # SolID Protocol -- Improvement Roadmap
 
 > **Original document date:** 2026-04-21
-> **Last status reconciliation:** 2026-04-28 (circuit/ZK audit +
-> e2e bring-up session).  Five SEC findings landed in code this
-> session: **SOLID-SEC-045** (atomic binding update via Keccak path
-> recompute -- NO LONGER OPEN), **SOLID-SEC-049 NEW** (replace_leaf
-> discriminator was wrong; latent because no integration test
-> covered revoke / cooldown), **SOLID-SEC-050 NEW** (batch circuit
-> schema-canonicality bypass; trusted-setup re-run; new VK pin
+> **Last status reconciliation:** 2026-05-01 (post NF-batch + clean
+> e2e green).  Live edge has reached `verified: true` end-to-end on
+> localnet (B13 / SOLID-SEC-054 closed via Option 2 buffer-account;
+> nine P0/P1 audit findings closed 2026-04-30; NF-batch SEC-072/077/078/079
+> closed 2026-05-01; CU regression gate live in CI as SOLID-SEC-046).
+> Reference green tx: `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+> Earlier in the arc (2026-04-28, circuit/ZK audit + e2e bring-up):
+> **SOLID-SEC-045** (atomic binding update; later folded into SEC-059's
+> Poseidon-recompute redesign, LB4), **SOLID-SEC-049 NEW** (replace_leaf
+> discriminator was wrong; latent because no integration test covered
+> revoke / cooldown), **SOLID-SEC-050 NEW** (batch circuit schema-canonicality
+> bypass; trusted-setup re-run; new VK pin
 > `8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146`),
-> **SOLID-SEC-052 NEW** partial (BPF coord-form +
-> WASM bridge gate added at `docs/E2E_BLOCKERS.md` B11),
-> **SOLID-SEC-053 NEW** (EdDSA-Poseidon cofactor-8 mismatch
-> between off-chain `sign` and circomlib's in-circuit verifier).
-> E2E pipeline now generates a valid Groth16 proof at
-> `npm run prove`; live edge moved to **B13** (legacy-tx wire size
-> for `verify_batch_proof`).  Test counts: 169/169 cargo + 39/39
-> circuit witness-tester (mocha).  Prior reconciliation:
+> **SOLID-SEC-052 NEW** partial (BPF coord-form + WASM bridge gate at
+> `docs/E2E_BLOCKERS.md` B11), **SOLID-SEC-053 NEW** (EdDSA-Poseidon
+> cofactor-8 mismatch).  Test counts as of 2026-05-01: 217+/217+ cargo
+> (host) + 39/39 circuit witness-tester (mocha).  Prior reconciliation:
 > 2026-04-25 late-session (build-pipeline restoration: circuit
 > compile fixes, Cargo.lock edition2024 dep-cascade resolution via
 > `rust-version = "1.75"` + `.cargo/config.toml` MSRV resolver,

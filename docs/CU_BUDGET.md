@@ -17,7 +17,12 @@ jitter; anything outside that band is a real regression.
 
 ## Per-instruction baselines
 
-Captured 2026-05-01 from the SOLID-SEC-054 / B13 Option 2 + LB5 closure
+Captured 2026-05-01 (refreshed late-day after the M-batch verifier-side
+invariant tightening + NF-batch closure: post-M-batch the buffer-account
+ixs gained ~3,000 CU of constant validation overhead — `InitProofBuffer`
+13,954 → 16,954, each `UploadProofChunk` 9,647 → 12,647 — without which
+the SEC-046 1.10x gate would fail).  Originally captured on 2026-05-01
+morning from the SOLID-SEC-054 / B13 Option 2 + LB5 closure
 e2e run.  Validator: localnet, `solana-test-validator --reset`, programs
 deployed at the canonical IDs.  Wallet: `56cch2JpqChmm8ufqorRHGB2jbXs88drjPnQbBE2MDEe`.
 
@@ -29,10 +34,10 @@ deployed at the canonical IDs.  Wallet: `56cch2JpqChmm8ufqorRHGB2jbXs88drjPnQbBE
 | `StoreVerificationKey` (chunk 1/3) | 12,842 | 200,000 | 93.6% | `5sM715TtHU4pgQAcpgY3VnFJ6qgwb2PKAj18dY8MEYgZ73bq5i9hemF2L8psbDW1chQinJLsP7Na6u6yLLevUotZ` |
 | `StoreVerificationKey` (chunk 2/3) | 9,811 | 200,000 | 95.1% | `5YX2sdtYjfTch11jhV6Q4RRqbb6AA42cFMRV6R9LzRtBDLfHjmcvjcrgpHDRAfMUv2TxXkRrJRkkKVX5TxXJWAtT` |
 | `StoreVerificationKey` (chunk 3/3) | 10,627 | 200,000 | 94.7% | `2MvuLyNNgcycP2zttxVxD5P4bHhHXrpMgYmFg9efNcVfvHWmAHqygceHgPEaod7xMUA1gG1Dswfz67voXYbzib2J` |
-| `InitProofBuffer` | 13,954 | 200,000 | 93.0% | `2MttWiFoCM8PVzwaeDsHEwuQzsm7FGFyES9ky1NRAMZ2aCRGugPsZbSftAabANrexwRzeUHprC1aK42TfvjwRGdc` |
-| `UploadProofChunk` (chunk 1/2) | 9,647 | 200,000 | 95.2% | `5J2D5QvuR6MvseuvDiHwTYjJQ4Meod1fuXkSRFGaJS5H45P6zbC8TdeNSYaZXnmerXrnraWHowjsf29VJNyfCpVv` |
-| `UploadProofChunk` (chunk 2/2) | 9,647 | 200,000 | 95.2% | `5ND6nvhMdnYhQ4AmFGjM6qkZYTFBDD1rDRf6FF6VUJ4f5z1Ub3vj24MmntzSHpqDvpFYXPRAs8skA3UEXYjZtGXi` |
-| **`VerifyBatchProofV2`** (Groth16) | **315,406** | **799,850** | **60.6%** | `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX` |
+| `InitProofBuffer` | 16,954 | 200,000 | 91.5% | `5xcg48f13DTyNkwV...` |
+| `UploadProofChunk` (chunk 1/2) | 12,647 | 200,000 | 93.7% | `2wGeK8wPMiQsX98z...` |
+| `UploadProofChunk` (chunk 2/2) | 12,647 | 200,000 | 93.7% | `4qfKPcQmvaGtACva...` |
+| **`VerifyBatchProofV2`** (Groth16) | **318,315** | **799,850** | **60.2%** | `26ZjFivuDv58bGpv...` |
 
 ### `issuer_registry` (`5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx`)
 
@@ -66,7 +71,7 @@ deployed at the canonical IDs.  Wallet: `56cch2JpqChmm8ufqorRHGB2jbXs88drjPnQbBE
 | 1 | `AppendIssuerLeaf` | 427,518 | depth-16 Poseidon recompute (~32 `Fr::from_le_bytes_mod_order` round-trips on BPF + 16 `sol_poseidon` syscalls) |
 | 2 | `UpdateTreeRoot` | 417,775 | depth-20 Poseidon recompute |
 | 3 | `UpdateGlobalRoot` | 417,347 | depth-20 Poseidon recompute |
-| 4 | `VerifyBatchProofV2` | 315,406 | Groth16 verify (alt_bn128 pairing dominates) |
+| 4 | `VerifyBatchProofV2` | 318,315 | Groth16 verify (alt_bn128 pairing dominates) |
 | 5 | `RegisterSchema` | 229,952 | H5-widened schema_hash preimage (3 nested Poseidon-Merkle-Damgard absorbs over name + field_names + category) |
 
 All five land below 50% of the 1.4M per-tx CU ceiling.  None requires

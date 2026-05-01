@@ -41,7 +41,7 @@ fixed first.
 | Freeze gate (`vk_finalized=false` blocks verify during rotation)  | [X]    | ADR-0015 part 1                                            |
 | `VerifierConfig::SPACE = 60` (with rotate fields)                 | [X]    | programs/zk-verifier/src/lib.rs                            |
 | `vk_generation` bound into circuit publics                        | [ ]    | ADR-0015 part 2; needs next trusted-setup cycle            |
-| Per-instruction CU receipts captured in regression suite           | [ ]    | tests/integration scenarios 02..11 unimplemented           |
+| Per-instruction CU receipts captured in regression suite           | [X]    | `tests/cu_baselines.json` + CI gate `cu_regression` (SEC-046, closed 2026-05-01)  |
 | Multi-party trusted-setup ceremony                                | [ ]    | SOLID-SEC-012; mainnet blocker                             |
 
 ## 1.2 issuer-registry
@@ -288,7 +288,7 @@ fixture; CI regenerates both vector files and asserts `git diff
 | 254-bit-safe schemaHash comparator (`LessThanBN254`)                   | circuits/lib/lt_bn254.circom + batch circuit               | [X]    |
 | `verification_key.sha256` content-addressed gate                       | initialize.ts SOLID-SEC-041 gate                                   | [X]    |
 | Squads 3-of-5 governance for issuer-tree-operator (SOLID-SEC-043)      |                                                                    | [ ]    |
-| `request_withdrawal_atomic` mirrors `revoke_issuer_atomic`             | SOLID-SEC-044                                                      | [ ]    |
+| `request_withdrawal_atomic` mirrors `revoke_issuer_atomic`             | SOLID-SEC-044 (CLOSED; programs/issuer-registry/src/lib.rs)        | [X]    |
 | Multi-party trusted setup ceremony                                     | SOLID-SEC-012                                                      | [ ]    |
 
 # 7. Open work pointers
@@ -345,16 +345,40 @@ the vision and should never disagree with the deployed reality.
   `npm run prove` rejects).
 - **Test counts.**  Workspace 167/167 cargo + 39/39 circuit
   witness-tester (mocha) green.
-- **E2E status.**  Steps 1-17 of the runbook + `init-onchain`
-  + `backfill-issuer-tree` + `bootstrap-schema-tree` +
+- **E2E status (2026-04-28 snapshot).**  Steps 1-17 of the runbook +
+  `init-onchain` + `backfill-issuer-tree` + `bootstrap-schema-tree` +
   `bootstrap-issuer` + `issue` all green.  Post-SEC-053
   (EdDSA-Poseidon cofactor-8), `npm run prove` also generates
-  a valid Groth16 proof in ~5s; live edge is now the on-chain
-  submission half: **B13** (legacy-tx wire size --
-  `verify_batch_proof` ix data 1324 bytes exceeds Solana's
-  1232-byte cap).  See `docs/E2E_BLOCKERS.md` B13 for the
-  remediation analysis (recommended path: reconstruct redundant
-  public inputs on-chain from accounts already passed to the ix).
+  a valid Groth16 proof in ~5s; live edge at this snapshot was
+  **B13** (legacy-tx wire size).  Superseded by the 2026-05-01
+  delta below.
+
+# 9.1 Session deltas (2026-05-01)
+
+- **B13 / SOLID-SEC-054 closed via Option 2 (buffer-account chunked
+  upload).**  New ix trio in zk-verifier: `init_proof_buffer`,
+  `upload_proof_chunk`, `verify_batch_proof_v2`.  Per-tx wire bytes
+  for the verify step ~972 (well inside the 1232-byte legacy-tx
+  cap with cuIx + ALT).  E2E reaches `verified: true` end-to-end +
+  replay rejection.  Reference green tx:
+  `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+- **Nine P0/P1 audit findings closed 2026-04-30.**  SEC-058 (artifact
+  SHA-256 pinning), SEC-059 (atomic Poseidon-recompute on root push,
+  multi-layer), SEC-061 (`withdraw_after_revoke` + 24h dispute),
+  SEC-062 (`is_canonical_bn254_le` + on-chain canonicality gates),
+  SEC-063 (5-input Poseidon schema-hash preimage), SEC-064
+  (`verifyOnChain` revert detection), SEC-066 (debug-leak redaction),
+  SEC-067 / LB5 (G2 byte-order swap on alt_bn128), SEC-054 (B13
+  closure above).
+- **NF-batch closed 2026-05-01.**  SEC-072 (ts-sdk PUBLIC_INPUTS dedup),
+  SEC-077 (pre-CPI binding anchor on revoke/withdraw atomic ixs),
+  SEC-078 (`finalize_verification_key` reactivation in initialize.ts),
+  SEC-079 (slot strict-monotonicity in `write_issuer_tree_binding_root`).
+- **CU baselines + CI gate live.**  SEC-046 closed.  Per-instruction
+  baselines in `tests/cu_baselines.json` + `docs/CU_BUDGET.md`; CI
+  gate `cu_regression` fails on `consumed > baseline * 1.10`.
+- **Test counts.**  Workspace 217+ host tests + 39/39 circuit witness
+  tests, all green.
 
 - **SEC-053 (HIGH, NEW; closed 2026-04-28).**  EdDSA-Poseidon
   cofactor-8 mismatch between off-chain

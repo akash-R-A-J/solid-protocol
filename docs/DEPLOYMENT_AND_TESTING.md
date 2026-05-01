@@ -30,15 +30,13 @@ fails at `[3/8] register_issuer` with `InvalidBJJPubKey` because
 the on-chain consolation gate correctly rejects bytes in the
 wrong coordinate form.  See `docs/E2E_BLOCKERS.md` B11.
 
-**Live edge as of 2026-04-28:** B13 (`verify_batch_proof` ix data
-1324 bytes exceeds Solana's 1232-byte legacy-tx wire size).  The
-Groth16 proof itself generates in ~5s post-SEC-053; the failure
-is at the on-chain submission step.  Until B13 closes, the
-"Expected terminal tail" block below describes the **target**
-tail, not the achievable one on the current build.  See
-`docs/E2E_BLOCKERS.md` B13 for the remediation analysis
-(recommended path: reconstruct redundant public inputs on-chain
-from accounts already passed to the ix).
+**Live edge as of 2026-05-01:** CLOSED.  B13 / SOLID-SEC-054 closed
+via Option 2 (buffer-account chunked upload: `init_proof_buffer` +
+`upload_proof_chunk` + `verify_batch_proof_v2`).  `npm run e2e`
+reaches `verified: true` end-to-end on localnet; the "Expected
+terminal tail" block below describes the actual achievable tail.
+Reference green tx:
+`tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
 
 ---
 
@@ -53,18 +51,30 @@ export PATH="$PWD/.toolchain/bin:$PATH"
 cd circuits && npm install && node scripts/setup.js && cd ..
 wasm-pack build wasm/ --target nodejs \
     --out-dir ts-sdk/packages/core/wasm --release
-anchor build
+bash scripts/sync_program_keypairs.sh --reset-state    # hydrate keys + wipe state cache
+anchor build -- --features sec007-skip-onchain         # SEC-048 BPF CU bypass; localnet/devnet only
 (cd ts-sdk && npm ci && npm run build)
 npm install                                      # root (for tsx + scripts)
 
 # 3. Boot a fresh validator and deploy.
-solana-test-validator --reset &
+#    macOS Sequoia: COPYFILE_DISABLE=1 + COPY_EXTENDED_ATTRIBUTES_DISABLE=1
+#    suppress Apple's auto-applied `com.apple.provenance` xattr; without
+#    these the genesis tarball self-verify rejects on round-trip.
+#    `--clone-upgradeable-program` for SPL AC + Noop is required because
+#    solana-test-validator 1.18.22 does not bundle them.
+COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+  solana-test-validator --reset \
+    --clone-upgradeable-program cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK \
+    --clone-upgradeable-program noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV \
+    --url https://api.devnet.solana.com &
 sleep 5
 solana config set --url localhost
 solana airdrop 10
 anchor deploy --provider.cluster localnet
 
-# 4. Run the E2E pipeline.
+# 4. Run the E2E pipeline.  Voting period must agree across initialize.ts
+#    + bootstrap_issuer.ts; 120s is comfortable on localnet.
+export SOLID_VOTING_PERIOD_SECONDS=120
 npm run e2e
 
 # 5. Verify the result.

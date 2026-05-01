@@ -39,7 +39,7 @@ import { initWasm, computeSchemaHash, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readStateOrNull, stateFilePath, writeState } from './lib/e2e_state';
+import { invalidateState, readStateOrNull, stateFilePath, writeState } from './lib/e2e_state';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -234,7 +234,24 @@ async function main() {
   // adopt the on-chain value (a corrupt `Pubkey::default()` is no longer
   // representable under the new contract — `initialize_registry` would
   // have failed at deserialise — but we still defensively check).
-  const onChainConfig = await issuerProgram.account.registryConfig.fetch(registryPda);
+  //
+  // Stale-state self-heal (NF / 2026-05-01): use `fetchNullable` so we can
+  // surface a clear error when `isAlreadyInitialised` matched (line 228)
+  // but the registry PDA does not actually exist on-chain.  That state is
+  // unreachable on a healthy run; it indicates the validator was
+  // `solana-test-validator --reset` since the local state cache was
+  // written.  Wipe the cache so the next run auto-recovers.
+  const onChainConfig =
+    await issuerProgram.account.registryConfig.fetchNullable(registryPda);
+  if (onChainConfig === null) {
+    const cleared = invalidateState();
+    throw new Error(
+      `initialize_registry: registry PDA ${registryPda.toBase58()} does not ` +
+      `exist on-chain even though the catch path matched "already initialised".  ` +
+      `This is the stale state-cache surface: validator was --reset but ` +
+      `${cleared} was not.  Cache has been cleared; please re-run npm run e2e.`,
+    );
+  }
   const onChainMint = onChainConfig.governanceTokenMint as PublicKey;
   if (!onChainMint.equals(governanceMint)) {
     console.log(`   reconciling: local ${governanceMint.toBase58()} -> on-chain ${onChainMint.toBase58()}`);

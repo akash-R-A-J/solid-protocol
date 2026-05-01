@@ -93,3 +93,16 @@ export function writeState(state: unknown): string {
   fs.renameSync(tmp, file);
   return file;
 }
+
+/// Delete the state file (no-op if missing).  Used by self-heal in
+/// `initialize.ts` when the on-chain registry referenced by the cache is
+/// no longer present (validator was `--reset` but the cache wasn't).
+export function invalidateState(): string {
+  const file = stateFilePath();
+  try {
+    fs.unlinkSync(file);
+  } catch {
+    // noop on ENOENT
+  }
+  return file;
+}

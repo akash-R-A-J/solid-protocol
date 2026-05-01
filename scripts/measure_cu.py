@@ -174,6 +174,28 @@ def measure_program(
     return results
 
 
+def write_baselines(
+    baselines: Dict,
+    measurements: List[Tuple[str, str, int, str]],
+    e2e_date: str,
+) -> None:
+    """Refresh `tests/cu_baselines.json` with `measurements`.
+
+    `measurements` is a list of `(prog_name, baseline_key, consumed_cu, sig)`
+    tuples covering EVERY expected ix.  Caller must have asserted no
+    MISSING entries -- this function does not tolerate gaps so we never
+    silently drop a baseline.  Preserves all metadata fields and the
+    cu_limit per ix; only the `consumed_cu`, `tx_signature`, and the
+    top-level `_source_e2e_run_date` move.
+    """
+    for prog_name, baseline_key, consumed_cu, sig in measurements:
+        entry = baselines["programs"][prog_name]["instructions"][baseline_key]
+        entry["consumed_cu"] = consumed_cu
+        entry["tx_signature"] = sig
+    baselines["_source_e2e_run_date"] = e2e_date
+    BASELINE_PATH.write_text(json.dumps(baselines, indent=2) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SEC-046 CU regression gate")
     parser.add_argument(
@@ -186,6 +208,22 @@ def main() -> int:
         "--rpc-url",
         default=os.environ.get("SOLID_RPC_URL", "http://127.0.0.1:8899"),
         help="Solana RPC URL (default: http://127.0.0.1:8899 or $SOLID_RPC_URL)",
+    )
+    parser.add_argument(
+        "--write-baselines",
+        action="store_true",
+        help=(
+            "Re-write tests/cu_baselines.json with the measured values "
+            "after an intentional CU change (e.g. a verifier-side invariant "
+            "tightening that adds constant overhead).  Skips the regression "
+            "gate; refuses to write if any expected ix is MISSING.  Pair "
+            "with --yes to confirm the overwrite."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required with --write-baselines to actually overwrite the JSON.",
     )
     args = parser.parse_args()
 
@@ -203,6 +241,7 @@ def main() -> int:
 
     failures: List[str] = []
     measured_total = 0
+    measurements_for_writeback: List[Tuple[str, str, int, str]] = []
     for prog_name, prog_data in baselines["programs"].items():
         prog_id = prog_data["program_id"]
         expected = prog_data["instructions"]
@@ -228,6 +267,7 @@ def main() -> int:
                     f"{prog_name}::{baseline_key} consumed {measured} CU, "
                     f"baseline {baseline}, ratio {ratio:.3f} > tolerance {tolerance}"
                 )
+            measurements_for_writeback.append((prog_name, baseline_key, measured, sig))
         # Were any baseline ixs not exercised?
         missing = set(expected.keys()) - seen_keys
         if missing:
@@ -242,6 +282,27 @@ def main() -> int:
         print()
 
     print(f"Measured {measured_total} ixs; {len(failures)} regression(s).")
+
+    if args.write_baselines:
+        if failures and any("MISSING" in f for f in failures):
+            print()
+            print("REFUSING to write baselines: at least one expected ix was MISSING.")
+            print("Re-run npm run e2e against a fresh validator and try again.")
+            return 1
+        if not args.yes:
+            print()
+            print(
+                "Pass --yes to actually overwrite tests/cu_baselines.json with "
+                "the measurements above.  This is a one-way refresh; the previous "
+                "consumed_cu / tx_signature values are lost."
+            )
+            return 1
+        from datetime import datetime, timezone
+        e2e_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        write_baselines(baselines, measurements_for_writeback, e2e_date)
+        print(f"OK -- {BASELINE_PATH.relative_to(REPO_ROOT)} refreshed (e2e date {e2e_date}).")
+        return 0
+
     if failures:
         print()
         print("FAILED:")

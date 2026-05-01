@@ -1127,8 +1127,8 @@ mod tests {
             let decoy = [(i as u8).wrapping_add(0xC0); 32];
             buf[off..off + 32].copy_from_slice(&decoy);
         }
-        let active_off = SPL_AC_CHANGE_LOGS_OFFSET
-            + (active_index as usize) * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
+        let active_off =
+            SPL_AC_CHANGE_LOGS_OFFSET + (active_index as usize) * SPL_AC_CHANGE_LOG_SIZE_DEPTH_16;
         buf[active_off..active_off + 32].copy_from_slice(&root);
         buf
     }

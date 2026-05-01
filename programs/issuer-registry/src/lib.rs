@@ -101,6 +101,16 @@ pub const TREE_AUTHORITY_SEED: &[u8] = b"tree-authority";
 ///   * asserts the buffer is at least `ISSUER_TREE_BINDING_SIZE`
 ///     bytes and carries the canonical `ISSUER_TREE_DISCRIMINATOR`,
 ///   * asserts the binding is in the active state (status byte 0),
+///   * (NF-07 / SOLID-SEC-079) asserts strict slot monotonicity --
+///     the new write's slot MUST be greater than the binding's
+///     `last_updated_slot`.  Pre-fix, two atomic ixs in the same
+///     slot (e.g. a revoke and a withdrawal in the same block)
+///     would both succeed and the second write would silently
+///     clobber the first.  After the fix, the second write fails
+///     with `IssuerTreeRootNotMonotonic` and the tx rolls back,
+///     so callers re-derive the path against the live binding
+///     state.  Mirrors the same require! that
+///     `update_issuer_tree_root` already enforces.
 ///   * writes `new_root` into [40..72) and the slot into [72..80).
 ///
 /// Extracted so the same write contract can be host-tested with
@@ -120,8 +130,57 @@ fn write_issuer_tree_binding_root(
         binding_data[80] == ISSUER_TREE_STATUS_ACTIVE,
         ErrorCode::IssuerTreeBindingFrozen
     );
+    let prev_slot_bytes: [u8; 8] = binding_data[72..80].try_into().unwrap();
+    let prev_slot = u64::from_le_bytes(prev_slot_bytes);
+    require!(slot > prev_slot, ErrorCode::IssuerTreeRootNotMonotonic);
     binding_data[40..72].copy_from_slice(new_root);
     binding_data[72..80].copy_from_slice(&slot.to_le_bytes());
+    Ok(())
+}
+
+/// Pre-CPI binding anchor (NF-01 / NF-04 / SOLID-SEC-077, closed 2026-05-01).
+///
+/// Recomputes the Poseidon-Merkle root from `(old_leaf, leaf_index,
+/// caller-supplied path)` and asserts it equals
+/// `IssuerTreeBinding.current_root`.  This ties the path the caller
+/// supplied to the binding's notion of "current" tree state, not
+/// just to whatever stale root SPL AC's concurrent change-log buffer
+/// happens to admit.
+///
+/// Why this is load-bearing: SPL AC's `replace_leaf` validates the
+/// proof against ANY root in its change-log ring buffer (default 64
+/// entries), not only the active root.  Pre-fix, an attacker (or a
+/// stale-state operator) could submit a proof against an old root
+/// `R1` while the binding was at `R3`.  SPL AC would accept the
+/// CPI (R1 still in buffer); the post-CPI Poseidon recompute would
+/// produce a "next" root from `R1`'s perspective; and that root
+/// would land in the binding -- regressing it from `R3` to a state
+/// that doesn't reflect the live tree.  After the fix, the OLD-root
+/// recompute gates the CPI: the path must be consistent with the
+/// binding's current root before the SPL AC CPI runs at all.
+///
+/// Soundness contract: Poseidon's collision resistance + the
+/// caller's inability to forge a path producing the binding's root
+/// without knowing the leaves at every other index up to the
+/// affected level.  Cost: one Poseidon-Merkle recompute (~50K CU at
+/// `ISSUER_TREE_DEPTH = 16`); CU surveyed in `docs/CU_BUDGET.md`.
+fn verify_issuer_binding_anchor(
+    binding_data: &[u8],
+    old_leaf: &[u8; 32],
+    leaf_index: u64,
+    path: &[[u8; 32]],
+) -> Result<()> {
+    require!(
+        binding_data.len() >= ISSUER_TREE_BINDING_SIZE
+            && binding_data[0..8] == ISSUER_TREE_DISCRIMINATOR,
+        ErrorCode::InvalidIssuerTreeBinding
+    );
+    let mut current_root = [0u8; 32];
+    current_root.copy_from_slice(&binding_data[40..72]);
+    let recomputed =
+        solid_light::cpi_helpers::compute_poseidon_merkle_root(old_leaf, leaf_index, path)
+            .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
+    require!(recomputed == current_root, ErrorCode::IssuerTreeRootStale);
     Ok(())
 }
 
@@ -663,10 +722,7 @@ pub mod issuer_registry {
     ///   * Decrements `issuer.staked_amount` by `amount`; status remains
     ///     Revoked.
     ///   * Emits `StakeWithdrawn`.
-    pub fn withdraw_after_revoke(
-        ctx: Context<WithdrawAfterRevoke>,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn withdraw_after_revoke(ctx: Context<WithdrawAfterRevoke>, amount: u64) -> Result<()> {
         let issuer = &mut ctx.accounts.issuer_account;
         require!(
             issuer.status == IssuerStatus::Revoked,
@@ -1243,10 +1299,7 @@ pub mod issuer_registry {
         let computed_root =
             solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
                 .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
-        require!(
-            computed_root == new_root,
-            ErrorCode::IssuerTreeRootMismatch
-        );
+        require!(computed_root == new_root, ErrorCode::IssuerTreeRootMismatch);
 
         let mut data = binding_info.try_borrow_mut_data()?;
         require!(
@@ -1472,12 +1525,9 @@ pub mod issuer_registry {
             path.push(s);
         }
         let assigned_index = ctx.accounts.registry_config.next_issuer_leaf_index;
-        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
-            &leaf,
-            assigned_index,
-            &path,
-        )
-        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
+        let new_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&leaf, assigned_index, &path)
+                .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
         require_keys_eq!(
             *binding_info.owner,
@@ -1486,11 +1536,7 @@ pub mod issuer_registry {
         );
         {
             let mut binding_data = binding_info.try_borrow_mut_data()?;
-            write_issuer_tree_binding_root(
-                &mut binding_data,
-                &new_root,
-                Clock::get()?.slot,
-            )?;
+            write_issuer_tree_binding_root(&mut binding_data, &new_root, Clock::get()?.slot)?;
         }
 
         // ─── Bump counter + record assignment ─────────────────────────
@@ -1662,6 +1708,27 @@ pub mod issuer_registry {
             path.push(s);
         }
 
+        // NF-01 / NF-04 / SOLID-SEC-077 (closed 2026-05-01) pre-CPI
+        // anchor: the path the caller supplied MUST recompute, with
+        // `old_leaf` at `leaf_index`, to the binding's current Poseidon
+        // root.  Without this, SPL AC's concurrent change-log would
+        // accept the CPI against any in-buffer root (default 64
+        // entries) and the post-CPI Poseidon recompute would land a
+        // root in the binding that doesn't reflect the live tree --
+        // observable as binding regression and stale-root replay.
+        // After the anchor, mismatched paths short-circuit before the
+        // SPL AC CPI ever runs.
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        {
+            let binding_data = binding_info.try_borrow_data()?;
+            verify_issuer_binding_anchor(&binding_data, &old_leaf, leaf_index, &path)?;
+        }
+
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
@@ -1680,25 +1747,12 @@ pub mod issuer_registry {
         // path is supplied by the caller and verified by the recompute.
         // No reliance on SPL AC's Keccak path; no concurrent-semantics
         // concern because Poseidon recompute is single-input-determined.
-        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
-            &new_leaf,
-            leaf_index,
-            &path,
-        )
-        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
-        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
-        require_keys_eq!(
-            *binding_info.owner,
-            crate::ID,
-            ErrorCode::InvalidIssuerTreeBindingOwner
-        );
+        let new_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
+                .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         {
             let mut binding_data = binding_info.try_borrow_mut_data()?;
-            write_issuer_tree_binding_root(
-                &mut binding_data,
-                &new_root,
-                Clock::get()?.slot,
-            )?;
+            write_issuer_tree_binding_root(&mut binding_data, &new_root, Clock::get()?.slot)?;
         }
         // `old_root` is consumed by SPL AC `replace_leaf` for the
         // Keccak-side leaf-presence check.  Suppress unused-var warn.
@@ -1876,6 +1930,22 @@ pub mod issuer_registry {
             path.push(s);
         }
 
+        // NF-01 / NF-04 / SOLID-SEC-077 (closed 2026-05-01) pre-CPI
+        // anchor: same contract as revoke_issuer_atomic.  Stale-path
+        // attempts now fail with `IssuerTreeRootStale` before the SPL
+        // AC CPI is ever issued.  See `verify_issuer_binding_anchor`
+        // doc-comment for the full soundness story.
+        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
+        require_keys_eq!(
+            *binding_info.owner,
+            crate::ID,
+            ErrorCode::InvalidIssuerTreeBindingOwner
+        );
+        {
+            let binding_data = binding_info.try_borrow_data()?;
+            verify_issuer_binding_anchor(&binding_data, &old_leaf, leaf_index, &path)?;
+        }
+
         let signer_seeds: &[&[u8]] = &[ISSUER_TREE_AUTHORITY_SEED, &[tree_authority_bump]];
         let mut invoke_accounts = vec![
             ctx.accounts.merkle_tree.to_account_info(),
@@ -1890,25 +1960,12 @@ pub mod issuer_registry {
 
         // SOLID-SEC-045 / CRIT-2 / H1 atomic binding update via on-chain
         // Poseidon recompute.  Mirrors revoke_issuer_atomic.
-        let new_root = solid_light::cpi_helpers::compute_poseidon_merkle_root(
-            &new_leaf,
-            leaf_index,
-            &path,
-        )
-        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
-        let binding_info = ctx.accounts.issuer_tree_binding.to_account_info();
-        require_keys_eq!(
-            *binding_info.owner,
-            crate::ID,
-            ErrorCode::InvalidIssuerTreeBindingOwner
-        );
+        let new_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
+                .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         {
             let mut binding_data = binding_info.try_borrow_mut_data()?;
-            write_issuer_tree_binding_root(
-                &mut binding_data,
-                &new_root,
-                Clock::get()?.slot,
-            )?;
+            write_issuer_tree_binding_root(&mut binding_data, &new_root, Clock::get()?.slot)?;
         }
         let _ = old_root;
 
@@ -2337,7 +2394,6 @@ pub struct UpdateIssuerTreeRoot<'info> {
     pub issuer_tree_binding: UncheckedAccount<'info>,
     pub authority: Signer<'info>,
 }
-
 
 /// ADR-0014.  Accounts for `append_issuer_leaf`.
 ///
@@ -2925,7 +2981,9 @@ pub enum ErrorCode {
     IssuerTreeRootStale,
     #[msg("Submitted new_root does not match the on-chain Poseidon-Merkle recompute against (new_leaf, leaf_index, poseidon_proof_path) (SEC-059 / H1)")]
     IssuerTreeRootMismatch,
-    #[msg("Issuer is not in Revoked status; withdraw_after_revoke requires Revoked (SEC-061 / H3)")]
+    #[msg(
+        "Issuer is not in Revoked status; withdraw_after_revoke requires Revoked (SEC-061 / H3)"
+    )]
     IssuerNotRevoked,
     #[msg("DAO dispute window has not closed yet; wait until cooldown_ends_at to withdraw post-revoke (SEC-061 / H3)")]
     DisputeWindowOpen,
@@ -3148,8 +3206,12 @@ mod tests {
     }
 
     #[test]
-    fn write_binding_root_accepts_slot_zero() {
-        // slot=0 is unusual but legal; helper must not reject.
+    fn write_binding_root_accepts_slot_one_against_zero_init() {
+        // Genesis case: a freshly-initialized binding stores
+        // last_updated_slot = init_slot.  The first update from any
+        // atomic ix runs at slot >= init_slot + 1 in practice
+        // (Solana slot times are ~400ms; binding init and the first
+        // append are always >= 1 slot apart).
         let mut buf = make_binding(
             [0u8; 32],
             [0u8; 32],
@@ -3158,28 +3220,49 @@ mod tests {
             [0u8; 32],
         );
         let new_root = [0xCDu8; 32];
-        write_issuer_tree_binding_root(&mut buf, &new_root, 0).unwrap();
+        write_issuer_tree_binding_root(&mut buf, &new_root, 1).unwrap();
         assert_eq!(&buf[40..72], &new_root[..]);
-        assert_eq!(u64::from_le_bytes(buf[72..80].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(buf[72..80].try_into().unwrap()), 1);
     }
 
     #[test]
-    fn write_binding_root_does_not_require_root_change() {
-        // Idempotent write of the same root + same slot succeeds.
-        // The helper does not enforce monotonicity (that's the caller's
-        // responsibility in `update_issuer_tree_root`); inside the
-        // atomic ixs the root will always advance because the leaf
-        // changes preimage.
-        let same_root = [0x77u8; 32];
+    fn write_binding_root_rejects_same_slot_replay_nf07() {
+        // NF-07 / SOLID-SEC-079 (closed 2026-05-01).  Same-slot
+        // re-write is the cross-tx race surface: pre-fix, two atomic
+        // ixs in the same block (e.g. a revoke + a withdrawal) both
+        // landed and the second silently clobbered the first.  After
+        // the fix, the second write fails with
+        // `IssuerTreeRootNotMonotonic`.
         let mut buf = make_binding(
             [0u8; 32],
-            same_root,
+            [0x77u8; 32],
             50,
             ISSUER_TREE_STATUS_ACTIVE,
             [0u8; 32],
         );
-        write_issuer_tree_binding_root(&mut buf, &same_root, 50).unwrap();
-        assert_eq!(&buf[40..72], &same_root[..]);
+        let err = write_issuer_tree_binding_root(&mut buf, &[0xAAu8; 32], 50).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeRootNotMonotonic.into();
+        assert_eq!(anchor_error_code(err), expected);
+        // Buffer untouched: the require! short-circuits before the
+        // copy_from_slice writes run.
+        assert_eq!(&buf[40..72], &[0x77u8; 32]);
+        assert_eq!(u64::from_le_bytes(buf[72..80].try_into().unwrap()), 50);
+    }
+
+    #[test]
+    fn write_binding_root_rejects_slot_regression_nf07() {
+        // Strictly older slot is also rejected (covers the case where
+        // a stale tx with an old leader's slot lands during reorg).
+        let mut buf = make_binding(
+            [0u8; 32],
+            [0x77u8; 32],
+            100,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
+        let err = write_issuer_tree_binding_root(&mut buf, &[0xAAu8; 32], 99).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeRootNotMonotonic.into();
+        assert_eq!(anchor_error_code(err), expected);
     }
 
     // ─── write_issuer_tree_binding_root: negative paths ────────────────────
@@ -3286,5 +3369,147 @@ mod tests {
     fn append_discriminator_matches_anchor_global_append() {
         let computed = anchor_lang::solana_program::hash::hash(b"global:append").to_bytes();
         assert_eq!(&SPL_AC_APPEND_DISCRIMINATOR, &computed[..8]);
+    }
+
+    // ─── verify_issuer_binding_anchor (NF-01 / NF-04 / SOLID-SEC-077) ──────
+
+    /// Build a `(leaf, leaf_index, path, expected_root)` tuple that the
+    /// anchor must accept by definition: the expected_root IS the
+    /// Poseidon recompute of (leaf, leaf_index, path).  Used as the
+    /// ground truth for both happy and stale-path tests.
+    fn make_anchor_fixture(
+        leaf: [u8; 32],
+        leaf_index: u64,
+        path_pattern: u8,
+        depth: usize,
+    ) -> ([u8; 32], Vec<[u8; 32]>) {
+        let path: Vec<[u8; 32]> = (0..depth)
+            .map(|i| {
+                let mut s = [0u8; 32];
+                // Distinct sibling at each level so the recompute path
+                // is sensitive to position, not just to the pattern.
+                s[0] = path_pattern;
+                s[1] = i as u8;
+                s
+            })
+            .collect();
+        let expected_root =
+            solid_light::cpi_helpers::compute_poseidon_merkle_root(&leaf, leaf_index, &path)
+                .expect("host poseidon recompute must succeed");
+        (expected_root, path)
+    }
+
+    #[test]
+    fn anchor_accepts_recomputed_root_matching_binding() {
+        // Happy path: the binding stores the Poseidon root that the
+        // recompute (old_leaf, leaf_index, path) reproduces.
+        let leaf = [0x42u8; 32];
+        let leaf_index: u64 = 7;
+        let depth = ISSUER_TREE_DEPTH;
+        let (expected_root, path) = make_anchor_fixture(leaf, leaf_index, 0xAB, depth);
+
+        let binding = make_binding(
+            [0u8; 32],
+            expected_root,
+            100,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
+        verify_issuer_binding_anchor(&binding, &leaf, leaf_index, &path)
+            .expect("anchor must accept the path that recomputes to binding.current_root");
+    }
+
+    #[test]
+    fn anchor_rejects_stale_path_against_advanced_binding() {
+        // NF-01 attack shape: the attacker submits a path that's
+        // valid against an OLD binding root R1, but the binding has
+        // since advanced to R3.  The recompute produces R1 (or close
+        // to it); R1 != R3 => `IssuerTreeRootStale`.
+        let leaf = [0x42u8; 32];
+        let leaf_index: u64 = 7;
+        let (root_r1, path_r1) = make_anchor_fixture(leaf, leaf_index, 0xAB, ISSUER_TREE_DEPTH);
+
+        // Binding has since moved to a different root R3 (e.g., a
+        // sibling at some level differs because another leaf updated).
+        let mut root_r3 = root_r1;
+        root_r3[0] ^= 0xFF;
+        assert_ne!(root_r1, root_r3);
+
+        let binding = make_binding(
+            [0u8; 32],
+            root_r3,
+            200,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
+
+        let err = verify_issuer_binding_anchor(&binding, &leaf, leaf_index, &path_r1).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeRootStale.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn anchor_rejects_wrong_old_leaf() {
+        // Old-leaf tampering: the path is correct for the binding's
+        // leaf at index 7, but the caller passed a different
+        // pre-image.  Recompute produces a different root.
+        let real_leaf = [0x42u8; 32];
+        let fake_leaf = [0x99u8; 32];
+        let leaf_index: u64 = 7;
+        let (real_root, path) = make_anchor_fixture(real_leaf, leaf_index, 0xAB, ISSUER_TREE_DEPTH);
+
+        let binding = make_binding(
+            [0u8; 32],
+            real_root,
+            100,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
+        let err =
+            verify_issuer_binding_anchor(&binding, &fake_leaf, leaf_index, &path).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeRootStale.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn anchor_rejects_wrong_leaf_index() {
+        // Index tampering: same leaf + same path, but a different
+        // index flips left/right child selection at some level.  The
+        // bit-pattern of (leaf_index XOR leaf_index') determines
+        // which level diverges; for index=7 vs 6, level-0 bit flips
+        // so the very first hash pair is reordered.
+        let leaf = [0x42u8; 32];
+        let real_index: u64 = 7;
+        let fake_index: u64 = 6;
+        let (real_root, path) = make_anchor_fixture(leaf, real_index, 0xAB, ISSUER_TREE_DEPTH);
+
+        let binding = make_binding(
+            [0u8; 32],
+            real_root,
+            100,
+            ISSUER_TREE_STATUS_ACTIVE,
+            [0u8; 32],
+        );
+        let err = verify_issuer_binding_anchor(&binding, &leaf, fake_index, &path).unwrap_err();
+        let expected: u32 = ErrorCode::IssuerTreeRootStale.into();
+        assert_eq!(anchor_error_code(err), expected);
+    }
+
+    #[test]
+    fn anchor_rejects_corrupted_binding_buffer() {
+        // Bad discriminator or short buffer must never reach the
+        // recompute (defence in depth -- the caller should have
+        // owner-checked, but this is the helper's own boundary).
+        let mut buf = vec![0u8; ISSUER_TREE_BINDING_SIZE - 1];
+        let err = verify_issuer_binding_anchor(&buf, &[0u8; 32], 0, &[]).unwrap_err();
+        let expected: u32 = ErrorCode::InvalidIssuerTreeBinding.into();
+        assert_eq!(anchor_error_code(err), expected);
+
+        // Right size, wrong discriminator.
+        buf = make_binding([0u8; 32], [0u8; 32], 0, 0, [0u8; 32]);
+        buf[0..8].copy_from_slice(b"schmtree");
+        let err = verify_issuer_binding_anchor(&buf, &[0u8; 32], 0, &[]).unwrap_err();
+        let expected: u32 = ErrorCode::InvalidIssuerTreeBinding.into();
+        assert_eq!(anchor_error_code(err), expected);
     }
 }

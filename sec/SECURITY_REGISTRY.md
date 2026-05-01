@@ -36,22 +36,40 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 
 ---
 
-## Summary (post 2026-05-01 e2e green close-out)
+## Summary (post 2026-05-01 audit-synthesis fold-in)
 
 | Severity  | Open | In Progress | Fixed | Verified | Won't Fix | Total |
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 6     | 0        | 0         | 6     |
-| HIGH      | 4    | 0           | 17    | 0        | 0         | 21    |
-| MEDIUM    | 11   | 0           | 8     | 0        | 0         | 19    |
-| LOW       | 4    | 0           | 5     | 0        | 0         | 9     |
+| HIGH      | 4    | 0           | 19    | 0        | 0         | 23    |
+| MEDIUM    | 13   | 0           | 9     | 0        | 0         | 22    |
+| LOW       | 4    | 0           | 6     | 0        | 0         | 10    |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 23   | 0           | 38    | 0        | 0         | 61    |
+| **Total** | 25   | 0           | 42    | 0        | 0         | 67    |
 
-Delta vs prior summary (2026-05-01): nine P0/P1 audit findings closed
-(SEC-054/058/059/061/062/063/064/066 + LB5 / SEC-067) plus the
-sibling closures `update_tree_root` / `update_global_root` covered
-under the SEC-059 architectural fix.  E2E first reached `verified: true`
-on 2026-05-01 -- tx
+Delta vs prior summary (2026-05-01 morning): folded the 2026-05-01
+audit synthesis (NF-01..NF-07).  Closed in this session:
+- SOLID-SEC-072 (M10, MEDIUM) -- removed duplicate PUBLIC_INPUTS in
+  `ts-sdk/packages/sdk/src/config.ts`; canonical source is
+  `NR_PUBLIC_INPUTS` in `@solid-protocol/verifier`.
+- SOLID-SEC-077 (NF-01 + NF-04, HIGH) -- pre-CPI binding anchor in
+  `revoke_issuer_atomic` + `request_withdrawal_atomic`; rejects
+  stale paths with `IssuerTreeRootStale` before SPL AC CPI fires.
+- SOLID-SEC-078 (NF-02, HIGH) -- `finalize_verification_key` call
+  + post-condition assert in `scripts/initialize.ts`; SOLID-SEC-006
+  Part 1 freeze-gate is now structurally enforced on every deploy.
+- SOLID-SEC-079 (NF-07, LOW) -- slot strict-monotonicity in
+  `write_issuer_tree_binding_root`; folds same-slot race surface.
+
+Opened (no-code yet, captured for the next batch):
+- SOLID-SEC-080 (NF-03, MEDIUM) -- mirror SEC-077 anchor on
+  schema-registry `update_tree_root` / `update_global_root`.
+- SOLID-SEC-081 (NF-05, MEDIUM) -- extend `check_program_ids.py` to
+  TS pubkey literals.
+- SOLID-SEC-082 (NF-06, LOW) -- split `cooldown_ends_at` into
+  `cooldown_ends_at` + `dispute_window_ends_at` (layout migration).
+
+E2E first reached `verified: true` on 2026-05-01 -- tx
 `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
 Per-instruction CU baselines at `docs/CU_BUDGET.md` +
 `tests/cu_baselines.json`.
@@ -118,7 +136,7 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | SOLID-SEC-043   | MEDIUM   | Open   | `IssuerTreeBinding.operator` is a single signer; no multisig or DAO gate on issuer-tree root rotation |
 | SOLID-SEC-044   | LOW      | Fixed  | Cooldown status does not replace the issuer's tree leaf (proofs from Cooldown issuers still verify) |
 | SOLID-SEC-045   | MEDIUM   | Fixed  | Atomic ixs do not update `IssuerTreeBinding.current_root` in the same ix; folded into SEC-059 atomic Poseidon-recompute fix on 2026-05-01 (LB4 closure -- the binding stores the Poseidon root the circuit consumes, not SPL AC's Keccak root) |
-| SOLID-SEC-046   | MEDIUM   | Fixed  | No CU-budget regression gate on `verify_batch_proof`.  Closed 2026-05-01: `docs/CU_BUDGET.md` + `tests/cu_baselines.json` pin every ix's measured CU; `.github/workflows/ci.yml::cu_regression` fails on `consumed > baseline * 1.10` |
+| SOLID-SEC-046   | MEDIUM   | Fixed  | No CU-budget regression gate on `verify_batch_proof`.  Closed 2026-05-01: `docs/CU_BUDGET.md` + `tests/cu_baselines.json` pin every ix's measured CU; `.github/workflows/ci.yml -> e2e_localnet` job has a "SOLID-SEC-046 CU regression gate" step appended after `npm run e2e` that runs `scripts/measure_cu.py`, parses per-tx `consumed N of M` from `solana confirm -v`, and fails on `consumed > baseline * 1.10` |
 | SOLID-SEC-047   | MEDIUM   | Fixed  | `verify_batch_proof` Anchor wrapper exceeds BPF 4 KB per-frame stack by ~456 B (structural; surfaced post Poseidon refactor) |
 | SOLID-SEC-048   | HIGH     | Open (interim bypass live) | `register_issuer` BJJ prime-order subgroup check exceeds 1.4M CU per-tx ceiling on BPF; localnet/devnet builds gate the check behind `sec007-skip-onchain` Cargo feature -- mainnet-blocking until a CU-affordable on-chain replacement ships |
 | SOLID-SEC-049   | HIGH     | Fixed  | `SPL_AC_REPLACE_LEAF_DISCRIMINATOR` mismatched `sha256("global:replace_leaf")[..8]` -- both atomic ixs would have failed at the SPL AC CPI with `InstructionFallbackNotFound`; latent because no integration test had ever exercised revoke / cooldown |
@@ -135,6 +153,13 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | SOLID-SEC-064   | HIGH     | Fixed  | `verifyOnChain` v0/ALT path returned `verified: true` on a reverted tx (skipped `confirmTransaction(...).value.err`).  Closed 2026-04-30: handler now checks `value.err` and throws on revert.  Caches one blockhash; defense-in-depth post-fetches the nullifier PDA after confirm.  Regression gate: e2e replay test triggers the err-check path. |
 | SOLID-SEC-066   | HIGH     | Fixed  | `SOLID_DEBUG_CIRCUIT_INPUT=1` leaked the holder master BJJ key + salt + signature scalars to a world-readable `/tmp/solid-circuit-input.json`.  Closed 2026-04-30: default mode redacts every secret-bearing field; full dump only behind `SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS=DANGER_I_UNDERSTAND`, written to a `mkdtempSync`-allocated 0700 dir + 0600 file.  Regression gate: 24 unit tests in `tests/unit/holder_debug_redaction.test.ts`. |
 | SOLID-SEC-067   | CRITICAL | Fixed  | LB5 (NEW 2026-04-30): G2 byte-order mismatch.  snarkjs JSON dumps each F_q² element of a G2 point in `(c0_real, c1_imag)` order; Solana's `alt_bn128` syscall (which `groth16-solana 0.2.0` wraps for verify) decodes each F_q² element in `(imag, real)` order.  Pre-fix `serializeG2` (initialize.ts) and `formatProofForSolana` (holder/index.ts) used snarkjs ordering -- every G2 component (VK β/γ/δ + proof B) was on the wrong field-extension basis; on-chain Groth16 pairing always rejected.  Confirmed against `groth16-solana`'s own canonical reference parser `parse_vk_to_rust.js` (lines 33-37: `Array.from(le(c0)).concat(Array.from(le(c1))).reverse()` → after the trailing `.reverse()` the layout is `[c1_BE, c0_BE]` = imag-first).  Latent because no proof had reached on-chain verify before SOLID-SEC-054 / B13 Option 2 closed the wire-size cap.  Fix lands in `scripts/initialize.ts::serializeG2` + `ts-sdk/packages/holder/src/index.ts::formatProofForSolana`.  Regression gate: new host integration test `programs/zk-verifier/src/lib.rs::tests::groth16_host_verify_round_trip` consumes a captured `tests/fixtures/groth16_e2e_proof.json` and runs `verify_groth16_proof` on host -- if the swap is right, host verify passes byte-for-byte the same as on-chain. |
+| SOLID-SEC-072   | MEDIUM   | Fixed  | M10 (closed 2026-05-01): `ts-sdk/packages/sdk/src/config.ts` exposed a duplicate `CIRCUIT_METADATA.BATCH_QUERY.PUBLIC_INPUTS = 31` that pre-dated ADR-0014's grow-to-32.  Two parallel sources of truth (this constant vs `NR_PUBLIC_INPUTS = 32` in `@solid-protocol/verifier`) was a drift surface; closure removed the duplicate and pointed callers at the verifier package's canonical export.  Regression gate: M-batch host tests + e2e green confirms no consumer was relying on the stale 31. |
+| SOLID-SEC-077   | HIGH     | Fixed  | NF-01 + NF-04 (audit 2026-05-01): atomic ixs (`revoke_issuer_atomic`, `request_withdrawal_atomic`) accepted a caller-supplied Poseidon path against a stale binding root.  SPL AC's concurrent change-log (default 64 entries) admits proofs against any in-buffer root, so an attacker (or a stale-state operator) could submit a path consistent with old root R1 while binding was at R3; SPL AC's `replace_leaf` would succeed (R1 still in buffer); the post-CPI Poseidon recompute would produce R3' from R1's perspective and write it into the binding -- regressing it from R3 to a state that doesn't reflect the live tree, observable as cross-tx race and stale-root replay (NF-04 same root cause).  Closed 2026-05-01: new `verify_issuer_binding_anchor` helper recomputes Poseidon-Merkle root from `(old_leaf, leaf_index, caller_path)` and asserts equality with `binding.current_root` BEFORE the SPL AC CPI fires.  Mismatched paths fail with `IssuerTreeRootStale` and roll back the entire tx.  Soundness contract: Poseidon collision-resistance + caller's inability to forge a path matching the binding's root without knowing every other leaf at sibling positions.  Cost: ~50K CU per ix at depth-16.  Regression gate: 4 new host tests in `programs/issuer-registry/src/lib.rs::tests::anchor_*` covering (a) recomputed_root_matching_binding accepts, (b) stale_path_against_advanced_binding rejects, (c) wrong_old_leaf rejects, (d) wrong_leaf_index rejects. |
+| SOLID-SEC-078   | HIGH     | Fixed  | NF-02 (audit 2026-05-01): `scripts/initialize.ts` chunk-upload loop ended without calling `finalize_verification_key`, so every deployment shipped with `verifier_config.vk_finalized = false`.  In that state the SOLID-SEC-006 freeze-gate (which only fires when `vk_finalized == true`) was dead code: the authority could replace the VK by re-uploading chunk 0, bypassing the 48h `request_vk_rotation` timelock entirely.  Closed 2026-05-01: post-loop `finalizeVerificationKey()` call + post-condition assert (`cfg.vk_finalized == true`); aborts with a clear error if the post-condition fails.  Idempotent re-run path now finalizes-if-pending so partially-initialized validators heal on next run.  Regression gates: post-condition assert in `initialize.ts` (structural -- any future change that drops the call fails `npm run e2e`); new `scripts/verify_freeze_gate.ts` operator-runbook tool that asserts `vk_finalized == true` and proves the gate is active by attempting a forbidden chunk-0 re-upload (must reject with AnchorError 6018 / `VerificationKeyFinalized`). |
+| SOLID-SEC-079   | LOW      | Fixed  | NF-07 (audit 2026-05-01): `write_issuer_tree_binding_root` (the shared write helper used by the three atomic ixs) did not enforce slot strict-monotonicity, so two ixs landing in the same slot would both succeed and the second would silently clobber the first.  `update_issuer_tree_root` had this guard at lib.rs:1274 but the shared helper did not -- asymmetric.  Closed 2026-05-01: helper now reads `prev_slot` from `binding_data[72..80]` and asserts `slot > prev_slot` before writing, mirroring `update_issuer_tree_root`'s gate and folding the same-slot race surface.  Regression gates: 2 new host tests `write_binding_root_rejects_same_slot_replay_nf07` + `write_binding_root_rejects_slot_regression_nf07`. |
+| SOLID-SEC-080   | MEDIUM   | Open   | NF-03 (audit 2026-05-01): `programs/schema-registry/src/lib.rs` `update_tree_root` and `update_global_root` got the on-chain Poseidon-recompute integrity gate during the SOLID-SEC-059 closure, but the *pre-CPI binding anchor* equivalent for SchemaTreeBinding / GlobalStateBinding has not landed -- a buggy off-chain pipeline that produces a path-and-leaf pair consistent with the new_root but inconsistent with the *current* binding root would still corrupt the binding.  Mirror the SEC-077 fix: read current_root first, recompute (old_leaf, leaf_index, path) against it, reject if mismatch.  Cost: +50-80K CU per update.  Pairs with SEC-077 closure. |
+| SOLID-SEC-081   | MEDIUM   | Open   | NF-05 (audit 2026-05-01): `scripts/check_program_ids.py` validates Anchor.toml + `programs/*/src/lib.rs::declare_id!` + `deployments/*.json` but does NOT parse TS files for hand-rolled program-id literals.  Drift in `ts-sdk/packages/*/src/programIds.ts` (or any file that hard-codes a base58 pubkey) breaks verify silently in CI.  Fix: extend the script to grep TS for base58 pubkey literals; allowlist exactly which TS files may name program IDs (`programIds.ts` only); add `tests/integration/test_program_id_typescript_drift.py`. |
+| SOLID-SEC-082   | LOW      | Open   | NF-06 (audit 2026-05-01): `IssuerAccount.cooldown_ends_at` is reused across two semantic states -- "Cooldown ends at this slot" (when status == Cooldown) and "DAO dispute window ends at this slot" (when status == Revoked, post SOLID-SEC-061).  Future refactors that touch the field without re-reading the status guard will corrupt one flow.  Fix: split into `cooldown_ends_at` + `dispute_window_ends_at` (+8 bytes to `IssuerAccount::SPACE`); each handler asserts only its field.  Layout migration required so this batches with the next on-chain layout change. |
 
 ---
 

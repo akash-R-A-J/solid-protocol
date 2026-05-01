@@ -4,16 +4,18 @@
 > post-Phase-3-Impl-1..4) through devnet v1, pre-mainnet hardening,
 > and ecosystem launch.
 >
-> **Last refreshed: 2026-04-28 (post circuit/ZK audit + e2e bring-
-> up).**  Three SEC findings closed in code (SOLID-SEC-045,
-> SOLID-SEC-049 NEW, SOLID-SEC-050 NEW) plus two cross-layer fixes
-> (SOLID-SEC-052 NEW BPF coord-form + WASM bridge gate;
-> SOLID-SEC-053 NEW EdDSA cofactor-8).  The e2e pipeline now
-> reaches `npm run prove` and successfully generates a Groth16
-> proof; live edge has moved to **B13** (`verify_batch_proof` ix
-> data exceeds Solana's 1232-byte legacy-tx wire size).  See
-> `docs/E2E_BLOCKERS.md` B13 for the architectural-blocker
-> remediation analysis.
+> **Last refreshed: 2026-05-01 (post NF-batch close + clean e2e green).**
+> Live edge reached `verified: true` end-to-end on localnet (B13 / SEC-054
+> closed via Option 2 buffer-account chunked upload; nine P0/P1 audit
+> findings closed 2026-04-30; NF-batch closed 2026-05-01).  Reference
+> green tx: `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+> Three Phase-3 SEC findings closed in code earlier in the arc
+> (SOLID-SEC-045, SOLID-SEC-049 NEW, SOLID-SEC-050 NEW) plus two cross-layer
+> fixes (SOLID-SEC-052 NEW BPF coord-form + WASM bridge gate;
+> SOLID-SEC-053 NEW EdDSA cofactor-8).  Phase 4 P0 forward scope is now
+> SEC-010 (cross-language vectors), integration tests 02..11, SEC-080/081
+> (mirror of SEC-077 on schema-registry + TS program-id drift), and
+> SEC-048 closure (mainnet-blocking).
 
 This document is the canonical forward plan. Two related docs are
 deliberately not duplicated here:
@@ -125,22 +127,19 @@ Section 4, Days 1..10.
                    `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`.
                    This was the gate that unlocked `npm run prove`'s
                    Groth16 witness; e2e is now at B13.
-  - **B13 (NEW live edge, 2026-04-28).**  `verify_batch_proof` ix
-                   data is 1324 bytes which exceeds Solana's
-                   1232-byte legacy-tx wire size.  Architectural
-                   blocker for the on-chain submission half of
-                   `npm run prove`.  Remediation analysis at
-                   `docs/E2E_BLOCKERS.md` B13 (recommended path:
-                   reconstruct redundant public inputs on-chain
-                   from accounts already passed to the ix; saves
-                   384 bytes; total shrinks to 940 bytes).
-                   Promotes to **SOLID-SEC-054** once the
-                   remediation choice is sanctioned.
-  - SOLID-SEC-046  CI CU-budget regression gate on `verify_batch_proof`
-                   plus `docs/CU_BUDGET.md` baseline. Half-day fix.
-                   **Open** (not landed this session; pairs with
-                   B13's CU envelope review since reconstructing
-                   public inputs adds CU).
+  - **B13 / SOLID-SEC-054 (CLOSED 2026-05-01).**  `verify_batch_proof`
+                   ix data was 1324 bytes (exceeds Solana's 1232-byte
+                   legacy-tx wire size).  Resolved via Option 2:
+                   buffer-account chunked upload (`init_proof_buffer`
+                   + `upload_proof_chunk` x N + `verify_batch_proof_v2`).
+                   E2E green; reference tx `tVYvkyTt55r…AmpoMmCX`.
+                   See `docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1 for the
+                   rejected Option 1 (on-chain reconstruction; came in
+                   37 bytes over after cuIx).
+  - SOLID-SEC-046  (CLOSED 2026-05-01).  CI CU-budget regression gate
+                   appended to `e2e_localnet` job in `.github/workflows/ci.yml`.
+                   Per-instruction baselines at `tests/cu_baselines.json` +
+                   `docs/CU_BUDGET.md`; fails on `consumed > baseline * 1.10`.
   - SOLID-SEC-010  Cross-language vectors expanded from 3/10 to 10/10
                    primitives. Required CI gate. **Open** (Day 1).
   - SOLID-SEC-051  **New (2026-04-28; LOW; deferred).**  All-padding

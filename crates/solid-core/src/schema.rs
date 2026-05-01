@@ -480,7 +480,10 @@ mod tests {
         let names_perm = vec!["country".into(), "age".into()];
         let h_perm =
             compute_schema_hash_from_parts("schema_v1", 1, &names_perm, "Identity").unwrap();
-        assert_ne!(h_a, h_perm, "field-name permutation must change schema_hash");
+        assert_ne!(
+            h_a, h_perm,
+            "field-name permutation must change schema_hash"
+        );
     }
 
     /// Determinism + sensitivity to single-field changes.

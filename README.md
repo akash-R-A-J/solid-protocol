@@ -24,19 +24,24 @@ INPUT_INDEX = 10`, `VERIFIER_ADDRESS_INPUT_INDEX = 29`,
 Phase 3 progress at the time of this release: SEC-007 (BJJ
 subgroup check), SEC-006 Part 1 (VK freeze-gate + 48-hour rotation
 timelock, ADR-0015), SEC-041 (content-addressed VK artifact via
-`SOLID_VK_SHA256` gate), and SEC-044 (Cooldown-is-verify-negative
-amendment to ADR-0014: atomic `request_withdrawal_atomic`) have
-landed; 24 of 46 registry findings are now closed (the v0.6.1
-audit on 2026-04-25 opened two new MEDIUMs, SEC-045 and SEC-046).
-Open residuals: SEC-010 (cross-language vectors 3/10), SEC-012
-(multi-party trusted setup, mainnet blocker), SEC-043
-(`IssuerTreeBinding.operator` single signer), SEC-045 (atomic
-handlers don't update `IssuerTreeBinding.current_root` in-ix),
-SEC-046 (no CU-budget regression gate on `verify_batch_proof`),
-plus 9 other MEDIUMs, 4 LOWs, 4 INFOs.  SEC-006 Part 2
-(circuit-bound `vk_generation`) is deferred behind the next
-trusted-setup cycle.  See `sec/SECURITY_REGISTRY.md` for the full
-backlog.
+`SOLID_VK_SHA256` gate), SEC-044 (Cooldown-is-verify-negative
+amendment to ADR-0014: atomic `request_withdrawal_atomic`),
+SEC-045 (atomic handlers update `IssuerTreeBinding.current_root`
+in-ix; folded into SEC-059's Poseidon-recompute fix), SEC-046
+(CU regression gate live in CI; baselines at `tests/cu_baselines.json`),
+SEC-054 / B13 (legacy-tx overflow → buffer-account chunked upload:
+`init_proof_buffer` + `upload_proof_chunk` + `verify_batch_proof_v2`),
+SEC-058/059/061-064/066/067 (the 9 P0/P1 audit findings closed
+2026-04-30), and the NF-batch (SEC-072/077/078/079, closed 2026-05-01)
+have all landed.  E2E reaches `verified: true` end-to-end on localnet.
+42 of 67 registry findings are now closed.  Open residuals: SEC-010
+(cross-language vectors 3/10 → 10/10), SEC-012 (multi-party trusted
+setup, mainnet blocker), SEC-043 (`IssuerTreeBinding.operator` single
+signer), SEC-048 (BJJ subgroup CU on BPF; interim bypass live), SEC-080
+(NF-03; schema-registry pre-CPI binding anchor mirror), plus 19 other
+MEDIUM/LOW/INFO items.  SEC-006 Part 2 (circuit-bound `vk_generation`)
+is deferred behind the next trusted-setup cycle.  See
+`sec/SECURITY_REGISTRY.md` for the full backlog.
 
 ## Architecture
 

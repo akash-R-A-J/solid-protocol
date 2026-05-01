@@ -470,8 +470,7 @@ pub mod zk_verifier {
         // bytes at `public_inputs[i*32..(i+1)*32]` are destined for.
         for (wire_idx, &circuit_slot) in WIRE_INPUT_SLOTS.iter().enumerate() {
             let start = wire_idx * 32;
-            full_inputs[circuit_slot]
-                .copy_from_slice(&public_inputs[start..start + 32]);
+            full_inputs[circuit_slot].copy_from_slice(&public_inputs[start..start + 32]);
         }
 
         // (1b) Reconstruct `globalRoot` (slot 1) from the
@@ -513,13 +512,13 @@ pub mod zk_verifier {
             ErrorCode::InvalidIssuerTreeBinding
         );
         let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
-        let mut issuer_root_le = cpi_helpers::extract_active_issuer_tree_root(
-            &issuer_binding_data,
-        )
-        .map_err(|e| match e {
-            cpi_helpers::LightError::IssuerTreeBindingFrozen => ErrorCode::IssuerTreeBindingFrozen,
-            _ => ErrorCode::InvalidIssuerTreeBinding,
-        })?;
+        let mut issuer_root_le = cpi_helpers::extract_active_issuer_tree_root(&issuer_binding_data)
+            .map_err(|e| match e {
+                cpi_helpers::LightError::IssuerTreeBindingFrozen => {
+                    ErrorCode::IssuerTreeBindingFrozen
+                }
+                _ => ErrorCode::InvalidIssuerTreeBinding,
+            })?;
         issuer_root_le.reverse();
         full_inputs[ISSUER_TREE_ROOT_INPUT_INDEX] = issuer_root_le;
         drop(issuer_binding_data);
@@ -727,7 +726,10 @@ pub mod zk_verifier {
         let end = off
             .checked_add(bytes.len())
             .ok_or(ErrorCode::InvalidProofChunk)?;
-        require!(end <= PROOF_BUFFER_PAYLOAD_SIZE, ErrorCode::InvalidProofChunk);
+        require!(
+            end <= PROOF_BUFFER_PAYLOAD_SIZE,
+            ErrorCode::InvalidProofChunk
+        );
         buffer.data[off..end].copy_from_slice(&bytes);
         if (end as u32) > buffer.bytes_written {
             buffer.bytes_written = end as u32;
@@ -786,10 +788,7 @@ pub mod zk_verifier {
         // the caller's seed does not match the buffered nullifier; a
         // mismatch otherwise produces a phantom nullifier PDA that
         // doesn't correspond to the verified proof.
-        require!(
-            nullifier_seed == nullifier,
-            ErrorCode::NullifierMismatch
-        );
+        require!(nullifier_seed == nullifier, ErrorCode::NullifierMismatch);
 
         // Reconstruct the full 32-slot public-input array (same logic
         // as verify_batch_proof; see that handler for the byte-order
@@ -821,14 +820,13 @@ pub mod zk_verifier {
             ErrorCode::InvalidIssuerTreeBinding
         );
         let issuer_binding_data = ctx.accounts.issuer_tree_binding.try_borrow_data()?;
-        let mut issuer_root_le =
-            cpi_helpers::extract_active_issuer_tree_root(&issuer_binding_data)
-                .map_err(|e| match e {
-                    cpi_helpers::LightError::IssuerTreeBindingFrozen => {
-                        ErrorCode::IssuerTreeBindingFrozen
-                    }
-                    _ => ErrorCode::InvalidIssuerTreeBinding,
-                })?;
+        let mut issuer_root_le = cpi_helpers::extract_active_issuer_tree_root(&issuer_binding_data)
+            .map_err(|e| match e {
+                cpi_helpers::LightError::IssuerTreeBindingFrozen => {
+                    ErrorCode::IssuerTreeBindingFrozen
+                }
+                _ => ErrorCode::InvalidIssuerTreeBinding,
+            })?;
         issuer_root_le.reverse();
         full_inputs[ISSUER_TREE_ROOT_INPUT_INDEX] = issuer_root_le;
         drop(issuer_binding_data);
@@ -2098,8 +2096,14 @@ mod tests {
         buf[off2..off2 + bytes2.len()].copy_from_slice(bytes2);
         hwm = hwm.max(off2 + bytes2.len());
 
-        assert_eq!(hwm, PROOF_BUFFER_PAYLOAD_SIZE, "high-water mark must equal payload");
-        assert_eq!(buf, full, "chunked assembly must be byte-identical to single-shot");
+        assert_eq!(
+            hwm, PROOF_BUFFER_PAYLOAD_SIZE,
+            "high-water mark must equal payload"
+        );
+        assert_eq!(
+            buf, full,
+            "chunked assembly must be byte-identical to single-shot"
+        );
     }
 
     #[test]
@@ -2112,7 +2116,10 @@ mod tests {
         let bytes1_len: usize = 500;
         hwm = hwm.max(off1 + bytes1_len);
         // Skip chunk 2 (simulating dropped tx).
-        assert!(hwm < PROOF_BUFFER_PAYLOAD_SIZE, "partial upload must be < payload size");
+        assert!(
+            hwm < PROOF_BUFFER_PAYLOAD_SIZE,
+            "partial upload must be < payload size"
+        );
     }
 
     #[test]
@@ -2128,7 +2135,10 @@ mod tests {
         // usize::MAX), but the subsequent <= PROOF_BUFFER_PAYLOAD_SIZE
         // check (960) would reject.
         let end_val = end.expect("usize add doesn't overflow");
-        assert!(end_val > PROOF_BUFFER_PAYLOAD_SIZE, "huge offset must be out of bounds");
+        assert!(
+            end_val > PROOF_BUFFER_PAYLOAD_SIZE,
+            "huge offset must be out of bounds"
+        );
     }
 
     // ─── Groth16 host round-trip (LB5 / SOLID-SEC-067 regression gate) ───
@@ -2204,8 +2214,8 @@ mod tests {
     fn groth16_host_verify_round_trip() {
         // Locate fixture relative to the workspace root.  Tests run from
         // the crate dir (`programs/zk-verifier`), so we walk up two levels.
-        let fixture_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/groth16_e2e_proof.json");
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/groth16_e2e_proof.json");
         if !fixture_path.exists() {
             eprintln!(
                 "[skipped] groth16_host_verify_round_trip: fixture {} missing.\n\
@@ -2214,10 +2224,9 @@ mod tests {
             );
             return;
         }
-        let fixture: JsonValue = serde_json::from_str(
-            &std::fs::read_to_string(&fixture_path).expect("read fixture"),
-        )
-        .expect("parse fixture json");
+        let fixture: JsonValue =
+            serde_json::from_str(&std::fs::read_to_string(&fixture_path).expect("read fixture"))
+                .expect("parse fixture json");
 
         let vk_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../")

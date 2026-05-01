@@ -612,7 +612,8 @@ has been updated to reflect the post-fix state.
   S = r + h * 8 * sk; verify mirrors with rhs = R8 + h * 8 * A.
   WASM bridge re-emitted; TS SDK rebuilt; `npm run prove`
   generates the witness in 5.09s and produces a valid Groth16
-  proof.  Live edge moved to B13 (legacy-tx wire size).
+  proof.  Live edge subsequently moved to B13 (legacy-tx wire size),
+  which itself closed 2026-05-01 via SOLID-SEC-054 / Option 2.
 - **Original symptom (pre-fix).**  `npm run prove` reaches step
   `[3/4] Generating Groth16 batch proof...` and the
   `circom_runtime` witness calculator throws:
@@ -679,15 +680,27 @@ has been updated to reflect the post-fix state.
      and compare to the circuit-recomputed value (would need a
      witness inspection or a focused Circom test).
   3. Fix at root cause; no workarounds.
-- **E2E impact.**  Yes -- this is the live edge.  Until B12 is
-  closed, `npm run e2e` cannot reach `verified: true`.
+- **E2E impact (historical).**  Was the live edge from
+  2026-04-26 through 2026-04-28; closed via SOLID-SEC-053 cofactor-8
+  fix.  Live edge then moved to B13 (closed 2026-05-01 as SEC-054).
+  Current state: `npm run e2e` reaches `verified: true`.
 
-### B13. `verify_batch_proof` ix data exceeds 1232-byte legacy-tx wire size (live edge)
+### B13. `verify_batch_proof` ix data exceeds 1232-byte legacy-tx wire size
 
-- **Status:** Open as of 2026-04-28.  Architectural blocker for
-  the on-chain submission half of `npm run prove`.  The Groth16
-  proof itself generates fine post-SEC-053 (witness gen 5.09s on
-  localnet); the failure is in `Buffer.encode` of the
+- **Status:** **CLOSED 2026-05-01** as `SOLID-SEC-054` via Option 2
+  (buffer-account chunked upload).  New ix trio in zk-verifier:
+  `init_proof_buffer`, `upload_proof_chunk`, `verify_batch_proof_v2`.
+  E2E reaches `verified: true` end-to-end on localnet; reference green
+  tx `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
+  See `docs/REMEDIATION_OPTIONS_ARCHIVE.md` §1 for the rejected Option 1
+  (on-chain reconstruction; came in 37 bytes over the cap once cuIx was
+  prepended) and `plan/SESSION_LOG_2026-04-29.md` / `plan/SESSION_LOG_2026-04-30.md`
+  for the full closure receipts.
+
+<details>
+<summary>Historical analysis (preserved for the architectural record)</summary>
+
+The original failure shape was in `Buffer.encode` of the
   `verify_batch_proof` ix:
   ```
   RangeError [ERR_OUT_OF_RANGE]: The value of "offset" is out of
@@ -856,9 +869,9 @@ has been updated to reflect the post-fix state.
   the extract helpers, and the ALT helper all carry forward into
   the buffer-account version.  Only the `verify_batch_proof`
   direct-tx submission path is replaced.
-- **Tracking.**  No security-registry entry yet (this is a
-  protocol-shape issue, not a soundness gap).  Will register
-  as `SOLID-SEC-054` once the remediation choice is sanctioned.
+- **Tracking.**  Registered as `SOLID-SEC-054`; status **Fixed**
+  2026-05-01 via Option 2 (buffer-account chunked upload).
+</details>
 
 ### B10. `stake_tokens` access violation post-CPI (handler returns, runtime crashes on writeback)
 
@@ -1163,16 +1176,24 @@ has been updated to reflect the post-fix state.
   ```
   pkill -f solana-test-validator 2>/dev/null; sleep 2
   rm -rf test-ledger
-  export COPYFILE_DISABLE=1
-  solana-test-validator --reset &
+  bash scripts/sync_program_keypairs.sh --reset-state
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+    solana-test-validator --reset \
+      --clone-upgradeable-program cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK \
+      --clone-upgradeable-program noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV \
+      --url https://api.devnet.solana.com &
   sleep 5
   solana config set --url localhost
   solana airdrop 10
+  anchor build -- --features sec007-skip-onchain
   anchor deploy --provider.cluster localnet
+  export SOLID_VOTING_PERIOD_SECONDS=120
   npm run e2e
   ```
 - **Expected exit:** `npm run e2e` tail prints `verified: true` AND
   `ok (replay rejected by nullifier PDA init constraint)`. Exit 0.
+  **Achieved 2026-05-01** -- reference tx
+  `tVYvkyTt55r8RCf3LhVMTmBrKzr5HFtDJcwKM5tFHXerUaxmQSMsZQoKLR8HXbDMu2gYBjNwxC9gaSpdA1oMmCX`.
 - **VK pin contract (SEC-041):** `circuits/build/verification_key.sha256`
   was regenerated this session to
   `debca4c083d0cd4091339367877b199e87708d0c3b7467b0c85115de2f74a15a`.
@@ -1320,8 +1341,10 @@ has been updated to reflect the post-fix state.
     bypass build is the one running, and a forward telemetry signal.
 
 The first failure point names exactly which blocker is still live.
-As of 2026-04-26 ~02:15 IST, all steps through 17 are green; the
-live edge is now step 18 (`npm run issue` / `npm run prove`).
+As of 2026-05-01, all steps through 19 are green: `npm run e2e`
+reaches `verified: true` + replay rejection.  No live build/test
+blocker remains; remaining open work is tracked in
+`sec/SECURITY_REGISTRY.md` and `docs/FORWARD_ROADMAP.md`.
 
 ---
 
