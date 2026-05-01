@@ -291,3 +291,135 @@ export async function batchIssueCredentials(
   }
   return results;
 }
+
+// ─── SEC-048 Phase E.4: subgroup-proof generation ─────────────────────────
+//
+// `register_issuer` (post Phase E.3) takes a 256-byte
+// `subgroup_proof: Vec<u8>` argument that is a Groth16 proof of the
+// prime-order subgroup invariant for the supplied BJJ pubkey.  This
+// helper produces those bytes from a candidate pubkey + the subgroup
+// circuit's WASM/zkey artifacts.
+//
+// The returned bytes are in the SDK-encoded form expected by the
+// on-chain handler (LB5 / SOLID-SEC-067 G2 (imag, real) swap applied;
+// proof_a NOT pre-negated -- on-chain
+// `solid_light::groth16::verify_groth16_proof::<2>` negates internally).
+
+/**
+ * Generate a Groth16 proof that `(pubKeyX, pubKeyY)` is in the BJJ
+ * prime-order subgroup, suitable for passing to `register_issuer` as
+ * the `subgroup_proof` argument (256-byte SDK-encoded form).
+ *
+ * Inputs:
+ *   - `pubKeyX`, `pubKeyY`: 32-byte LE buffers (circomlib-native form)
+ *     of the candidate BJJ pubkey.  These are the same bytes that
+ *     `register_issuer` takes as `bjj_pub_key_x` / `_y`.
+ *   - `wasmBytes`, `zkeyBytes`: the subgroup circuit's `.wasm` and
+ *     `.zkey` artifacts, integrity-verified by the caller (see
+ *     `SUBGROUP_WASM_PIN` / `SUBGROUP_ZKEY_PIN` in
+ *     `@solid-protocol/sdk`).
+ *
+ * Returns the 256-byte serialized proof (`proofA[64] || proofB[128] ||
+ * proofC[64]`) plus the snarkjs `publicSignals` for caller-side
+ * sanity-checking against the input pubkey.
+ *
+ * Throws if snarkjs witness generation rejects the input (which
+ * happens for off-curve points: the in-circuit `BabyCheck` is the
+ * first constraint).  The caller can use this as a UX-grade
+ * pre-submit gate; the load-bearing soundness check is the on-chain
+ * Groth16 verify.
+ */
+export async function generateSubgroupProof(
+  pubKeyX: Uint8Array,
+  pubKeyY: Uint8Array,
+  wasmBytes: Uint8Array,
+  zkeyBytes: Uint8Array,
+): Promise<{ proofBytes: Uint8Array; publicSignals: [string, string] }> {
+  if (pubKeyX.length !== 32) {
+    throw new Error(
+      `generateSubgroupProof: pubKeyX must be 32 bytes (got ${pubKeyX.length})`,
+    );
+  }
+  if (pubKeyY.length !== 32) {
+    throw new Error(
+      `generateSubgroupProof: pubKeyY must be 32 bytes (got ${pubKeyY.length})`,
+    );
+  }
+
+  // Convert LE bytes -> decimal string for snarkjs witness input.
+  // BabyJubJub Ax / Ay are field elements in `Fq` (BN254 base
+  // prime), so the LE byte-encoding directly decodes to the integer
+  // value the circuit expects (no mod-reduction necessary -- callers
+  // upstream MUST gate via `is_canonical_bn254_le`, which
+  // `register_issuer`'s SOLID-SEC-062 check enforces on-chain).
+  const ax = leBytesToDecimal(pubKeyX);
+  const ay = leBytesToDecimal(pubKeyY);
+
+  // @ts-ignore -- snarkjs doesn't ship perfect types; same pattern as
+  // `@solid-protocol/holder`'s `generateBatchProof` import.
+  const snarkjs = await import('snarkjs');
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    { Ax: ax, Ay: ay },
+    wasmBytes,
+    zkeyBytes,
+  );
+
+  if (publicSignals.length !== 2) {
+    throw new Error(
+      `generateSubgroupProof: subgroup circuit produced ${publicSignals.length} public ` +
+        `signals; expected exactly 2 (Ax, Ay).`,
+    );
+  }
+
+  // Encode proof for groth16-solana on-chain verify.  Mirrors holder
+  // SDK's `formatProofForSolana`: G2 (real, imag) -> (imag, real)
+  // swap (LB5 / SOLID-SEC-067); proof_a NOT pre-negated (the
+  // on-chain helper negates internally).
+  const proofA = new Uint8Array(64);
+  proofA.set(bigintDecToBe32(proof.pi_a[0]), 0);
+  proofA.set(bigintDecToBe32(proof.pi_a[1]), 32);
+
+  const proofB = new Uint8Array(128);
+  proofB.set(bigintDecToBe32(proof.pi_b[0][1]), 0); // x_imag
+  proofB.set(bigintDecToBe32(proof.pi_b[0][0]), 32); // x_real
+  proofB.set(bigintDecToBe32(proof.pi_b[1][1]), 64); // y_imag
+  proofB.set(bigintDecToBe32(proof.pi_b[1][0]), 96); // y_real
+
+  const proofC = new Uint8Array(64);
+  proofC.set(bigintDecToBe32(proof.pi_c[0]), 0);
+  proofC.set(bigintDecToBe32(proof.pi_c[1]), 32);
+
+  const proofBytes = new Uint8Array(256);
+  proofBytes.set(proofA, 0);
+  proofBytes.set(proofB, 64);
+  proofBytes.set(proofC, 192);
+
+  return {
+    proofBytes,
+    publicSignals: [publicSignals[0] as string, publicSignals[1] as string],
+  };
+}
+
+/** LE 32-byte buffer -> decimal string (BigInt). */
+function leBytesToDecimal(le: Uint8Array): string {
+  let n = 0n;
+  for (let i = le.length - 1; i >= 0; i--) {
+    n = n * 256n + BigInt(le[i]);
+  }
+  return n.toString(10);
+}
+
+/** Decimal string -> 32-byte BE buffer (matches groth16-solana
+ *  expected encoding for public-input field elements). */
+function bigintDecToBe32(dec: string): Uint8Array {
+  const n = BigInt(dec);
+  const hex = n.toString(16).padStart(64, '0');
+  if (hex.length > 64) {
+    throw new Error(`bigintDecToBe32: value exceeds 32 bytes (${dec})`);
+  }
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}

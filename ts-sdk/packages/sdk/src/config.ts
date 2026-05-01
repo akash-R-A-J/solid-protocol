@@ -50,6 +50,15 @@ export const SOLID_CONFIG = {
     BATCH_QUERY_WASM: '' as string,
     BATCH_QUERY_ZKEY: '' as string,
     BATCH_QUERY_VK: '' as string,
+    // SEC-048 Phase E.4 (2026-05-XX): subgroup-circuit artifacts.
+    // Empty by default -- local dev gets pins from the in-tree sidecar
+    // files at `circuits/build/bjj_subgroup_proof.{wasm,zkey}.sha256`
+    // and `circuits/build/bjj_subgroup_verification_key.sha256`.
+    // Tagged releases populate these constants from the canonical
+    // ceremony output.
+    SUBGROUP_WASM: '' as string,
+    SUBGROUP_ZKEY: '' as string,
+    SUBGROUP_VK: '' as string,
   },
 
   // Registry & Governance (Placeholder)

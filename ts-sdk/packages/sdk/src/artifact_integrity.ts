@@ -182,3 +182,26 @@ export const VK_PIN: ArtifactPin = {
   configKey: 'BATCH_QUERY_VK',
   sidecarPath: 'circuits/build/verification_key.sha256',
 };
+
+// ─── SEC-048 Phase E.4 (2026-05-XX): subgroup-circuit pins ─────────────
+// Used by `scripts/initialize.ts` to gate the subgroup-VK upload, and
+// by `scripts/bootstrap_issuer.ts` (via `generateSubgroupProof`) to
+// gate the subgroup wasm + zkey before snarkjs sees them.
+
+export const SUBGROUP_WASM_PIN: ArtifactPin = {
+  envVar: 'SOLID_SUBGROUP_WASM_SHA256',
+  configKey: 'SUBGROUP_WASM',
+  sidecarPath: 'circuits/build/bjj_subgroup_proof.wasm.sha256',
+};
+
+export const SUBGROUP_ZKEY_PIN: ArtifactPin = {
+  envVar: 'SOLID_SUBGROUP_ZKEY_SHA256',
+  configKey: 'SUBGROUP_ZKEY',
+  sidecarPath: 'circuits/build/bjj_subgroup_proof.zkey.sha256',
+};
+
+export const SUBGROUP_VK_PIN: ArtifactPin = {
+  envVar: 'SOLID_SUBGROUP_VK_SHA256',
+  configKey: 'SUBGROUP_VK',
+  sidecarPath: 'circuits/build/bjj_subgroup_verification_key.sha256',
+};

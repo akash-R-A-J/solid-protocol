@@ -224,19 +224,15 @@ export function generateKeypair(): BJJKeypair {
  * Returns true iff (`publicKeyX`, `publicKeyY`) is on the BabyJubJub
  * curve, is not the Edwards neutral element, and lies in the
  * prime-order subgroup (cofactor-8 torsion absent).  The full cost is
- * a host-side `r * P == O` scalar mul (~ms on x86), and this is the
- * canonical pre-submit gate every off-chain `register_issuer` caller
- * MUST run.
+ * a host-side `r * P == O` scalar mul (~ms on x86).
  *
- * Background: the on-chain `register_issuer` instruction in
- * `programs/issuer-registry/src/lib.rs` historically called the
- * matching Rust helper, but on BPF the `r * P == O` scalar mul costs
- * > 1.4M CU (the per-tx ceiling) and could not land.  As of
- * 2026-04-25 the on-chain check is gated behind a `sec007-skip-onchain`
- * Cargo feature on issuer-registry to unblock e2e; the off-chain
- * check (this function) is the load-bearing enforcement point until
- * SEC-048 is closed (see docs/E2E_BLOCKERS.md B9 and
- * sec/SECURITY_REGISTRY.md SEC-048).
+ * Post SEC-048 Phase E (closed 2026-05-XX): this predicate is a
+ * UX/pre-submit early-failure check, NOT the load-bearing soundness
+ * gate.  The on-chain `register_issuer` ix consumes a Groth16 proof
+ * of the same invariant via `solid_light::groth16::verify_groth16_proof::<2>`;
+ * a failing key cannot produce a valid proof, so on-chain verify
+ * rejects.  Use this predicate to fail fast before paying for snarkjs
+ * proof generation + tx submission.
  */
 export function isInPrimeOrderSubgroup(
   publicKeyX: Uint8Array,

@@ -349,6 +349,10 @@ export {
   WASM_PIN,
   ZKEY_PIN,
   VK_PIN,
+  // SEC-048 Phase E.4 (2026-05-XX): subgroup-circuit pins.
+  SUBGROUP_WASM_PIN,
+  SUBGROUP_ZKEY_PIN,
+  SUBGROUP_VK_PIN,
   type ArtifactPin,
   type ArtifactKind,
 } from './artifact_integrity';

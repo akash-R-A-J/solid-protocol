@@ -165,7 +165,7 @@ async function main() {
   //
   // The chosen mint is persisted to the E2E state file so downstream
   // scripts (bootstrap_issuer, etc.) can pick it up without re-creating.
-  console.log('\n[1/7] initialize_registry');
+  console.log('\n[1/8] initialize_registry');
   const [registryPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('registry-config')],
     PROGRAM_PUBKEYS.issuerRegistry,
@@ -269,7 +269,7 @@ async function main() {
   // (name, version, field_count); see CRITs above for the
   // collision-vulnerability that motivated the widening.
   // Cross-language vector coverage tracked in SOLID-SEC-010.
-  console.log('\n[2/7] register_schema');
+  console.log('\n[2/8] register_schema');
   const schemaHash = computeSchemaHash(
     SCHEMA_NAME,
     SCHEMA_VERSION,
@@ -328,7 +328,7 @@ async function main() {
   // SPL AC tree, transfers authority to the
   // `(b"tree-authority", schema_hash)` PDA, and only then calls
   // `initialize_tree_binding` with the real pubkey.
-  console.log('\n[3/7] initialize_tree_binding');
+  console.log('\n[3/8] initialize_tree_binding');
   const [bindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('schema-tree-binding'), Buffer.from(schemaHash)],
     PROGRAM_PUBKEYS.schemaRegistry,
@@ -360,7 +360,7 @@ async function main() {
   }
 
   // 4. GlobalStateBinding.
-  console.log('\n[4/7] initialize_global_binding (singleton)');
+  console.log('\n[4/8] initialize_global_binding (singleton)');
   const [globalBindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('global-binding')],
     PROGRAM_PUBKEYS.schemaRegistry,
@@ -386,7 +386,7 @@ async function main() {
   // `SOLID_ISSUER_TREE_PUBKEY`.  Otherwise we skip and defer to
   // `scripts/backfill_issuer_tree.ts`, which creates the SPL AC tree
   // and calls this ix with the real pubkey.
-  console.log('\n[5/7] initialize_issuer_tree_binding (ADR-0014)');
+  console.log('\n[5/8] initialize_issuer_tree_binding (ADR-0014)');
   const [issuerTreeBindingPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('issuer-tree-binding')],
     PROGRAM_PUBKEYS.issuerRegistry,
@@ -417,7 +417,7 @@ async function main() {
   }
 
   // 5. Verifier config.
-  console.log('\n[6/7] zk_verifier.initialize');
+  console.log('\n[6/8] zk_verifier.initialize');
   const [verifierConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from('verifier-config')],
     PROGRAM_PUBKEYS.zkVerifier,
@@ -435,7 +435,7 @@ async function main() {
   }
 
   // 6. Upload verification key.
-  console.log('\n[7/7] store_verification_key');
+  console.log('\n[7/8] store_verification_key');
   const [vkStoragePda] = PublicKey.findProgramAddressSync(
     [Buffer.from('vk-storage'), verifierConfigPda.toBuffer()],
     PROGRAM_PUBKEYS.zkVerifier,
@@ -510,6 +510,7 @@ async function main() {
   // `vk_finalized==true`.  Result: every deployment ended with the freeze-
   // gate dead code (authority could replace the VK without the 48h timelock
   // by re-uploading chunk 0).  The branch now finalizes before returning.
+  let batchVkAlreadyFinalized = false;
   try {
     const cfg = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
     if (cfg.vkInitialized) {
@@ -527,14 +528,11 @@ async function main() {
       } else {
         console.log('   ok (VK already finalized on this validator; skipping upload)');
       }
-      const stateFile = readStateOrNull('initialize') ?? {};
-      stateFile.vkStorageAddress = vkStoragePda.toBase58();
-      writeState(stateFile);
-      console.log(`\nWrote ${stateFilePath()}`);
-      console.log('Done.');
-      return;
+      // Don't return here -- we still need to upload the subgroup VK
+      // ([8/8] below), which has its own idempotency path.
+      batchVkAlreadyFinalized = true;
     }
-    if (cfg.nextVkChunk && cfg.nextVkChunk > 0) {
+    if (cfg.nextVkChunk && cfg.nextVkChunk > 0 && !cfg.vkInitialized) {
       throw new Error(
         `verifier_config has next_vk_chunk=${cfg.nextVkChunk} but vk_initialized=false; ` +
         `a prior partial upload is on-chain.  Either restart with ` +
@@ -551,59 +549,223 @@ async function main() {
     // Otherwise treat as "freshly created; no chunks yet" -- proceed.
   }
 
-  const vkJson = JSON.parse(vkJsonBytes.toString('utf-8'));
-  const icLen = vkJson.IC.length;
-  const vkBytes = Buffer.concat([
-    Buffer.from(Uint32Array.from([icLen]).buffer),
-    Buffer.from(serializeG1(vkJson.vk_alpha_1)),
-    Buffer.from(serializeG2(vkJson.vk_beta_2)),
-    Buffer.from(serializeG2(vkJson.vk_gamma_2)),
-    Buffer.from(serializeG2(vkJson.vk_delta_2)),
-    Buffer.concat((vkJson.IC as string[][]).map((p: string[]) => Buffer.from(serializeG1(p)))),
-  ]);
-  const CHUNK_SIZE = 900;
-  const totalChunks = Math.ceil(vkBytes.length / CHUNK_SIZE);
-  for (let i = 0; i < totalChunks; i++) {
-    const chunk = vkBytes.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    // Anchor 0.30 IDL declares `chunk_data` as the `bytes` type, which
-    // the BorshInstructionCoder encodes via `byteVec` and expects a
-    // `Buffer` (not `number[]`).  Passing `Array.from(chunk)` triggers
-    // `Blob.encode[data] requires (length N) Buffer as src` — the
-    // diagnostic is misleading but the root cause is just the type.
-    await zkProgram.methods.storeVerificationKey(
-      i,
-      Buffer.from(chunk),
-      i === totalChunks - 1,
-    ).accounts({
+  if (!batchVkAlreadyFinalized) {
+    const vkJson = JSON.parse(vkJsonBytes.toString('utf-8'));
+    const icLen = vkJson.IC.length;
+    const vkBytes = Buffer.concat([
+      Buffer.from(Uint32Array.from([icLen]).buffer),
+      Buffer.from(serializeG1(vkJson.vk_alpha_1)),
+      Buffer.from(serializeG2(vkJson.vk_beta_2)),
+      Buffer.from(serializeG2(vkJson.vk_gamma_2)),
+      Buffer.from(serializeG2(vkJson.vk_delta_2)),
+      Buffer.concat((vkJson.IC as string[][]).map((p: string[]) => Buffer.from(serializeG1(p)))),
+    ]);
+    const CHUNK_SIZE = 900;
+    const totalChunks = Math.ceil(vkBytes.length / CHUNK_SIZE);
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = vkBytes.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      // Anchor 0.30 IDL declares `chunk_data` as the `bytes` type, which
+      // the BorshInstructionCoder encodes via `byteVec` and expects a
+      // `Buffer` (not `number[]`).  Passing `Array.from(chunk)` triggers
+      // `Blob.encode[data] requires (length N) Buffer as src` — the
+      // diagnostic is misleading but the root cause is just the type.
+      await zkProgram.methods.storeVerificationKey(
+        i,
+        Buffer.from(chunk),
+        i === totalChunks - 1,
+      ).accounts({
+        verifierConfig: verifierConfigPda,
+        vkStorage: vkStoragePda,
+        authority: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+      process.stdout.write(`   uploaded chunk ${i + 1}/${totalChunks}\r`);
+    }
+    console.log(`\n   ok (${vkBytes.length} bytes)`);
+
+    // SOLID-SEC-006 Part 1 / NF-02 (closed 2026-05-01).  Freeze the VK so
+    // any further write must go through the 48h-timelock path
+    // (`request_vk_rotation` -> wait -> `rotate_verification_key`).
+    // Pre-fix: this call was missing; every deployment ended with
+    // `vk_finalized=false` and `store_verification_key` would happily
+    // accept a fresh chunk-0 from the authority, bypassing the SEC-006
+    // freeze-gate entirely.
+    console.log('   finalizing VK (SOLID-SEC-006 Part 1)...');
+    await zkProgram.methods.finalizeVerificationKey().accounts({
       verifierConfig: verifierConfigPda,
-      vkStorage: vkStoragePda,
+      authority: wallet.publicKey,
+    }).rpc();
+    const cfgAfterFinalize = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
+    if (!cfgAfterFinalize.vkFinalized) {
+      throw new Error(
+        'SOLID-SEC-006 Part 1 post-condition failed: finalize_verification_key returned ' +
+        'but verifier_config.vk_finalized is still false.  Aborting initialize.',
+      );
+    }
+    console.log(`   ok (vk_finalized=true; rotation now requires request_vk_rotation + 48h timelock)`);
+  }
+
+  // ─── [8/8] subgroup VK upload (SEC-048 Phase E.4) ─────────────────────
+  //
+  // The subgroup verifier lives on the `issuer-registry` program (not
+  // zk-verifier).  Mirrors the batch VK pipeline 1:1 with separate
+  // PDAs (`subgroup-verifier-config` + `subgroup-vk-storage`) and the
+  // 48h timelock from ADR-0015.
+  console.log('\n[8/8] init_subgroup_verifier + store_subgroup_vk_chunk + finalize_subgroup_vk');
+  const subgroupVkJsonPath = 'circuits/build/bjj_subgroup_verification_key.json';
+  const subgroupVkSha256Path = 'circuits/build/bjj_subgroup_verification_key.sha256';
+  if (!fs.existsSync(subgroupVkJsonPath)) {
+    console.error(
+      `   bjj_subgroup_verification_key.json missing at ${subgroupVkJsonPath}. ` +
+      `Run "cd circuits && node scripts/setup.js --circuit bjj_subgroup_proof" first.`,
+    );
+    process.exit(1);
+  }
+  // SOLID-SEC-041 mirror for the subgroup VK.  Same env > sidecar
+  // priority order; refusal mode is identical.
+  const subgroupVkJsonBytes = fs.readFileSync(subgroupVkJsonPath);
+  const computedSubgroupVkSha256 = crypto
+    .createHash('sha256')
+    .update(subgroupVkJsonBytes)
+    .digest('hex');
+  const envSubgroupPin = (process.env.SOLID_SUBGROUP_VK_SHA256 ?? '')
+    .trim()
+    .toLowerCase();
+  const fileSubgroupPin = fs.existsSync(subgroupVkSha256Path)
+    ? fs.readFileSync(subgroupVkSha256Path, 'utf-8').trim().toLowerCase()
+    : '';
+  const expectedSubgroup = envSubgroupPin || fileSubgroupPin;
+  if (!expectedSubgroup) {
+    console.error(
+      `   bjj_subgroup_verification_key.sha256 missing at ${subgroupVkSha256Path} ` +
+      `and SOLID_SUBGROUP_VK_SHA256 env var is unset.  SOLID-SEC-041 ` +
+      `(SEC-048 Phase E.4 mirror) requires one of the two: re-run "cd ` +
+      `circuits && node scripts/setup.js --circuit bjj_subgroup_proof", ` +
+      `or export SOLID_SUBGROUP_VK_SHA256=<hex>.`,
+    );
+    process.exit(1);
+  }
+  if (computedSubgroupVkSha256 !== expectedSubgroup) {
+    console.error(
+      `   subgroup VK sha256 mismatch (SOLID-SEC-041 / SEC-048 Phase E.4 gate).\n` +
+      `     computed : ${computedSubgroupVkSha256}\n` +
+      `     expected : ${expectedSubgroup}\n` +
+      `     source   : ${envSubgroupPin ? 'SOLID_SUBGROUP_VK_SHA256 env var' : subgroupVkSha256Path}\n` +
+      `   Refusing to upload.  Either the bjj_subgroup_verification_key.json ` +
+      `is stale, or the pinned hash is out of date.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `   subgroup VK sha256 gate: ok (${computedSubgroupVkSha256.slice(0, 12)}...; ` +
+    `pin source: ${envSubgroupPin ? 'SOLID_SUBGROUP_VK_SHA256 env' : subgroupVkSha256Path})`,
+  );
+
+  const [subgroupVerifierConfigPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('subgroup-verifier-config')],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+  const [subgroupVkStoragePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('subgroup-vk-storage'), subgroupVerifierConfigPda.toBuffer()],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+
+  // a) init_subgroup_verifier (idempotent on AccountAlreadyInUse).
+  try {
+    await issuerProgram.methods.initSubgroupVerifier().accounts({
+      subgroupVerifierConfig: subgroupVerifierConfigPda,
       authority: wallet.publicKey,
       systemProgram: SystemProgram.programId,
     }).rpc();
-    process.stdout.write(`   uploaded chunk ${i + 1}/${totalChunks}\r`);
+    console.log('   init_subgroup_verifier ok (initialised)');
+  } catch (e: any) {
+    if (!isAlreadyInitialised(e)) throw e;
+    console.log('   init_subgroup_verifier ok (already active)');
   }
-  console.log(`\n   ok (${vkBytes.length} bytes)`);
 
-  // SOLID-SEC-006 Part 1 / NF-02 (closed 2026-05-01).  Freeze the VK so
-  // any further write must go through the 48h-timelock path
-  // (`request_vk_rotation` -> wait -> `rotate_verification_key`).
-  // Pre-fix: this call was missing; every deployment ended with
-  // `vk_finalized=false` and `store_verification_key` would happily
-  // accept a fresh chunk-0 from the authority, bypassing the SEC-006
-  // freeze-gate entirely.
-  console.log('   finalizing VK (SOLID-SEC-006 Part 1)...');
-  await zkProgram.methods.finalizeVerificationKey().accounts({
-    verifierConfig: verifierConfigPda,
-    authority: wallet.publicKey,
-  }).rpc();
-  const cfgAfterFinalize = await zkProgram.account.verifierConfig.fetch(verifierConfigPda);
-  if (!cfgAfterFinalize.vkFinalized) {
-    throw new Error(
-      'SOLID-SEC-006 Part 1 post-condition failed: finalize_verification_key returned ' +
-      'but verifier_config.vk_finalized is still false.  Aborting initialize.',
+  // b) Idempotency: if the subgroup VK is already finalized, skip the
+  // upload entirely.  Matches the batch-VK skip pattern.
+  let subgroupVkAlreadyFinalized = false;
+  try {
+    const cfg = await issuerProgram.account.subgroupVerifierConfig.fetch(subgroupVerifierConfigPda);
+    if (cfg.vkInitialized) {
+      if (!cfg.vkFinalized) {
+        console.log('   subgroup VK uploaded by prior run but not finalized; calling finalize_subgroup_vk...');
+        await issuerProgram.methods.finalizeSubgroupVk().accounts({
+          subgroupVerifierConfig: subgroupVerifierConfigPda,
+          authority: wallet.publicKey,
+        }).rpc();
+        const post = await issuerProgram.account.subgroupVerifierConfig.fetch(subgroupVerifierConfigPda);
+        if (!post.vkFinalized) {
+          throw new Error('SEC-048 Phase E.4 post-condition failed: finalize_subgroup_vk returned but vk_finalized is still false.');
+        }
+        console.log('   ok (subgroup VK finalized; freeze-gate active)');
+      } else {
+        console.log('   ok (subgroup VK already finalized on this validator; skipping upload)');
+      }
+      subgroupVkAlreadyFinalized = true;
+    } else if (cfg.nextVkChunk && cfg.nextVkChunk > 0) {
+      throw new Error(
+        `subgroup_verifier_config has next_vk_chunk=${cfg.nextVkChunk} but vk_initialized=false; ` +
+        `a prior partial upload is on-chain.  Restart with solana-test-validator --reset.`,
+      );
+    }
+  } catch (e: any) {
+    if (e?.message?.includes('Account does not exist') || e?.message?.includes('next_vk_chunk')) {
+      throw e;
+    }
+  }
+
+  if (!subgroupVkAlreadyFinalized) {
+    // c) Upload subgroup VK chunks.
+    const subgroupVkJson = JSON.parse(subgroupVkJsonBytes.toString('utf-8'));
+    const subgroupIcLen = subgroupVkJson.IC.length;
+    const subgroupVkBytes = Buffer.concat([
+      Buffer.from(Uint32Array.from([subgroupIcLen]).buffer),
+      Buffer.from(serializeG1(subgroupVkJson.vk_alpha_1)),
+      Buffer.from(serializeG2(subgroupVkJson.vk_beta_2)),
+      Buffer.from(serializeG2(subgroupVkJson.vk_gamma_2)),
+      Buffer.from(serializeG2(subgroupVkJson.vk_delta_2)),
+      Buffer.concat(
+        (subgroupVkJson.IC as string[][]).map((p: string[]) => Buffer.from(serializeG1(p))),
+      ),
+    ]);
+    const CHUNK_SIZE = 900;
+    const totalSubgroupChunks = Math.ceil(subgroupVkBytes.length / CHUNK_SIZE);
+    for (let i = 0; i < totalSubgroupChunks; i++) {
+      const chunk = subgroupVkBytes.subarray(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      await issuerProgram.methods.storeSubgroupVkChunk(
+        i,
+        Buffer.from(chunk),
+        i === totalSubgroupChunks - 1,
+      ).accounts({
+        subgroupVerifierConfig: subgroupVerifierConfigPda,
+        subgroupVkStorage: subgroupVkStoragePda,
+        authority: wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      }).rpc();
+      process.stdout.write(`   uploaded subgroup chunk ${i + 1}/${totalSubgroupChunks}\r`);
+    }
+    console.log(`\n   ok (${subgroupVkBytes.length} subgroup VK bytes)`);
+
+    // d) Finalize subgroup VK (SOLID-SEC-006 mirror).
+    console.log('   finalizing subgroup VK (SEC-048 Phase E.4)...');
+    await issuerProgram.methods.finalizeSubgroupVk().accounts({
+      subgroupVerifierConfig: subgroupVerifierConfigPda,
+      authority: wallet.publicKey,
+    }).rpc();
+    const cfgAfterFinalize = await issuerProgram.account.subgroupVerifierConfig.fetch(subgroupVerifierConfigPda);
+    if (!cfgAfterFinalize.vkFinalized) {
+      throw new Error(
+        'SEC-048 Phase E.4 post-condition failed: finalize_subgroup_vk returned ' +
+        'but subgroup_verifier_config.vk_finalized is still false.  Aborting initialize.',
+      );
+    }
+    console.log(
+      `   ok (subgroup vk_finalized=true; rotation now requires ` +
+      `request_subgroup_vk_rotation + 48h timelock)`,
     );
   }
-  console.log(`   ok (vk_finalized=true; rotation now requires request_vk_rotation + 48h timelock)`);
 
   // Persist state for downstream scripts.  Written under
   // `$XDG_RUNTIME_DIR` / `$TMPDIR` with mode 0600 (SOLID-SEC-020);
@@ -630,6 +792,11 @@ async function main() {
     issuerTreeBindingPda: issuerTreeBindingPda.toBase58(),
     verifierConfigPda: verifierConfigPda.toBase58(),
     vkStoragePda: vkStoragePda.toBase58(),
+    // SEC-048 Phase E.4: subgroup VK PDAs.  bootstrap_issuer reads
+    // these to wire `register_issuer`'s `subgroup_verifier_config` and
+    // `subgroup_vk_storage` accounts.
+    subgroupVerifierConfigPda: subgroupVerifierConfigPda.toBase58(),
+    subgroupVkStoragePda: subgroupVkStoragePda.toBase58(),
   };
   if (process.env.SOLID_TREE_PUBKEY) {
     state.merkleTreeAddress = treePubkey.toBase58();

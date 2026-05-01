@@ -46,6 +46,12 @@ import {
 } from '@solana/spl-token';
 import { initWasm, generateKeypair, isInPrimeOrderSubgroup, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
 import { LocalReplicaAdapter, poseidonHashPair } from '@solid-protocol/light';
+import { generateSubgroupProof } from '@solid-protocol/issuer';
+import {
+  loadAndVerifyArtifact,
+  SUBGROUP_WASM_PIN,
+  SUBGROUP_ZKEY_PIN,
+} from '@solid-protocol/sdk';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -275,26 +281,25 @@ async function main() {
     ? Keypair.fromSecretKey(Uint8Array.from(state.issuerAuthoritySecret))
     : Keypair.generate();
 
-  // SOLID-SEC-007 / SEC-048 client-side enforcement.
+  // SOLID-SEC-007 / SEC-048 Phase E (closed 2026-05-XX).
   //
-  // The on-chain `register_issuer` instruction historically called
-  // `solid_core::babyjubjub::require_in_prime_order_subgroup` to reject
-  // small-order / off-curve / identity public keys.  On BPF that
-  // `r * P == O` scalar multiplication exceeds the 1.4M CU per-tx
-  // ceiling, so as of 2026-04-25 the on-chain check is gated behind
-  // the `sec007-skip-onchain` Cargo feature on issuer-registry.  This
-  // off-chain predicate is therefore the load-bearing gate while
-  // SEC-048 (cheap on-chain replacement) is open; a failing key here
-  // MUST never reach the registry.  See docs/E2E_BLOCKERS.md B9 and
-  // sec/SECURITY_REGISTRY.md SEC-048.
+  // The on-chain `register_issuer` ix consumes a Groth16 proof of the
+  // BJJ prime-order subgroup invariant and verifies it against the
+  // pinned subgroup VK at registration time.  Off-chain we still run
+  // the cheap `isInPrimeOrderSubgroup` predicate as a UX-grade
+  // pre-submit check: it catches torsion / off-curve / identity
+  // pubkeys here so a failing key never burns a Groth16 prove +
+  // submit cycle.  The on-chain Groth16 verify is the load-bearing
+  // soundness gate; this predicate is defense-in-depth, no longer
+  // load-bearing.  See SECURITY_REGISTRY.md SEC-048 closure notes.
   if (!isInPrimeOrderSubgroup(issuerBjj.public_key_x, issuerBjj.public_key_y)) {
     throw new Error(
-      'SEC-048 guard: generated issuer BJJ public key is not in the ' +
+      'SEC-048 pre-submit gate: generated issuer BJJ public key is not in the ' +
         'prime-order subgroup (off-curve / identity / cofactor-8 torsion). ' +
-        'Refusing to submit register_issuer; regenerate the keypair.',
+        'Refusing to call generateSubgroupProof; regenerate the keypair.',
     );
   }
-  console.log('   sec-048 off-chain subgroup check: ok');
+  console.log('   sec-048 off-chain subgroup check: ok (pre-filter)');
 
   // Fund issuer authority so it can pay for the register_issuer
   // `init` allocation (its PDA rent) + the 1 SOL stake CPI transfer
@@ -323,30 +328,76 @@ async function main() {
     [Buffer.from('stake-vault')],
     PROGRAM_PUBKEYS.issuerRegistry,
   );
+  // SEC-048 Phase E.4: on-chain subgroup-VK PDAs.  initialize.ts
+  // populates these in step [8/8]; we re-derive here to avoid
+  // a stale-state file race where the operator wipes state but
+  // not the validator.
+  const [subgroupVerifierConfigPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('subgroup-verifier-config')],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+  const [subgroupVkStoragePda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('subgroup-vk-storage'), subgroupVerifierConfigPda.toBuffer()],
+    PROGRAM_PUBKEYS.issuerRegistry,
+  );
+
+  // SEC-048 Phase E.4: generate the Groth16 subgroup proof off-chain.
+  // SOLID-SEC-058 / CRIT-3: integrity-verify wasm + zkey before
+  // snarkjs sees them.
+  console.log('   generating subgroup Groth16 proof...');
+  const subgroupWasmPath = 'circuits/build/bjj_subgroup_proof_js/bjj_subgroup_proof.wasm';
+  const subgroupZkeyPath = 'circuits/build/bjj_subgroup_proof_final.zkey';
+  if (!fs.existsSync(subgroupWasmPath) || !fs.existsSync(subgroupZkeyPath)) {
+    throw new Error(
+      `Subgroup circuit artifacts missing at ${subgroupWasmPath} / ${subgroupZkeyPath}.\n` +
+      `Run "cd circuits && node scripts/setup.js --circuit bjj_subgroup_proof" first.`,
+    );
+  }
+  const subgroupWasmBytes = await loadAndVerifyArtifact(
+    subgroupWasmPath,
+    SUBGROUP_WASM_PIN,
+    'bjj_subgroup_proof.wasm',
+  );
+  const subgroupZkeyBytes = await loadAndVerifyArtifact(
+    subgroupZkeyPath,
+    SUBGROUP_ZKEY_PIN,
+    'bjj_subgroup_proof.zkey',
+  );
+  const subgroupProofResult = await generateSubgroupProof(
+    issuerBjj.public_key_x,
+    issuerBjj.public_key_y,
+    subgroupWasmBytes,
+    subgroupZkeyBytes,
+  );
+  console.log(
+    `   subgroup proof generated (256 bytes; publicSignals[0]=${subgroupProofResult.publicSignals[0].slice(0, 8)}...)`,
+  );
+
   try {
-    // SEC-048: the on-chain BJJ subgroup check is currently gated
-    // behind the `sec007-skip-onchain` Cargo feature on issuer-registry
-    // (see docs/E2E_BLOCKERS.md B9, sec/SECURITY_REGISTRY.md SEC-048),
-    // so this transaction completes within the default 200K CU budget.
-    // The 400K cap below is intentionally above measured (~120K) to
-    // keep headroom for Anchor `init`, the `system_program::transfer`
-    // CPI, and Clock syscalls without hitting the ceiling on noisy
-    // validators.  When the on-chain check is restored, raise to the
-    // 1.4M per-tx ceiling and revisit (see SEC-048 remediation plan).
+    // SEC-048 Phase E (closed 2026-05-XX): on-chain Groth16 verify of
+    // the subgroup invariant runs inside register_issuer (~285K CU).
+    // Total ix CU budget needs ~365-400K (the verify + Anchor init +
+    // system_program::transfer CPI + Clock + ~6 account decodes).  The
+    // 500K cap below leaves comfortable headroom under the 1.4M
+    // per-tx ceiling for noisy validators; refresh via measure_cu.py
+    // once SEC-046 baselines are pinned.
     await issuerProgram.methods.registerIssuer(
       'e2e-test-issuer',
       'ipfs://none',
       Array.from(issuerBjj.public_key_x),
       Array.from(issuerBjj.public_key_y),
       { community: {} },
+      Buffer.from(subgroupProofResult.proofBytes),
     ).accounts({
       registryConfig: registryConfigPda,
       issuerAccount: issuerAccountPda,
       stakeVault: stakeVaultPda,
+      subgroupVerifierConfig: subgroupVerifierConfigPda,
+      subgroupVkStorage: subgroupVkStoragePda,
       issuerAuthority: issuerAuthority.publicKey,
       systemProgram: SystemProgram.programId,
     })
-      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 })])
+      .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 500_000 })])
       .signers([issuerAuthority]).rpc();
     console.log(`   ok (issuer=${issuerAccountPda.toBase58()})`);
   } catch (e: any) {
