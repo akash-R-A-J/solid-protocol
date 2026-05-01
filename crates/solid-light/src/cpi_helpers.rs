@@ -831,6 +831,61 @@ pub enum LightError {
     IssuerTreeRootMismatch,
     #[msg("IssuerTreeBinding is frozen; cannot verify proofs under this root")]
     IssuerTreeBindingFrozen,
+    #[msg(
+        "Caller-supplied (old_leaf, leaf_index, path) does not recompute to \
+         the binding's current_root -- stale path or wrong old leaf \
+         (SOLID-SEC-080)"
+    )]
+    BindingRootStale,
+}
+
+// ─── Generic pre-CPI binding-root anchor (SOLID-SEC-077 / SOLID-SEC-080) ───
+//
+// Lifted from `programs/issuer-registry/src/lib.rs::verify_issuer_binding_anchor`
+// (originally introduced for SEC-077 in atomic revoke / withdraw paths) so the
+// schema-registry side (SEC-080) can share the same primitive.  The helper is
+// intentionally generic over the binding's current-root extraction: callers
+// pass the already-extracted `expected_root`, NOT the full binding buffer,
+// because the three bindings store `current_root` at different offsets
+// (issuer: 40..72, schema: 72..104, global: 8..40).
+//
+// Fresh-binding sentinel: when `expected_root == [0u8; 32]`, the binding has
+// not yet had a non-trivial root written.  The empty-tree Poseidon root is
+// non-zero (non-trivial), so any real `(old_leaf, leaf_index, path)` would
+// fail the recompute on first update.  Treating `[0u8; 32]` as "fresh, anchor
+// short-circuits" lets the FIRST update proceed under the existing
+// SEC-059-style self-consistency check (`recompute(new_leaf) == new_root`)
+// alone, then arms the anchor for every subsequent update where
+// `expected_root` is the real Poseidon root from the prior call.
+
+/// Verify a caller-supplied path anchors against `expected_root`.
+///
+/// On success: `(old_leaf, leaf_index, path)` recomputes to `expected_root`
+/// (or `expected_root` is the all-zeros fresh-binding sentinel and the
+/// anchor short-circuits).
+///
+/// On mismatch: `Err(LightError::BindingRootStale)`.  Caller should map
+/// this to a program-specific `ErrorCode::BindingRootStale` for clean
+/// `AnchorError` reporting.
+///
+/// Cost: one `compute_poseidon_merkle_root` (~50K CU at depth 16, ~80K CU at
+/// depth 20).  No allocation, no syscalls beyond Poseidon.
+pub fn verify_binding_root_anchor(
+    expected_root: &[u8; 32],
+    old_leaf: &[u8; 32],
+    leaf_index: u64,
+    path: &[[u8; 32]],
+) -> std::result::Result<(), LightError> {
+    if expected_root == &[0u8; 32] {
+        // Fresh-binding sentinel: no prior root to anchor against.
+        return Ok(());
+    }
+    let recomputed = compute_poseidon_merkle_root(old_leaf, leaf_index, path)
+        .map_err(|_| LightError::BindingRootStale)?;
+    if &recomputed != expected_root {
+        return Err(LightError::BindingRootStale);
+    }
+    Ok(())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -1374,5 +1429,77 @@ mod tests {
             extract_active_issuer_tree_root(&data),
             Err(LightError::InvalidIssuerTreeBinding)
         ));
+    }
+
+    // ─── verify_binding_root_anchor (SOLID-SEC-080 helper) ──────────────────
+
+    /// Build a `(leaf, leaf_index, path)` tuple plus the matching expected
+    /// root by Poseidon-recomputing.  Used as ground truth in the anchor
+    /// tests below: any tweak to the inputs (other than tweaking
+    /// `expected_root` alongside) must trip the anchor.
+    fn anchor_fixture(
+        leaf: [u8; 32],
+        leaf_index: u64,
+        sibling_pattern: u8,
+        depth: usize,
+    ) -> ([u8; 32], Vec<[u8; 32]>) {
+        let path: Vec<[u8; 32]> = (0..depth)
+            .map(|i| [sibling_pattern.wrapping_add(i as u8); 32])
+            .collect();
+        let expected = compute_poseidon_merkle_root(&leaf, leaf_index, &path)
+            .expect("recompute");
+        (expected, path)
+    }
+
+    #[test]
+    fn sec_080_anchor_short_circuits_on_fresh_binding_sentinel() {
+        // The all-zeros sentinel is the "fresh binding" mark used by
+        // schema-registry's initialize_tree_binding / initialize_global_binding.
+        // The anchor must accept ANY (old_leaf, leaf_index, path) without
+        // recomputing -- caller's downstream self-consistency check is the
+        // only gate on the first update.
+        let (_root, path) = anchor_fixture([1u8; 32], 0, 0xAA, 4);
+        let result = verify_binding_root_anchor(&[0u8; 32], &[2u8; 32], 7, &path);
+        assert!(result.is_ok(), "fresh sentinel must short-circuit");
+    }
+
+    #[test]
+    fn sec_080_anchor_accepts_matching_recomputed_root() {
+        let leaf = [42u8; 32];
+        let (expected, path) = anchor_fixture(leaf, 13, 0x55, 4);
+        let result = verify_binding_root_anchor(&expected, &leaf, 13, &path);
+        assert!(result.is_ok(), "happy path: recompute matches");
+    }
+
+    #[test]
+    fn sec_080_anchor_rejects_wrong_old_leaf() {
+        let leaf = [42u8; 32];
+        let wrong = [43u8; 32];
+        let (expected, path) = anchor_fixture(leaf, 13, 0x55, 4);
+        let result = verify_binding_root_anchor(&expected, &wrong, 13, &path);
+        assert!(matches!(result, Err(LightError::BindingRootStale)));
+    }
+
+    #[test]
+    fn sec_080_anchor_rejects_wrong_leaf_index() {
+        let leaf = [42u8; 32];
+        let (expected, path) = anchor_fixture(leaf, 13, 0x55, 4);
+        // Same leaf + same path, different index produces a different root.
+        let result = verify_binding_root_anchor(&expected, &leaf, 14, &path);
+        assert!(matches!(result, Err(LightError::BindingRootStale)));
+    }
+
+    #[test]
+    fn sec_080_anchor_rejects_stale_path_against_advanced_binding() {
+        // Simulates the SEC-080 attack class: caller has a path consistent
+        // with old root R1 (returned by `anchor_fixture` here), but the
+        // binding has advanced to R3.  The anchor refuses.
+        let leaf = [42u8; 32];
+        let (_old_root, old_path) = anchor_fixture(leaf, 0, 0x55, 4);
+        let (new_root, _new_path) = anchor_fixture(leaf, 0, 0xCC, 4);
+        // Anchor against `new_root` (binding has advanced) using the OLD
+        // path.  Recompute won't match.
+        let result = verify_binding_root_anchor(&new_root, &leaf, 0, &old_path);
+        assert!(matches!(result, Err(LightError::BindingRootStale)));
     }
 }

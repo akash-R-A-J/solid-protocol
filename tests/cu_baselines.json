@@ -10,42 +10,42 @@
         "Initialize": {
           "consumed_cu": 21407,
           "cu_limit": 200000,
-          "tx_signature": "585zFHVAaqLqixnNrZttjjZLpLe4mNP3w8NXr9kzzpz4cSkq6JBKH783juM9Ya1NroS7QotZyYC4kqA7DnWAu4og"
+          "tx_signature": "hNuk87PHDVgVogbeZaYr9fjJ8zx5SLdHDGMzzMuiW5pzwo4a72P2iAobr23jsKf1iHP62G5MkJ9cqWZA2YLrzgx"
         },
         "StoreVerificationKey_chunk_1": {
           "consumed_cu": 12842,
           "cu_limit": 200000,
-          "tx_signature": "4rFMEH1vqP2kFWLmtdBTB3iZEDaW77UB56HMg9uEzjekdSh2n82VUVmZ4stZK7QcPj2cYdDrfN8fEPXceLGP3fLB"
+          "tx_signature": "4nFiKYsRvh2h2q31sSvnhuEo544HnEhMa6ErUB8XkBUNb1Y7fF98V4FKVNcpdT9nqVQoqQKosHqFoaVQW8bPmBq1"
         },
         "StoreVerificationKey_chunk_2": {
           "consumed_cu": 9811,
           "cu_limit": 200000,
-          "tx_signature": "3HTWBtxbLN5VoqJqiYxkWDqvpJ3L5wcNAiZhCdJzx4eTkzvaPRFQrbEgbAAUV7r5kwrWRWstyiQrmDTrbRYwR3w8"
+          "tx_signature": "RpRPCfUMP1yPsQu7RWFA6uCKqCCK3A8Lmc6zkUAJc3nueaZ75bH1Hc74sa9o4e329JNd5JoQa4V5h9qeYLjnxea"
         },
         "StoreVerificationKey_chunk_3": {
           "consumed_cu": 10627,
           "cu_limit": 200000,
-          "tx_signature": "whdZvHRdyWuGsfqWWDbLGy1KAPAhQTzgoZSKLKQspwdA3pZDzqrPZRxZduLbQVSN4KgEM2uk3Ab7d8HsH81x4tN"
+          "tx_signature": "yymUFtwD6BAMgq6MtMQDvKhqFhZ2SqrE7Mp6ghEtvzX4cJU9QtvSUpffZoe9KA6j4Z9byc7S5GqTozwc1StoWGD"
         },
         "InitProofBuffer": {
           "consumed_cu": 16954,
           "cu_limit": 200000,
-          "tx_signature": "5xcg48f13DTyNkwVX19U6av8uRMifsRGk448DE18ChEZqVdy8SSCsouuqAMCyfXXWRbv7m5vxXtRaHd8CwNjmqao"
+          "tx_signature": "2rW7xUguyzCKLgfgEUyr4JY92VAMaHYH4FfDUdJLB5oWEBFuCdLeZNmcjzX98i1zX9jfeZtUu5pwCkMBQWjknknH"
         },
         "UploadProofChunk_chunk_1": {
           "consumed_cu": 12647,
           "cu_limit": 200000,
-          "tx_signature": "2wGeK8wPMiQsX98zaRnVsijJcAKVRDchRVPsBTX5zeFadtcy3b58yWUizrZUNcGT2zq2ozDmjv94LdSwdpCQY3J6"
+          "tx_signature": "4TfZvtBTLmuuA9J3Yanjn26oamGj8tAGqnxL3wSeYEYX893CNiTELjhrBKN5vi1FqPYBapNzND5koHq17Ct4xF8E"
         },
         "UploadProofChunk_chunk_2": {
           "consumed_cu": 12647,
           "cu_limit": 200000,
-          "tx_signature": "4qfKPcQmvaGtACvav6Pa7pH9eLo3awpchzdadw6ZkeH9Lacszu6zDdM3qVWWuTb5f5HjyayViNcFr5q8p9iSxWMd"
+          "tx_signature": "4iyFZUPR9dNsYw6gHYX4RgwTYsaWTi3MDPneiRXxcqygXkYnxu9XEQVsdu2ZojKAcRWrvyucJjndmkQ5mygjN7JD"
         },
         "VerifyBatchProofV2": {
-          "consumed_cu": 318315,
+          "consumed_cu": 319815,
           "cu_limit": 799850,
-          "tx_signature": "26ZjFivuDv58bGpvqFdQQhGFkF18wVBrBWZ2hwk3RTWotBYtZpL73rp4n9BCPzvwrRxpCkj1G1Rj3NgRPoHx2QHL"
+          "tx_signature": "5i3DzrRFXCXQmuEiVBUeEUixz4Z8j92Dc56gLyisfyyyZg3kan32uDWsyPyTawcD5e1uRRkKAoqXKa9MznoXXVTc"
         }
       }
     },
@@ -53,46 +53,46 @@
       "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
       "instructions": {
         "InitializeRegistry": {
-          "consumed_cu": 50916,
+          "consumed_cu": 50981,
           "cu_limit": 200000,
-          "tx_signature": "4wY7K4PggdVB343JHUZeswTJBN4oKFoFBDiL7mmKtrqivt98fmWzuR8EGaoMU6GcgQY8snhCJqRoHHQsatRyXda7"
+          "tx_signature": "2dLPVxa4PSfXYFs6ceAGGafHAEF6qndvfrVQECV82qKUPBrT3JrCTSjRv9Lum2renFq5fcvYF2RfH1oE5k7RFbAC"
         },
         "InitializeIssuerTreeBinding": {
           "consumed_cu": 35560,
           "cu_limit": 200000,
-          "tx_signature": "2vBVA6WRh1jf1M3TxDqJrkUYdG7zcDq7TaQSQ9ChFF9VucwhGa6LFb9SR1F5sbVcs8ZhxE6Jvo4jJD71sVTF41VQ"
+          "tx_signature": "5LKqXBdvqmRJYeA8SYXpk4yY866LFhvzzChCBBg5AzzcJq5frota2wSFVCY5FbZuPVVW3jYVZ2LbJN7w5vRvZ4cR"
         },
         "RegisterIssuer_sec007_skip_onchain": {
-          "consumed_cu": 76084,
+          "consumed_cu": 76057,
           "cu_limit": 399850,
-          "tx_signature": "9YMAB57xA5hvxzE3H3NK3xdG1zPfGadmjAamtops4nbEre8o12aABrH5bxe7UBLRPwHHeW3owrcpD54nasyw9Jd",
+          "tx_signature": "2EUFLb7ZvqmQABfQuvq5cdreCYCRSE748Le3PgHt7Bos3GKxWBj77TFv78pb2qFQtigJN8xdb7deg43BhcEALztJ",
           "_note": "Bypass build: skips on-chain BJJ prime-order subgroup check (~1.4M CU) and runs only the cheap is_on_curve + !is_identity gate. Will move into the issuance circuit once SEC-048 Option E lands."
         },
         "StakeTokens": {
           "consumed_cu": 30048,
           "cu_limit": 200000,
-          "tx_signature": "RnpkvoNcGS8dzAn6cebapTxNCqFv7BZA7NYwHTDpXG9G1ZvYEcTDtAZKX39Jo1Pomo8HSw7D2vWjs7QawYE8iqX"
+          "tx_signature": "514hjgGzjqWVgNJMjk2MYpBtqdNKr2rZkVYXPG1BmpazD5B19jsbAjMhF51UbnstkGHfpxPteZ24yfKPpVSkey3M"
         },
         "VoteOnIssuer": {
-          "consumed_cu": 21022,
+          "consumed_cu": 22522,
           "cu_limit": 200000,
-          "tx_signature": "2rcSUNJjBhKhekqHerfgGVfxyxmnGCnbsEawPmb5Z1xGiijfbeJcrLReArmk4KoJWgCNN5iwJWBzhkETM1ew3dcx"
+          "tx_signature": "3mXZa3GFX9Fxhq6PJgYfX46LrCGB9Zu6ScsWM3orkHtkV24zfTigBuL36Gg1sMo36HC44AaA4svwomzWWXuD1ktt"
         },
         "FinalizeVoting": {
           "consumed_cu": 12526,
           "cu_limit": 200000,
-          "tx_signature": "4GCssa4zmRJGTCHWJVCgjgTx65gXM7y8LhTVJNAUbpq3Q7eatGPbZVWVeZ8AHjEqCg2dPQxerDzZCrFL1obJbhdd"
+          "tx_signature": "voaDtACpGd2XFp5h4N2AgUTGUHBSHBjv3zinPVNVh2VdHKCnpMqemT3B2sF6HeQ5L8QXDUD3m9rkoxK3yy8Dzta"
         },
         "AppendIssuerLeaf": {
-          "consumed_cu": 427534,
+          "consumed_cu": 427585,
           "cu_limit": 799850,
-          "tx_signature": "2nX3kocmStwCLg7eEK85DukudLzkYoTix4uypzaDDNwux4UgNbeVYUcJpzRpXBbHUVejKMSBCKyF2dzXpuBCuby7",
+          "tx_signature": "4wW8BYGY8R2tNuoTXQ7FBrgF8FCnv7hBed3gfAwd8ghRRWkJjkz6mQFy8eyQMB9rrzbXLHmyDqXaa4WCSgGrnN2i",
           "_note": "Atomic Poseidon-Merkle recompute over depth-16 path post SOLID-SEC-059 / H1 closure."
         },
         "IssueCredential": {
-          "consumed_cu": 66449,
+          "consumed_cu": 66410,
           "cu_limit": 200000,
-          "tx_signature": "aAyJaRo6nkNcySY1g4cnkfi8LEyQdqLzejBxLzJ9276Qsi2G7qwA8GinCiFEp6J4CeBuCbwWBZZKxkxv1W4UzJb"
+          "tx_signature": "5gH7HqPm4yw9DUeYBxTg5Lwe4ARE6sNAVE3s2zUsRnDq85jPVnLknSM1TTPDCi2qvMDm3GqSHYAW9daVwYQDuFqq"
         }
       }
     },
@@ -102,29 +102,29 @@
         "RegisterSchema": {
           "consumed_cu": 229952,
           "cu_limit": 399850,
-          "tx_signature": "5wwKcxx1bm5M1MZETCcLZRkx7GS2UAqhfTK7ADDntwihdAx1E2xbmuhDWAGNjpp3pLVDfXJHU6pT82utc68KLaPp",
+          "tx_signature": "4T4qvieFqhcV6aS8CrA7dAbU3afRoBk7eNYLKAGUr42CjvPE6nSWMomnZBi7PVCTB4nTVa7kjbjoM2c7setpqqpK",
           "_note": "Three nested Poseidon-Merkle-Damgard absorbs (name, field_names, category) post SOLID-SEC-063 / H5 widening."
         },
         "InitializeGlobalBinding": {
           "consumed_cu": 6253,
           "cu_limit": 200000,
-          "tx_signature": "1yJsFo2uB6VCSKa74Q3xmm2DvCC3euagsK95DdAhwFaQjWezrSDhaD2KEbzAZp66YFao6hQxtqRQdxXzSzwgsEz"
+          "tx_signature": "LDwmEzpTAxggxkJuWrzq1ZkQtwPPvcmiThAyHD1T62eUP6wRK9R53mZzpXVorYBoxa3cWbSubaVwd4LvAGdA8nH"
         },
         "InitializeTreeBinding": {
-          "consumed_cu": 24751,
+          "consumed_cu": 24816,
           "cu_limit": 200000,
-          "tx_signature": "5chXtVSv63TihJncTUswPo2PMi1PsHzsx9WP2SpANH1zybCSfHXJMFomLhjDbpo77mzmAo2DDrPjwmM3jLEPTJB9"
+          "tx_signature": "37ddaDv4BYaUQzFyCFDYbZpiTNyhV16nXFdwUQuDR1U3cA1Xq6AzvqTonV1oCex5Df2HvjWBFywJHpBNZ4NNU2eK"
         },
         "UpdateTreeRoot": {
-          "consumed_cu": 417801,
+          "consumed_cu": 418157,
           "cu_limit": 799850,
-          "tx_signature": "mWED79V1GsFpYRMo4TRYHPkyNm2TF8mEKqYEaczhjvXuDdkrc87Td3y1SUV5MQPdhnrigfNkfED82aDz9p4VLc1",
+          "tx_signature": "4nbWHEu9b7mG1dKThgRBHDk3fjfFwQzciLQNdQCtDncdHLNShGWSJJRzoAn1amXiCbCvmGs2bjzpJNERb2xP1RWG",
           "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
         },
         "UpdateGlobalRoot": {
-          "consumed_cu": 417483,
+          "consumed_cu": 417803,
           "cu_limit": 799850,
-          "tx_signature": "64XonvLYhQMjZqKjbmZUPhU67e5o5vp4ohR2khch2MTNbJMqQ3NhYHUpw4rVXL125hEhHUyNwEJz2PisMadZBPf3",
+          "tx_signature": "4tGZZAyYeQjpjiJef5wMurd2cGXYg2BkiboLLiExKsnbGBYKmbrqjjxwg7zR5y2VagjYndnH7PR3f1Jb9422Au9M",
           "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
         }
       }

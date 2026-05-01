@@ -153,10 +153,23 @@ async function main() {
     );
     if (!schemaIdl.address) schemaIdl.address = PROGRAM_PUBKEYS.schemaRegistry.toBase58();
     const schemaProgram = new anchor.Program(schemaIdl, provider);
+    // SOLID-SEC-080 (NF-03, 2026-05-01): the on-chain handler now
+    // requires `old_leaf` so it can anchor the caller-supplied path
+    // against the binding's current_root before applying.  On the
+    // FIRST update from a fresh binding (current_root == [0; 32]
+    // sentinel), `old_leaf` is unused -- the anchor short-circuits;
+    // `[0u8; 32]` is the canonical placeholder.
+    //
+    // For subsequent updates, the caller is responsible for tracking
+    // the previous leaf at `leaf_index` and threading it here.  At
+    // this stage of `prove.ts` we are always doing the first update
+    // (one credential per e2e run), so `[0u8; 32]` is correct.
+    const credOldLeaf = new Uint8Array(32);
     await schemaProgram.methods
       .updateTreeRoot(
         Array.from(Uint8Array.from(Buffer.from(state.schemaHash, 'hex'))),
         Array.from(credProof.root),
+        Array.from(credOldLeaf),
         Array.from(credential.commitment),
         new anchor.BN(0),
         Buffer.from(credPath),
@@ -208,9 +221,14 @@ async function main() {
     );
     if (!schemaIdl.address) schemaIdl.address = PROGRAM_PUBKEYS.schemaRegistry.toBase58();
     const schemaProgram = new anchor.Program(schemaIdl, provider);
+    // SOLID-SEC-080 (NF-03, 2026-05-01): same anchor as update_tree_root
+    // above.  First-update path; `old_leaf` short-circuits via the
+    // [0; 32] sentinel.
+    const globalOldLeaf = new Uint8Array(32);
     await schemaProgram.methods
       .updateGlobalRoot(
         Array.from(globalProof.root),
+        Array.from(globalOldLeaf),
         Array.from(identityLeaf),
         new anchor.BN(0),
         Buffer.from(globalPath),

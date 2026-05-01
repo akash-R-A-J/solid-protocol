@@ -430,6 +430,7 @@ pub mod schema_registry {
         ctx: Context<UpdateTreeRoot>,
         schema_hash: [u8; 32],
         new_root: [u8; 32],
+        old_leaf: [u8; 32],
         new_leaf: [u8; 32],
         leaf_index: u64,
         poseidon_proof_path: Vec<u8>,
@@ -451,6 +452,45 @@ pub mod schema_registry {
             s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
             path.push(s);
         }
+
+        // SOLID-SEC-080 (NF-03, closed 2026-05-01): pre-update binding-root
+        // anchor.  Pre-fix, this ix accepted a (path, new_leaf, new_root)
+        // triple that was self-consistent but unconstrained against the
+        // BINDING's notion of current state -- a buggy off-chain pipeline
+        // could push a path consistent with new_root yet inconsistent with
+        // the binding's live root, corrupting subsequent reads.  Now the
+        // anchor recomputes (old_leaf, leaf_index, path) against
+        // binding.current_root and refuses any mismatch.
+        //
+        // Fresh-binding sentinel: when binding.current_root == [0; 32] (the
+        // post-`initialize_tree_binding` placeholder before any update has
+        // landed), the anchor short-circuits Ok() because the empty-tree
+        // Poseidon root is non-zero and would otherwise reject every first
+        // update.  The downstream self-consistency check below is then the
+        // only gate on the first update; subsequent updates have a real
+        // root and the anchor arms.  See
+        // `solid_light::cpi_helpers::verify_binding_root_anchor` doc.
+        {
+            let binding_data = binding_info.try_borrow_data()?;
+            require!(
+                binding_data.len() >= SCHEMA_TREE_BINDING_SIZE
+                    && binding_data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
+                ErrorCode::InvalidBindingOwner
+            );
+            let mut current_root = [0u8; 32];
+            current_root.copy_from_slice(&binding_data[72..104]);
+            solid_light::cpi_helpers::verify_binding_root_anchor(
+                &current_root,
+                &old_leaf,
+                leaf_index,
+                &path,
+            )
+            .map_err(|_| error!(ErrorCode::BindingRootStale))?;
+        }
+
+        // SEC-059 self-consistency check (existing): the new state must
+        // recompute to new_root from the same path that anchored the old
+        // state above.
         let computed_root =
             solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
                 .map_err(|_| error!(ErrorCode::TreeRootMismatch))?;
@@ -536,6 +576,7 @@ pub mod schema_registry {
     pub fn update_global_root(
         ctx: Context<UpdateGlobalRoot>,
         new_root: [u8; 32],
+        old_leaf: [u8; 32],
         new_leaf: [u8; 32],
         leaf_index: u64,
         poseidon_proof_path: Vec<u8>,
@@ -557,6 +598,29 @@ pub mod schema_registry {
             s.copy_from_slice(&poseidon_proof_path[i * 32..(i + 1) * 32]);
             path.push(s);
         }
+
+        // SOLID-SEC-080 (NF-03, closed 2026-05-01): pre-update binding-root
+        // anchor.  See `update_tree_root` above for the full rationale; the
+        // global binding's current_root lives at bytes [8..40) in this PDA
+        // (vs [72..104) for the schema_tree binding).
+        {
+            let binding_data = binding_info.try_borrow_data()?;
+            require!(
+                binding_data.len() >= GLOBAL_STATE_BINDING_SIZE
+                    && binding_data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
+                ErrorCode::InvalidBindingOwner
+            );
+            let mut current_root = [0u8; 32];
+            current_root.copy_from_slice(&binding_data[8..40]);
+            solid_light::cpi_helpers::verify_binding_root_anchor(
+                &current_root,
+                &old_leaf,
+                leaf_index,
+                &path,
+            )
+            .map_err(|_| error!(ErrorCode::BindingRootStale))?;
+        }
+
         let computed_root =
             solid_light::cpi_helpers::compute_poseidon_merkle_root(&new_leaf, leaf_index, &path)
                 .map_err(|_| error!(ErrorCode::GlobalRootMismatch))?;
@@ -741,6 +805,13 @@ pub enum ErrorCode {
     TreeRootMismatch,
     #[msg("Submitted new_root does not match the on-chain Poseidon-Merkle recompute for the global tree (SEC-059 sibling)")]
     GlobalRootMismatch,
+    #[msg(
+        "Caller-supplied (old_leaf, leaf_index, poseidon_proof_path) does \
+         not recompute to the binding's current_root -- stale path or \
+         wrong old leaf (SOLID-SEC-080).  Re-fetch the binding state and \
+         derive the path against the live root."
+    )]
+    BindingRootStale,
 }
 
 // ─── Host-side tests ───────────────────────────────────────────────────────
