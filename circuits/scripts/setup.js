@@ -1,7 +1,9 @@
 /**
- * Single-party trusted setup for `batch_credential_query.circom`.
+ * Single-party trusted setup -- parameterised over circuit name.
  *
- * Run: `node scripts/setup.js`
+ * Run:
+ *   node scripts/setup.js                                    # default: batch_credential_query
+ *   node scripts/setup.js --circuit bjj_subgroup_proof       # SOLID-SEC-048 subgroup gate
  *
  * ────────────────────────────────────────────────────────────────────
  * TESTNET / DEVELOPMENT ONLY.
@@ -13,12 +15,26 @@
  * attestation chain.
  * ────────────────────────────────────────────────────────────────────
  *
- * Output (matches `scripts/prove.ts` expectations exactly):
- *   circuits/build/batch_credential_query.r1cs               (from `npm run compile`)
- *   circuits/build/batch_credential_query_js/                (witness gen)
- *   circuits/build/batch_credential_query_final.zkey         (the prover key)
- *   circuits/build/verification_key.json                     (uploaded to on-chain verifier)
- *   circuits/trusted_setup/pot_final.ptau                    (optional; not consumed downstream)
+ * Phase 1 (Powers of Tau) is circuit-agnostic and SHARED across all
+ * SolID circuits.  The script reuses `circuits/trusted_setup/pot_final.ptau`
+ * if present (post-2026-05-01: it is, from the prior batch-circuit
+ * ceremony) -- if it is missing, it is generated fresh at PTAU_POWER.
+ * This means SEC-048's subgroup ceremony and the main batch circuit's
+ * ceremony share a Phase 1; only Phase 2 is per-circuit.
+ *
+ * Outputs (per circuit name):
+ *   For circuit_name = 'batch_credential_query' (default):
+ *     circuits/build/batch_credential_query_final.zkey
+ *     circuits/build/verification_key.json
+ *     circuits/build/verification_key.sha256
+ *
+ *   For circuit_name = 'bjj_subgroup_proof':
+ *     circuits/build/bjj_subgroup_proof_final.zkey
+ *     circuits/build/bjj_subgroup_verification_key.json
+ *     circuits/build/bjj_subgroup_verification_key.sha256
+ *
+ *   Shared:
+ *     circuits/trusted_setup/pot_final.ptau
  */
 const snarkjs = require('snarkjs');
 const crypto = require('crypto');
@@ -28,14 +44,50 @@ const path = require('path');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const SETUP_DIR = path.join(__dirname, '..', 'trusted_setup');
 
-/// Circuit identity -- keep in one place. If you add another circuit,
-/// parametrise this script rather than forking it.
-const CIRCUIT_NAME = 'batch_credential_query';
-// 2^17 = 131,072 constraints; batch_credential_query currently
-// reports 86,616 non-linear constraints (snarkjs r1cs info, 2026-04-25),
-// leaving ~34% headroom. If you add predicates / fields / creds and
-// the constraint count crosses ~110K, bump to PTAU_POWER = 18 and
-// re-run the trusted setup ceremony.
+/// Recognised circuit names + their VK output filenames.  The default
+/// circuit ('batch_credential_query') keeps the historical
+/// `verification_key.json` filename so existing operator tooling and
+/// `scripts/initialize.ts` continue to work without changes.  Other
+/// circuits use a circuit-name-prefixed VK file to avoid collision.
+const CIRCUITS = {
+    batch_credential_query: {
+        vk_filename: 'verification_key.json',
+        vk_hash_filename: 'verification_key.sha256',
+    },
+    bjj_subgroup_proof: {
+        vk_filename: 'bjj_subgroup_verification_key.json',
+        vk_hash_filename: 'bjj_subgroup_verification_key.sha256',
+    },
+};
+
+/// CLI parsing: `--circuit <name>`; default to batch_credential_query
+/// for backward compatibility with operator runbooks.
+function parseArgs(argv) {
+    let circuit = 'batch_credential_query';
+    for (let i = 2; i < argv.length; i++) {
+        if (argv[i] === '--circuit' && i + 1 < argv.length) {
+            circuit = argv[i + 1];
+            i++;
+        }
+    }
+    if (!CIRCUITS[circuit]) {
+        console.error(
+            `ERROR: unknown circuit '${circuit}'.  Known: ${Object.keys(CIRCUITS).join(', ')}.`,
+        );
+        process.exit(2);
+    }
+    return circuit;
+}
+
+const CIRCUIT_NAME = parseArgs(process.argv);
+const CIRCUIT_META = CIRCUITS[CIRCUIT_NAME];
+
+// 2^17 = 131,072 constraints.  Sized for batch_credential_query
+// (currently ~86,616 non-linear constraints; ~34% headroom);
+// bjj_subgroup_proof (currently ~2,200 non-linear constraints) fits
+// trivially.  If batch constraints cross ~110K, bump PTAU_POWER to 18
+// and re-run BOTH ceremonies -- the new PTAU file replaces the shared
+// pot_final.ptau.
 const PTAU_POWER = 17;
 
 /// Canonical contribution entropy.
@@ -78,18 +130,27 @@ async function main() {
     const ptauPath1 = path.join(SETUP_DIR, 'pot_0001.ptau');
     const ptauFinal = path.join(SETUP_DIR, 'pot_final.ptau');
 
-    console.log(`[1/5] Generating Powers of Tau (2^${PTAU_POWER})...`);
-    await snarkjs.powersOfTau.newAccumulator(curve, PTAU_POWER, ptauPath0);
+    if (fs.existsSync(ptauFinal)) {
+        // Phase 1 is circuit-agnostic; reuse the shared PTAU.  This is
+        // what makes the SEC-048 subgroup ceremony cheap to add: just a
+        // fresh Phase 2 against the existing PTAU, no second Phase 1.
+        console.log(`[1/5] Reusing existing PTAU: ${ptauFinal}`);
+        console.log('[2/5] Skipped (PTAU already prepared).');
+        console.log('[3/5] Skipped (Phase 2 prep already done).');
+    } else {
+        console.log(`[1/5] Generating Powers of Tau (2^${PTAU_POWER})...`);
+        await snarkjs.powersOfTau.newAccumulator(curve, PTAU_POWER, ptauPath0);
 
-    console.log('[2/5] Contributing to ceremony...');
-    await snarkjs.powersOfTau.contribute(
-        ptauPath0, ptauPath1,
-        'SolID first contribution',
-        secureEntropy('ptau'),
-    );
+        console.log('[2/5] Contributing to ceremony...');
+        await snarkjs.powersOfTau.contribute(
+            ptauPath0, ptauPath1,
+            'SolID first contribution',
+            secureEntropy('ptau'),
+        );
 
-    console.log('[3/5] Preparing Phase 2...');
-    await snarkjs.powersOfTau.preparePhase2(ptauPath1, ptauFinal);
+        console.log('[3/5] Preparing Phase 2...');
+        await snarkjs.powersOfTau.preparePhase2(ptauPath1, ptauFinal);
+    }
 
     // ─── Phase 2: circuit-specific setup ────────────────────────────
     //
@@ -108,20 +169,20 @@ async function main() {
     );
 
     console.log('[5/5] Exporting verification key...');
-    const vkPath = path.join(BUILD_DIR, 'verification_key.json');
+    const vkPath = path.join(BUILD_DIR, CIRCUIT_META.vk_filename);
     const vk = await snarkjs.zKey.exportVerificationKey(zkeyFinal);
     const vkJsonBytes = Buffer.from(JSON.stringify(vk, null, 2), 'utf8');
     fs.writeFileSync(vkPath, vkJsonBytes);
 
-    // SOLID-SEC-041.  Pin a content hash for `verification_key.json`
-    // right next to the artifact.  `scripts/initialize.ts` refuses to
-    // upload any VK that does not match this hash (or the
-    // `SOLID_VK_SHA256` env override), so a stale build directory,
-    // mis-merged branch, or tampered artifact aborts before the
-    // on-chain store.  Hash is over the exact bytes written above,
-    // so snarkjs output ordering drift would surface as a hash change.
+    // SOLID-SEC-041.  Pin a content hash for the VK file right next to
+    // the artifact.  `scripts/initialize.ts` refuses to upload any VK
+    // that does not match this hash (or the `SOLID_VK_SHA256` env
+    // override), so a stale build directory, mis-merged branch, or
+    // tampered artifact aborts before the on-chain store.  Hash is over
+    // the exact bytes written above, so snarkjs output ordering drift
+    // would surface as a hash change.
     const vkHash = crypto.createHash('sha256').update(vkJsonBytes).digest('hex');
-    const vkHashPath = path.join(BUILD_DIR, 'verification_key.sha256');
+    const vkHashPath = path.join(BUILD_DIR, CIRCUIT_META.vk_hash_filename);
     fs.writeFileSync(vkHashPath, `${vkHash}\n`);
 
     // Publish a hash of the final zkey in the console so CI + PR reviewers
