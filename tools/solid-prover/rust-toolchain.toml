@@ -1,7 +1,24 @@
 # Pins the Rust toolchain for the `solid-prover` workspace only.
-# The main (programs) workspace relies on the top-level nix flake; this pin
-# exists so anyone running `cargo ...` directly inside `tools/solid-prover/`
-# gets a version that can parse this crate's dep closure.
+#
+# IMPORTANT: this pin INTENTIONALLY DIVERGES from the main workspace
+# (`/rust-toolchain.toml`, channel = "1.79.0").  solid-prover is a
+# host-only tool -- it generates Groth16 proofs off-chain via
+# `ark-circom 0.5.0-alpha` and `ark-groth16 0.5` -- so it has no
+# Solana-platform-tools constraint.  The main workspace must stay at
+# 1.79 because Solana 1.18.x's BPF compiler bundles rustc 1.75 and
+# transitive deps must be edition-2021-compatible.  solid-prover's
+# dep closure (ark-circom -> wasmer-wasix -> ...) pulls in modern
+# transitives (`base64ct 1.8`, `linked_hash_set 0.1.6`,
+# `constant_time_eq 0.4.2`) whose Cargo.toml manifests use
+# `edition = "2024"`, which cargo < 1.84 cannot parse at all.
+# Bumping to 1.85 is the proper fix; pinning each transitive is
+# whack-a-mole on the wrong layer.
+#
+# This split is structural, not a workaround: the main workspace
+# emits BPF binaries (constrained), the prover workspace emits host
+# binaries (free to use modern tooling).  CI mirrors the split --
+# the `prover` job in `.github/workflows/ci.yml` uses 1.85, every
+# other Rust job stays on 1.79.
 [toolchain]
-channel = "1.79.0"
+channel = "1.85.0"
 components = ["rustfmt", "clippy", "rust-src"]

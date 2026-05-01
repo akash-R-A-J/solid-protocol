@@ -1,11 +1,29 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# `solid-prover` lives in its own workspace because `ark-circom 0.5.0-alpha`
-# hard-pins `num-bigint = 0.4.3`, which conflicts with the `num-bigint`
-# version pulled by `groth16-solana` in the main (programs) workspace.
+# `solid-prover` lives in its own workspace AND pins its own toolchain
+# (rust 1.85 vs main workspace's 1.79; see `rust-toolchain.toml` for the
+# full rationale).  Two structural reasons:
 #
-# The two dependency graphs are genuinely incompatible — this is not a
-# workaround, it is the Cargo-idiomatic way to express "different tool, different
-# dep closure".  CI exercises BOTH workspaces.
+#  1. `ark-circom 0.5.0-alpha` hard-pins `num-bigint = "=0.4.3"`, which
+#     conflicts with the `num-bigint = ^0.4.4` that `light-poseidon`
+#     (transitively pulled by `solid-core` in the main workspace) needs.
+#
+#  2. `ark-circom` -> `wasmer-wasix` pulls modern transitives
+#     (`base64ct >= 1.8`, `linked_hash_set 0.1.6`, `constant_time_eq
+#     0.4.2`) whose Cargo.toml manifests declare `edition = "2024"`,
+#     which cargo < 1.84 cannot parse at all.  cargo 1.85's MSRV-aware
+#     resolver handles this correctly.
+#
+# The two graphs are genuinely incompatible -- not a workaround, it's
+# the Cargo-idiomatic way to express "different tool, different dep
+# closure".  CI exercises BOTH workspaces; the prover job uses rust
+# 1.85, every other Rust job stays on 1.79 (see
+# `.github/workflows/ci.yml` `prover` job).
+#
+# Keep solid-prover deps aligned with `ark-circom`'s arkworks version
+# (0.5 family).  Mixing arkworks 0.4 + 0.5 in the same dep tree
+# silently produces type-level incompatibility (`Bn254` from 0.4 is
+# NOT the same `Bn254` as from 0.5; `prove::<Bn254, ...>` won't
+# typecheck).  Audited 2026-05-01 during SOLID-SEC-017 closure.
 # ─────────────────────────────────────────────────────────────────────────────
 [workspace]
 members = ["."]
@@ -15,23 +33,52 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
+# MSRV intentionally diverges from the main workspace (which is 1.75
+# because Solana 1.18.x platform-tools must compile transitives at
+# edition 2021).  solid-prover is a host-only tool with no
+# platform-tools constraint, so its MSRV tracks the toolchain pin in
+# `rust-toolchain.toml` (1.85).  Combined with `.cargo/config.toml`'s
+# `resolver.incompatible-rust-versions = "fallback"` (inherited from
+# the repo root via cargo's upward config search), this lets the
+# resolver pick the latest transitives that compile under 1.85 -- the
+# right behaviour for this workspace.  See the file-header block for
+# the full rationale on why this split exists.
+rust-version = "1.85"
 
 [package]
 name = "solid-prover"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
+# Note: `solid-core` is intentionally NOT depended on here.  The prover
+# consumes Circom-emitted .wasm/.zkey artefacts, not Rust types from
+# solid-core.  Pulling solid-core would transitively require
+# `light-poseidon` -> `num-bigint ^0.4.4`, which conflicts with
+# `ark-circom 0.5.0-alpha`'s hard-pin `num-bigint = "=0.4.3"`.  The two
+# dep graphs are genuinely incompatible.  Audited 2026-05-01 during
+# SOLID-SEC-017 closure; revisit if a real symbol import becomes
+# necessary.
+#
+# All arkworks deps are at 0.5 to match `ark-circom 0.5.0-alpha`'s
+# transitive arkworks version.  Pre-2026-05-01 these were declared at
+# 0.4 in this file but `ark-circom 0.5.0-alpha` was pulling 0.5
+# transitively, so two arkworks majors coexisted in the dep tree --
+# `Bn254` from 0.4 is NOT the same type as `Bn254` from 0.5, and
+# `Groth16::<Bn254>::prove` would not typecheck against the 0.4
+# `ProvingKey<Bn254>` we constructed.  The build accidentally compiled
+# only because the prover's tests never ran end-to-end (CI silently
+# failed on the dep parse step).  Aligning to 0.5 closes this drift.
 [dependencies]
-solid-core = { path = "../../crates/solid-core" }
-ark-bn254    = "0.4"
-ark-ff       = "0.4"
-ark-groth16  = "0.4"
-ark-relations = "0.4"
-ark-serialize = "0.4"
-ark-std      = "0.4"
+ark-bn254    = "0.5"
+ark-ff       = "0.5"
+ark-groth16  = "0.5"
+ark-relations = "0.5"
+ark-serialize = "0.5"
+ark-std      = "0.5"
 ark-circom   = "0.5.0-alpha"
-ark-snark    = "0.4"
+ark-snark    = "0.5"
 sha2         = "0.10"
 thiserror    = "1.0"
 serde        = { version = "1.0", features = ["derive"] }

@@ -21,6 +21,14 @@ env:
   SOLANA_VERSION: 1.18.22
   ANCHOR_VERSION: 0.30.1
   RUST_VERSION: 1.79.0
+  # solid-prover lives in its own workspace and pins a NEWER toolchain
+  # (1.85) than the rest of the repo (1.79).  Reason: ark-circom 0.5
+  # transitively pulls modern crates whose Cargo.toml manifests use
+  # `edition = "2024"`, which cargo < 1.84 cannot parse at all.
+  # solid-prover is a host-only tool with no Solana platform-tools
+  # constraint so the bump is safe.  See
+  # `tools/solid-prover/rust-toolchain.toml` for the full rationale.
+  RUST_VERSION_PROVER: 1.85.0
   NODE_VERSION: 18
   CIRCOM_VERSION: 2.1.9
   SNARKJS_VERSION: 0.7.5
@@ -87,16 +95,15 @@ jobs:
           components: rustfmt, clippy
       - name: cargo fmt (root workspace)
         run: cargo fmt --all -- --check
-      - name: cargo fmt (solid-prover workspace)
-        working-directory: tools/solid-prover
-        run: cargo fmt --all -- --check
       - name: cargo clippy (root workspace, non-BPF libs)
         # Only lint the non-program crates here; programs are BPF-only and
         # are linted by `anchor build` with proper cfg gating.
         run: cargo clippy -p solid-core -p solid-light -- -D warnings
-      - name: cargo clippy (solid-prover)
-        working-directory: tools/solid-prover
-        run: cargo clippy --all-targets -- -D warnings
+      # solid-prover fmt/clippy moved to the `prover` job below, since
+      # that workspace pins a different toolchain (1.85 vs 1.79 here).
+      # Keeping them in this job would require installing two toolchains
+      # in one runner; cleaner to keep each workspace's gates with its
+      # own toolchain install.
 
   # ───────────────────────── 2. RUST LIBRARY TESTS ─────────────────────────
   rust:
@@ -125,21 +132,33 @@ jobs:
         # `anchor` job.
         run: cargo test -p zk-verifier --lib --no-fail-fast
 
-  # ───────────────────────── 3. PROVER (separate workspace) ─────────────────────────
+  # ───────────────────────── 3. PROVER (separate workspace, separate toolchain) ─────────────────────────
+  # solid-prover pins rust 1.85 (not 1.79) because its dep closure pulls
+  # crates whose manifests declare `edition = "2024"`, unparseable by
+  # cargo < 1.84.  See `tools/solid-prover/rust-toolchain.toml` for the
+  # full rationale.  This job installs 1.85 and runs fmt + clippy +
+  # tests for that workspace only.
   prover:
-    name: prover (tools/solid-prover)
+    name: prover (tools/solid-prover, rust 1.85)
     needs: toolchain
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ env.RUST_VERSION_PROVER }}
+          components: rustfmt, clippy
       - name: Cache prover target
         uses: actions/cache@v4
         with:
           path: tools/solid-prover/target
           key: prover-${{ runner.os }}-${{ hashFiles('tools/solid-prover/Cargo.lock') }}
+      - name: cargo fmt (solid-prover)
+        working-directory: tools/solid-prover
+        run: cargo fmt --all -- --check
+      - name: cargo clippy (solid-prover)
+        working-directory: tools/solid-prover
+        run: cargo clippy --all-targets -- -D warnings
       - name: Build + test prover
         working-directory: tools/solid-prover
         run: cargo test --no-fail-fast

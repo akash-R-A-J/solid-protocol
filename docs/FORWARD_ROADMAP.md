@@ -69,19 +69,46 @@ Section 4, Days 1..10.
                    `isInPrimeOrderSubgroup` as load-bearing gate;
                    `Sec007Bypass` event for telemetry).  **MAINNET
                    DEPLOY-BLOCKER** -- no Phase 5 sign-off without
-                   a real fix.  Three real-fix candidates (in
-                   increasing soundness order): SDK-level cofactor-
-                   clear (cheapest; trusts off-chain caller);
-                   move subgroup gate into the issuance circuit
-                   (~30K extra constraints; batches with SEC-006
-                   Part 2 trusted-setup cycle); `sol_babyjubjub_*`
-                   syscall upstream proposal.  Includes shipping
-                   the regression gate
+                   a real fix.
+
+                   **Two-track strategy** (see SEC-048 entry in
+                   `sec/SECURITY_REGISTRY.md` for the full rationale):
+
+                   - **Option B (ship for v1 mainnet):** move subgroup
+                     gate into the issuance circuit (~30K extra
+                     constraints; one cofactor-clear template + an
+                     equality assertion against the input pubkey).
+                     Batches with SEC-006 Part 2 + SEC-051 into a
+                     single trusted-setup re-run (`plan/BACKLOG_2026-05-01.md`
+                     Tier-1 batch).  Drop `sec007-skip-onchain` from
+                     the build sequence once the new circuit is live;
+                     remove the bypass arm + the `Sec007Bypass` event.
+                     Cost: ~10-15% proving-time hit, no on-chain CU
+                     cost.  **This is the v1 ship target.**
+                   - **Option C (parallel SIMD track, swap target
+                     post-v1):** propose `sol_babyjubjub_*` syscalls
+                     upstream to Solana so on-chain code can do
+                     subgroup / scalar-mul checks at curve speed
+                     (~few thousand CU).  Calendar 6-12 months through
+                     Solana governance + validator network upgrade;
+                     out of our control beyond the proposal itself.
+                     Engineering on our side ~2 weeks (SIMD draft +
+                     reference implementation in agave-validator +
+                     benchmark suite + security review request).  When
+                     it lands, swap zk-verifier from Option B to the
+                     syscall: removes the in-circuit constraint,
+                     lowers proving time, requires a final trusted
+                     setup re-run.
+
+                   Includes shipping the regression gate
                    `tests/integration/register_issuer_compute_units.test.ts`
                    that asserts the no-feature build still hits
                    the CU ceiling until the real fix lands.
+                   Option A (SDK cofactor-clear) is rejected as a
+                   workaround.
                    Tracking: B9 in `docs/E2E_BLOCKERS.md`, P0-7 in
-                   `docs/IMPROVEMENTS_ROADMAP.md`.
+                   `docs/IMPROVEMENTS_ROADMAP.md`,
+                   `plan/BACKLOG_2026-05-01.md` Tier-1 entries 2a + 2b.
   - SOLID-SEC-017  Replace `ark_std::test_rng()` in tools/solid-prover.
                    Half-day fix; add a "two proofs over the same inputs
                    must produce different nullifiers" regression test.

@@ -42,10 +42,10 @@ See `sec/README.md` for workflow, severity definitions, and status lifecycle.
 |-----------|------|-------------|-------|----------|-----------|-------|
 | CRITICAL  | 0    | 0           | 6     | 0        | 0         | 6     |
 | HIGH      | 4    | 0           | 19    | 0        | 0         | 23    |
-| MEDIUM    | 13   | 0           | 9     | 0        | 0         | 22    |
+| MEDIUM    | 12   | 0           | 10    | 0        | 0         | 22    |
 | LOW       | 4    | 0           | 6     | 0        | 0         | 10    |
 | INFO      | 4    | 0           | 2     | 0        | 0         | 6     |
-| **Total** | 25   | 0           | 42    | 0        | 0         | 67    |
+| **Total** | 24   | 0           | 43    | 0        | 0         | 67    |
 
 Delta vs prior summary (2026-05-01 morning): folded the 2026-05-01
 audit synthesis (NF-01..NF-07).  Closed in this session:
@@ -107,7 +107,7 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 | SOLID-SEC-014   | MEDIUM   | Open   | `stake_vault` is a single shared PDA across all issuers            |
 | SOLID-SEC-015   | MEDIUM   | Open   | `approve_via_trust_anchor` has no minimum-tier gate on target      |
 | SOLID-SEC-016   | MEDIUM   | Open   | `transfer_authority` is single-step (no propose/accept)            |
-| SOLID-SEC-017   | MEDIUM   | Open   | `solid-prover` uses `ark_std::test_rng()` -> breaks unlinkability  |
+| SOLID-SEC-017   | MEDIUM   | Fixed  | `solid-prover` uses `ark_std::test_rng()` -> breaks unlinkability.  Closed 2026-05-01: swapped to `rand::rngs::OsRng` in `tools/solid-prover/src/lib.rs::generate_batch_proof`; lightweight regression gate `sec_017_prover_rng_samples_fresh_entropy_per_invocation` asserts two `OsRng` instances return different `next_u64`s (a regression to `test_rng` would produce identical first samples from the deterministic seed and trip this).  Surfaced + fixed a pre-existing structural break in the prover workspace at the same time: dep closure required cargo >= 1.84 to even parse, so `tools/solid-prover/rust-toolchain.toml` bumped 1.79 -> 1.85 and arkworks deps aligned to 0.5 to match `ark-circom 0.5.0-alpha`'s transitive (eliminates two-version arkworks in the dep tree). |
 | SOLID-SEC-018   | MEDIUM   | Open   | `verifier_config` write lock on every verify caps throughput       |
 | SOLID-SEC-019   | MEDIUM   | Open   | `set_binding_status` / `transfer_tree_binding_authority` missing schema-hash re-assertion |
 | SOLID-SEC-020   | MEDIUM   | Fixed  | E2E scripts persist plaintext issuer + holder secrets              |
@@ -607,13 +607,45 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
 ### SOLID-SEC-017 -- `solid-prover` uses `test_rng`
 
 - **Severity:** MEDIUM
-- **Status:** Open
-- **Evidence:** `tools/solid-prover/src/lib.rs:90`
-- **Impact.** Privacy: identical witness produces identical proof
-  bytes.
-- **Remediation.** Use `rand::rngs::OsRng`.
-- **Regression gate.** Two identical-witness proofs must differ
-  byte-for-byte.
+- **Status:** **Fixed (2026-05-01).**
+- **Evidence (pre-fix):** `tools/solid-prover/src/lib.rs:90` -- `let mut
+  rng = ark_std::test_rng();`.  test_rng is a deterministic ChaCha20 RNG
+  seeded from a fixed nothing-up-my-sleeve constant; two cold-start
+  invocations of the prover produce byte-identical proof randomness.
+- **Impact (pre-fix).** Privacy: identical witness produces identical
+  proof bytes; an observer correlating two proofs by the same prover
+  (e.g. a verifier accepting a stream of proofs from one identity) can
+  conclude they came from the same prover instance regardless of
+  semantic content -- breaks unlinkability across calls.
+- **Fix.** Swapped to `rand::rngs::OsRng` (kernel-backed:
+  `getrandom(2)` on Unix, `BCryptGenRandom` on Windows).  Each
+  `Groth16::prove` call samples fresh entropy.
+- **Regression gate (lightweight).**
+  `tools/solid-prover/src/lib.rs::tests::sec_017_prover_rng_samples_fresh_entropy_per_invocation`
+  asserts two freshly-constructed `OsRng` instances return different
+  `next_u64`s.  A regression to `test_rng()` would produce identical
+  first samples from the deterministic seed and trip this.
+  Deliberately NOT a "two proofs over the same inputs differ"
+  test, because the protocol's *nullifier* IS deterministic per
+  verifier-nonce (an unlinkability property elsewhere); only the
+  Groth16 proof's blinding factors should differ, and exercising that
+  requires a real zkey + ~5s of proving time per call -- unnecessary
+  for a tripwire on the RNG choice.
+- **Companion fix (same arc).** Surfaced and closed a pre-existing
+  structural break in the prover workspace: its dep closure pulls
+  `ark-circom 0.5.0-alpha` -> wasmer-wasix -> `base64ct >= 1.8`,
+  `linked_hash_set 0.1.6`, `constant_time_eq 0.4.2`, all of which have
+  Cargo.toml manifests declaring `edition = "2024"` -- unparseable by
+  cargo < 1.84.  CI's `prover` job had been silently failing on this
+  parse error.  Fix: bumped `tools/solid-prover/rust-toolchain.toml`
+  from 1.79 to 1.85 (this is a separate workspace, host-only tool, no
+  Solana platform-tools constraint), aligned all arkworks deps to 0.5
+  to match `ark-circom`'s transitive (eliminates two-version arkworks
+  in the dep tree -- `Bn254` from 0.4 is NOT the same type as `Bn254`
+  from 0.5), refactored `SolIDProver` to store r1cs/wasm paths instead
+  of a stashed `CircomConfig` (arkworks 0.5's `CircomConfig<F>` is not
+  `Clone`).  `.github/workflows/ci.yml` updated: prover fmt + clippy +
+  tests now run under `RUST_VERSION_PROVER = 1.85.0`.
 
 ### SOLID-SEC-018 -- `verifier_config` write lock
 
@@ -1543,26 +1575,53 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
   ```
   `check_program_ids.py` is unaffected (program ID unchanged).  IDL
   hash is unaffected (pure feature gating, no schema change).
-- **Real fix candidates (in increasing soundness preference):**
-  1. **Cofactor-clear in the issuer SDK.**  Multiply candidate
-     pubkey by `8` (the cofactor) off-chain before submission; check
-     the result is non-identity.  On-chain stays at the
+- **Real fix candidates.**  Two-track strategy: ship Option B for v1
+  mainnet, advance Option C in parallel through Solana governance and
+  swap to it when it lands.  Option A is rejected as a workaround.
+  1. **Option A (rejected): cofactor-clear in the issuer SDK.**  Multiply
+     candidate pubkey by `8` (the cofactor) off-chain before submission;
+     check the result is non-identity.  On-chain stays at the
      `is_on_curve + !is_identity` consolation gate.  Cheapest, but
      trusts the off-chain SDK to do the multiplication; a malicious
-     caller can skip it and the bypass is invisible until the
-     issuer's first signed credential fails to verify in-circuit.
-  2. **Move the subgroup gate into the issuance circuit.**  Every
-     `issue_credential` proof commits to the issuer's pubkey; adding
-     a `is_in_prime_order_subgroup` constraint there makes the gate
-     enforcement a circuit-level invariant rather than a handler-
-     level one.  Costs ~30K extra constraints (one EdDSA-style
-     scalar mul) and shifts ZK proving cost up correspondingly.
-     Strongest soundness binding; slowest to ship (requires trusted
-     setup re-run, batches with SEC-006 Part 2).
-  3. **Solana BJJ syscall.**  Propose adding `sol_babyjubjub_*`
-     syscalls upstream so on-chain code can do subgroup /
-     scalar-mul checks at curve speed (a few thousand CU).  Multi-
-     quarter timeline; depends on validator buy-in.
+     caller can skip it and the bypass is invisible until the issuer's
+     first signed credential fails to verify in-circuit.  Equivalent in
+     security to today's bypass + off-chain predicate, just renamed.
+     Not a proper fix.
+  2. **Option B (ship for v1 mainnet): in-circuit BJJ subgroup check.**
+     Every issuance commits to the issuer's pubkey; adding a
+     `[8] * pk -- assert == pk` constraint to the issuance circuit
+     makes the subgroup check a circuit-level invariant rather than a
+     handler-level one.  An attacker submitting a non-subgroup pubkey
+     produces an invalid Groth16 proof; the on-chain pairing rejects.
+     Off-chain SDK predicate becomes defense-in-depth, no longer
+     load-bearing.  Cost: ~30K extra R1CS constraints (one
+     `EdwardsAffine::mul_bigint` over the cofactor and an equality
+     assertion), ~10-15% proving-time hit, no on-chain CU cost.
+     Requires a trusted setup re-run; batches with SEC-006 Part 2 +
+     SEC-051 into a single circuit revision.  **Strongest soundness
+     binding ship from our side.**
+  3. **Option C (parallel SIMD track, swap target post-v1):** propose
+     `sol_babyjubjub_*` syscalls upstream so on-chain code can do
+     subgroup / scalar-mul checks at curve speed (a few thousand CU).
+     - **Engineering time on our side:** ~2 weeks (SIMD draft +
+       reference implementation in agave-validator + benchmark suite +
+       security review request).
+     - **Calendar time:** 6-12 months through Solana governance + a
+       validator-network upgrade; out of our control beyond the proposal.
+     - **Why this is not "shelved":** Option B carries ~30K constraints
+       and ~10-15% proving cost forever; Option C lets us drop the
+       in-circuit gate in v1.x and recover that.  Worth running in
+       parallel.
+     - **Path:** (1) Draft SIMD with motivation, semantics, and gas
+       pricing; (2) prototype the syscall in agave-validator using
+       constant-time scalar mul over BN254's twisted-Edwards form;
+       (3) submit for Anza review; iterate; (4) once shipped on mainnet,
+       swap zk-verifier from Option B to the syscall (removes the
+       in-circuit constraint, lowers proving time, requires a final
+       trusted setup re-run).
+     - **Tracking:** when this advances past "drafted" status, open a
+       sibling registry entry SOLID-SEC-048-B with the SIMD link + Anza
+       review thread; collapse back into SEC-048 once landed.
 - **Mainnet deploy-blocker mechanics:**
   - `programs/issuer-registry/Cargo.toml` carries an in-file
     "NOT FOR MAINNET" warning on the `sec007-skip-onchain` feature.
