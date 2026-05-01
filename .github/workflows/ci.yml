@@ -438,7 +438,11 @@ jobs:
 
   # ───────────────────────── 9. PROGRAM-ID CONSISTENCY ─────────────────────────
   # Hard gate on the drift that previously blocked a devnet deploy:
-  # Anchor.toml ↔ `declare_id!` ↔ `deployments/*.json` must all agree.
+  # Anchor.toml ↔ `declare_id!` ↔ `cpi_helpers.rs` consts ↔
+  # `deployments/*.json` ↔ allowlisted ts-sdk owner files must all agree.
+  # Now also includes SOLID-SEC-081 (NF-05): the gate's TS-side coverage,
+  # plus its own regression suite (`scripts/test_check_program_ids.py`)
+  # that asserts the gate itself fires on planted-drift fixtures.
   program_id_consistency:
     name: program-id consistency
     runs-on: ubuntu-latest
@@ -447,8 +451,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run check_program_ids.py
+      - name: Run check_program_ids.py against the live tree
         run: python3 scripts/check_program_ids.py
+      - name: Run check_program_ids regression suite (SOLID-SEC-081)
+        run: python3 scripts/test_check_program_ids.py
 
   # ───────────────────────── 10. E2E LOCALNET ─────────────────────────
   # The SOLID-SEC-011 regression gate that Phase 1 deferred to
