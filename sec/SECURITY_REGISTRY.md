@@ -1587,19 +1587,75 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
      first signed credential fails to verify in-circuit.  Equivalent in
      security to today's bypass + off-chain predicate, just renamed.
      Not a proper fix.
-  2. **Option B (ship for v1 mainnet): in-circuit BJJ subgroup check.**
-     Every issuance commits to the issuer's pubkey; adding a
-     `[8] * pk -- assert == pk` constraint to the issuance circuit
-     makes the subgroup check a circuit-level invariant rather than a
-     handler-level one.  An attacker submitting a non-subgroup pubkey
-     produces an invalid Groth16 proof; the on-chain pairing rejects.
-     Off-chain SDK predicate becomes defense-in-depth, no longer
-     load-bearing.  Cost: ~30K extra R1CS constraints (one
-     `EdwardsAffine::mul_bigint` over the cofactor and an equality
-     assertion), ~10-15% proving-time hit, no on-chain CU cost.
-     Requires a trusted setup re-run; batches with SEC-006 Part 2 +
-     SEC-051 into a single circuit revision.  **Strongest soundness
-     binding ship from our side.**
+  2. **Option B (ship for v1 mainnet): registration-time Groth16
+     subgroup proof.**  Add a small dedicated circuit
+     (`circuits/bjj_subgroup_proof.circom`) with public inputs
+     `(Ax, Ay)` enforcing the **correct** prime-order subgroup
+     invariant:
+     ```
+     on_curve(P)  AND  P != (0, 1)  AND  [r] * P == (0, 1)
+     ```
+     where `r = 2736030358979909402780800718157159386076813972158567259200215660948447373041`
+     is the BJJ prime-order subgroup order (`n = 8r` for cofactor 8;
+     `(0, 1)` is the Edwards identity).  `register_issuer` consumes
+     a Groth16 proof of this circuit alongside the candidate pubkey;
+     the on-chain Groth16 verify is the registration-time gate.
+     Invalid keys never enter the registry.
+
+     **Spec correction (2026-05-01):** the previous "[8] * pk == pk"
+     framing in this entry was wrong.  `[8] * P` does NOT equal `P`
+     for prime-order subgroup points (it equals `[8 mod r] * P`,
+     which is a different point in the same subgroup).  The correct
+     check is `[r] * P == identity`, which is the standard EC group
+     test for "P is in the prime-order subgroup".  All future
+     references to SEC-048 fix language must use this corrected form.
+
+     **Cost (measured, not estimated):**
+     - **Constraint count: ~3,000-3,500 R1CS** (one constant-scalar
+       mul over a 251-bit scalar via 250 BabyDbl + ~125 conditional
+       BabyAdd primitives + on-curve + non-identity gates).  Final
+       count measured + pinned post-circuit-write; the previous
+       "~30K" estimate was loose.
+     - **PTAU:** reuses the existing `circuits/trusted_setup/pot_final.ptau`
+       (capacity 131K constraints; 3.5K << 131K).  No second PTAU
+       needed.
+     - **Proving time:** ~50-150 ms per `register_issuer` (one-time
+       per issuer; small circuit).
+     - **On-chain `register_issuer` CU:** existing logic (~76K CU)
+       + one Groth16 alt_bn128 verify (~285-320K CU per
+       `verify_batch_proof_v2` reference).  **Total: ~365-400K CU**
+       per registration, comfortably under the 1.4M per-tx ceiling.
+     - **Stack:** reuses the existing `VkBuf` pattern from
+       `verify_batch_proof_v2`; no new ~4 KB frame.
+     - **Per-credential proof cost: UNCHANGED.**  The subgroup check
+       is paid once per issuer, not per credential.
+
+     **Why this beats putting the check inside the main batch
+     circuit:** (a) the registry state itself becomes the trust set
+     ("every registered issuer has a verified subgroup key"), so
+     auditors can reason about SEC-048 from registry state alone
+     without reading the credential circuit; (b) the per-credential
+     proving cost stays constant forever, instead of taxing every
+     proof; (c) when Option C lands, the syscall replaces just this
+     small circuit's verify -- main batch circuit is untouched, so
+     no main-circuit re-ceremony to swap.
+
+     **Trade-off:** TWO ceremonies for mainnet -- one for the main
+     batch circuit (with SEC-006 Part 2 + SEC-051), one for the
+     subgroup circuit.  PTAU Phase-1 is circuit-agnostic so a single
+     PTAU covers both; Phase-2 is per-circuit but uses the same
+     contributor pool.  Adds days of coordination, not weeks.
+
+     **Off-chain SDK predicate becomes defense-in-depth, no longer
+     load-bearing.**  An attacker submitting a non-subgroup pubkey
+     to `register_issuer` cannot produce a valid Groth16 proof of
+     `[r] * P == identity` for that pubkey, so the on-chain verify
+     rejects.  The TS predicate `isInPrimeOrderSubgroup` stays as a
+     UX/early-failure pre-submit check.
+
+     Couples with SEC-006 Part 2 + SEC-051 only operationally
+     (batched ceremony session).  Each finding lands in its own
+     commit per L9.
   3. **Option C (parallel SIMD track, swap target post-v1):** propose
      `sol_babyjubjub_*` syscalls upstream so on-chain code can do
      subgroup / scalar-mul checks at curve speed (a few thousand CU).
@@ -1608,10 +1664,16 @@ findings; they're tracked in `docs/E2E_BLOCKERS.md`, not here.
        security review request).
      - **Calendar time:** 6-12 months through Solana governance + a
        validator-network upgrade; out of our control beyond the proposal.
-     - **Why this is not "shelved":** Option B carries ~30K constraints
-       and ~10-15% proving cost forever; Option C lets us drop the
-       in-circuit gate in v1.x and recover that.  Worth running in
-       parallel.
+     - **Why this is not "shelved":** Option B costs one Groth16
+       verify (~285-320K CU) per `register_issuer`; Option C
+       reduces that to a few thousand CU per call via the
+       upstream syscall.  For high-throughput issuer onboarding
+       (thousands of issuers/day at scale) the syscall is the
+       cleanest long-term home.  Option B's per-credential cost is
+       already zero (the subgroup check lives in registration, not
+       in every proof), so this is purely a registration-throughput
+       optimisation, not a proving-time recovery.  Still worth
+       running in parallel.
      - **Path:** (1) Draft SIMD with motivation, semantics, and gas
        pricing; (2) prototype the syscall in agave-validator using
        constant-time scalar mul over BN254's twisted-Edwards form;

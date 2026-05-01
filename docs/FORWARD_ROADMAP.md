@@ -74,17 +74,33 @@ Section 4, Days 1..10.
                    **Two-track strategy** (see SEC-048 entry in
                    `sec/SECURITY_REGISTRY.md` for the full rationale):
 
-                   - **Option B (ship for v1 mainnet):** move subgroup
-                     gate into the issuance circuit (~30K extra
-                     constraints; one cofactor-clear template + an
-                     equality assertion against the input pubkey).
-                     Batches with SEC-006 Part 2 + SEC-051 into a
-                     single trusted-setup re-run (`plan/BACKLOG_2026-05-01.md`
-                     Tier-1 batch).  Drop `sec007-skip-onchain` from
-                     the build sequence once the new circuit is live;
-                     remove the bypass arm + the `Sec007Bypass` event.
-                     Cost: ~10-15% proving-time hit, no on-chain CU
-                     cost.  **This is the v1 ship target.**
+                   - **Option B (ship for v1 mainnet, REVISED 2026-05-01):**
+                     registration-time Groth16 subgroup proof in a
+                     small dedicated circuit
+                     (`circuits/bjj_subgroup_proof.circom`).  Public
+                     inputs: (Ax, Ay).  Constraints: on-curve,
+                     non-identity, **[r]*P == identity** (the
+                     correct prime-order subgroup test; the earlier
+                     `[8]*P == P` framing in this doc was wrong --
+                     `[8]*P != P` for non-trivial subgroup points).
+                     `r` is the BJJ subgroup prime order, 251 bits.
+                     ~3-3.5K R1CS constraints (250 BabyDbl + ~125
+                     conditional BabyAdd + curve/identity gates);
+                     reuses the existing PTAU (131K capacity).
+                     `register_issuer` consumes a Groth16 proof of
+                     this circuit and verifies on-chain via the
+                     existing alt_bn128 path; bypass dropped.
+                     Total `register_issuer` CU ~365-400K (existing
+                     ~76K + one Groth16 verify ~285-320K).  **This
+                     is the v1 ship target.**
+
+                     Why a separate circuit (not in-batch): closes
+                     SEC-048 at the registry boundary so registry
+                     state is itself the trust set; per-credential
+                     proving cost stays unchanged forever; cleaner
+                     Option C migration (syscall replaces just this
+                     small circuit's verify, not the main batch
+                     ceremony).
                    - **Option C (parallel SIMD track, swap target
                      post-v1):** propose `sol_babyjubjub_*` syscalls
                      upstream to Solana so on-chain code can do
