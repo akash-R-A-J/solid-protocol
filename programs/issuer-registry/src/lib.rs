@@ -64,6 +64,31 @@ pub const SPL_AC_APPEND_DISCRIMINATOR: [u8; 8] = [0x95, 0x78, 0x12, 0xde, 0xec, 
 pub const SPL_AC_REPLACE_LEAF_DISCRIMINATOR: [u8; 8] =
     [0xcc, 0xa5, 0x4c, 0x64, 0x49, 0x93, 0x00, 0x80];
 
+// ─── SEC-048 Phase E.2: subgroup-VK upload + freeze-gate constants ────────
+//
+// The subgroup VK has its own state machine, separate from zk-verifier's
+// batch VK.  Both VKs go through identical chunked-upload + finalize +
+// rotation flows, but the trust roots are independent: rotating the
+// batch VK has no effect on the subgroup VK and vice versa.  We
+// duplicate the timelock + size cap constants here rather than CPI'ing
+// into zk-verifier because the two VKs serve different circuits and
+// must roll independently.
+
+/// SOLID-SEC-006 / ADR-0015 mirror for the SEC-048 subgroup VK.  48
+/// hours between `request_subgroup_vk_rotation` and `rotate_subgroup_vk`
+/// gives the DAO / watchers time to react to a compromised authority
+/// attempting to swap the VK.  Numerically equal to zk-verifier's
+/// `VK_ROTATION_TIMELOCK_SECONDS`; kept as a separate const so the two
+/// VKs can be governed independently if a future ADR tunes one without
+/// the other.
+pub const SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS: i64 = 48 * 60 * 60;
+
+/// Per-CPI cap minus account discriminator + Vec length prefix.  Mirrors
+/// zk-verifier's `VK_MAX_BYTES`.  The subgroup VK is much smaller
+/// (~390 bytes for a 2-input circuit) so this cap is comfortable
+/// headroom for future growth.
+pub const SUBGROUP_VK_MAX_BYTES: usize = 10_228;
+
 /// Compute the ADR-0014 issuer-tree leaf for a given `IssuerAccount`:
 /// `Poseidon(5)(authority, bjj_x, bjj_y, status_epoch, revocation_nonce)`.
 ///
@@ -2153,6 +2178,192 @@ pub mod issuer_registry {
         );
         Ok(())
     }
+
+    // ─── SEC-048 Phase E.2: subgroup VK chunked upload + freeze-gate ─────
+    //
+    // These ixs mirror zk-verifier's `initialize` /
+    // `store_verification_key` / `finalize_verification_key` /
+    // `request_vk_rotation` / `cancel_vk_rotation` /
+    // `rotate_verification_key` 1:1, but operate on a separate
+    // `SubgroupVerifierConfig` PDA so the two VKs roll independently.
+    // The verify path that consumes this VK is wired into
+    // `register_issuer` in Phase E.3; until that lands, this ix family
+    // is dormant from a soundness perspective and only exercised by
+    // host tests.
+
+    /// Initialize the subgroup-VK config PDA (authority only).  Idempotent
+    /// only in the trivial sense -- the Anchor `init` constraint fails on
+    /// re-init.
+    pub fn init_subgroup_verifier(ctx: Context<InitSubgroupVerifier>) -> Result<()> {
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+        config.authority = ctx.accounts.authority.key();
+        config.bump = ctx.bumps.subgroup_verifier_config;
+        config.paused = false;
+        config.next_vk_chunk = 0;
+        config.vk_initialized = false;
+        config.vk_finalized = false;
+        config.vk_generation = 0;
+        config.rotate_request_ts = 0;
+        msg!(
+            "SEC-048 Phase E.2: SubgroupVerifierConfig initialized.  Authority: {}",
+            config.authority
+        );
+        Ok(())
+    }
+
+    /// Append a VK chunk into the subgroup-VK storage PDA.
+    ///
+    /// Invariants (mirror zk-verifier's `store_verification_key`):
+    ///   1. Chunks must arrive in order (`chunk_index ==
+    ///      config.next_vk_chunk`).
+    ///   2. Cumulative size capped at `SUBGROUP_VK_MAX_BYTES`.
+    ///   3. SOLID-SEC-006 freeze-gate: refuses every write once
+    ///      `vk_finalized == true`.  Rotation MUST flow through
+    ///      `request_subgroup_vk_rotation` + 48h timelock +
+    ///      `rotate_subgroup_vk`.
+    pub fn store_subgroup_vk_chunk(
+        ctx: Context<StoreSubgroupVkChunk>,
+        chunk_index: u16,
+        chunk_data: Vec<u8>,
+        is_final_chunk: bool,
+    ) -> Result<()> {
+        let storage = &mut ctx.accounts.subgroup_vk_storage;
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+
+        require!(
+            config.authority == ctx.accounts.authority.key(),
+            ErrorCode::Unauthorized
+        );
+        require!(!config.vk_finalized, ErrorCode::SubgroupVkAlreadyFinalized);
+        require!(
+            chunk_index == config.next_vk_chunk,
+            ErrorCode::SubgroupVkChunkOutOfOrder
+        );
+
+        let incoming_len = chunk_data.len();
+        if chunk_index == 0 {
+            require!(
+                incoming_len <= SUBGROUP_VK_MAX_BYTES,
+                ErrorCode::SubgroupVkStorageFull
+            );
+            storage.data = chunk_data;
+        } else {
+            let new_total = storage
+                .data
+                .len()
+                .checked_add(incoming_len)
+                .ok_or(ErrorCode::Overflow)?;
+            require!(
+                new_total <= SUBGROUP_VK_MAX_BYTES,
+                ErrorCode::SubgroupVkStorageFull
+            );
+            storage.data.extend_from_slice(&chunk_data);
+        }
+
+        config.next_vk_chunk = config
+            .next_vk_chunk
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+
+        if is_final_chunk {
+            config.vk_initialized = true;
+            msg!(
+                "SEC-048 Phase E.2: subgroup VK stored: {} bytes across {} chunks",
+                storage.data.len(),
+                config.next_vk_chunk
+            );
+        }
+        Ok(())
+    }
+
+    /// SOLID-SEC-006 freeze the subgroup VK.  After this call,
+    /// `store_subgroup_vk_chunk` refuses every chunk; further changes
+    /// must flow through `request_subgroup_vk_rotation` +
+    /// `rotate_subgroup_vk`.
+    pub fn finalize_subgroup_vk(ctx: Context<SubgroupVerifierAuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+        require!(config.vk_initialized, ErrorCode::SubgroupVkNotSet);
+        require!(!config.vk_finalized, ErrorCode::SubgroupVkAlreadyFinalized);
+        config.vk_finalized = true;
+        msg!(
+            "SEC-048 Phase E.2: subgroup VK finalized at generation {}.  \
+             Further writes rejected; rotation requires \
+             request_subgroup_vk_rotation + {}s timelock + rotate_subgroup_vk.",
+            config.vk_generation,
+            SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006 start the subgroup-VK rotation timelock.  The VK
+    /// stays finalized and in effect for the full 48h window; this call
+    /// only records the moment after which `rotate_subgroup_vk` is
+    /// permitted.
+    pub fn request_subgroup_vk_rotation(ctx: Context<SubgroupVerifierAuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+        require!(config.vk_finalized, ErrorCode::SubgroupVkNotFinalized);
+        require!(
+            config.rotate_request_ts == 0,
+            ErrorCode::SubgroupVkRotationAlreadyRequested
+        );
+        let now = Clock::get()?.unix_timestamp;
+        require!(now > 0, ErrorCode::SubgroupVkRotationClockInvalid);
+        config.rotate_request_ts = now;
+        msg!(
+            "SEC-048 Phase E.2: subgroup VK rotation requested at unix_ts={}.  \
+             Earliest rotation at unix_ts={}.",
+            now,
+            now.saturating_add(SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS)
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006 cancel a pending subgroup-VK rotation.  No-op
+    /// against zero `rotate_request_ts`.  Authority-only.
+    pub fn cancel_subgroup_vk_rotation(ctx: Context<SubgroupVerifierAuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+        let prior = config.rotate_request_ts;
+        config.rotate_request_ts = 0;
+        msg!(
+            "SEC-048 Phase E.2: subgroup VK rotation cancelled (prior request_ts={}).",
+            prior
+        );
+        Ok(())
+    }
+
+    /// SOLID-SEC-006 complete a timelocked subgroup-VK rotation.
+    /// On success, resets `vk_initialized`, `vk_finalized`, and
+    /// `next_vk_chunk` so the operator can upload a fresh VK; bumps
+    /// `vk_generation`.  `subgroup_vk_storage.data` is NOT cleared
+    /// here; the next chunk-0 write overwrites it atomically (same
+    /// pattern as zk-verifier's `rotate_verification_key`).
+    pub fn rotate_subgroup_vk(ctx: Context<SubgroupVerifierAuthorityOnly>) -> Result<()> {
+        let config = &mut ctx.accounts.subgroup_verifier_config;
+        require!(config.vk_finalized, ErrorCode::SubgroupVkNotFinalized);
+        require!(
+            config.rotate_request_ts != 0,
+            ErrorCode::SubgroupVkNoPendingRotation
+        );
+        let now = Clock::get()?.unix_timestamp;
+        require!(
+            subgroup_vk_rotation_timelock_expired(config, now),
+            ErrorCode::SubgroupVkRotationTimelockNotExpired
+        );
+        config.vk_initialized = false;
+        config.vk_finalized = false;
+        config.next_vk_chunk = 0;
+        config.rotate_request_ts = 0;
+        config.vk_generation = config
+            .vk_generation
+            .checked_add(1)
+            .ok_or(ErrorCode::Overflow)?;
+        msg!(
+            "SEC-048 Phase E.2: subgroup VK rotated; generation now {}.  \
+             Upload fresh chunks via store_subgroup_vk_chunk + finalize_subgroup_vk.",
+            config.vk_generation
+        );
+        Ok(())
+    }
 }
 
 // ─── Account Contexts ──────────────────────────────────────────────────────
@@ -2730,6 +2941,69 @@ pub struct ReleaseVote<'info> {
     pub voter: Signer<'info>,
 }
 
+// ─── SEC-048 Phase E.2: subgroup-VK account contexts ──────────────────────
+
+/// PDA singleton; mirrors zk-verifier's `Initialize` for the
+/// `VerifierConfig` PDA, but seeded under `b"subgroup-verifier-config"`
+/// so the two configs can be governed independently.
+#[derive(Accounts)]
+pub struct InitSubgroupVerifier<'info> {
+    #[account(
+        init, payer = authority,
+        space = 8 + SubgroupVerifierConfig::SPACE,
+        seeds = [b"subgroup-verifier-config"],
+        bump
+    )]
+    pub subgroup_verifier_config: Account<'info, SubgroupVerifierConfig>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// VK chunked-upload context.  `init_if_needed` mirrors zk-verifier's
+/// `StoreVerificationKey` -- the storage PDA is born on the first
+/// `chunk_index == 0` write and persists across the upload session.
+#[derive(Accounts)]
+pub struct StoreSubgroupVkChunk<'info> {
+    #[account(
+        mut,
+        seeds = [b"subgroup-verifier-config"],
+        bump = subgroup_verifier_config.bump,
+    )]
+    pub subgroup_verifier_config: Account<'info, SubgroupVerifierConfig>,
+    #[account(
+        init_if_needed, payer = authority,
+        // 8 (disc) + 4 (Vec len) + SUBGROUP_VK_MAX_BYTES = 10240, the
+        // Solana per-CPI realloc cap.  Must stay in lockstep with
+        // `SUBGROUP_VK_MAX_BYTES` in `store_subgroup_vk_chunk`.
+        space = 8 + 4 + SUBGROUP_VK_MAX_BYTES,
+        seeds = [b"subgroup-vk-storage", subgroup_verifier_config.key().as_ref()],
+        bump
+    )]
+    pub subgroup_vk_storage: Account<'info, SubgroupVkStorage>,
+    #[account(
+        mut,
+        constraint = authority.key() == subgroup_verifier_config.authority @ ErrorCode::Unauthorized
+    )]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+/// Authority-only context for finalize / request / cancel / rotate
+/// against the subgroup-VK config.  Mirrors zk-verifier's
+/// `AuthorityOnly` 1:1 with the seed swap.
+#[derive(Accounts)]
+pub struct SubgroupVerifierAuthorityOnly<'info> {
+    #[account(
+        mut,
+        seeds = [b"subgroup-verifier-config"],
+        bump = subgroup_verifier_config.bump,
+        has_one = authority @ ErrorCode::Unauthorized
+    )]
+    pub subgroup_verifier_config: Account<'info, SubgroupVerifierConfig>,
+    pub authority: Signer<'info>,
+}
+
 // ─── State ─────────────────────────────────────────────────────────────────
 
 #[account]
@@ -2867,6 +3141,86 @@ pub struct StakerAccount {
     pub last_stake_slot: u64,
 }
 
+// ─── SEC-048 Phase E.2: subgroup-VK state ─────────────────────────────────
+
+/// State machine for the SEC-048 subgroup-VK upload + rotation.  Layout
+/// is similar to zk-verifier's `VerifierConfig`, minus the fields that
+/// only make sense for the batch verifier (proof_count,
+/// timestamp_skew_seconds): the subgroup verify has no Clock binding
+/// and no per-call nullifier counter -- it's a pure registration-time
+/// gate.  Each field's semantics are identical to its zk-verifier
+/// counterpart so an operator who knows one runbook knows the other.
+#[account]
+pub struct SubgroupVerifierConfig {
+    /// Authority allowed to upload, finalize, request rotation, and
+    /// rotate.  Same key as `RegistryConfig.authority` for v1 (single-
+    /// signer); SEC-013 / SEC-043 will swap to a Squads 3-of-5 PDA.
+    pub authority: Pubkey,
+    /// `init` bump cached so PDA-signed paths can resolve without a
+    /// runtime `find_program_address`.
+    pub bump: u8,
+    /// Mirror of zk-verifier's `paused` field.  Reserved for future
+    /// emergency-pause wiring; unused on v1 but committed to the layout
+    /// up-front so a future ADR doesn't need to migrate the account.
+    pub paused: bool,
+    /// `vk_initialized == true` once the final chunk has been stored;
+    /// gates `finalize_subgroup_vk`.
+    pub vk_initialized: bool,
+    /// Index of the next chunk expected by `store_subgroup_vk_chunk`.
+    /// Bumps strictly monotonically; reset to 0 only on a completed
+    /// rotation.
+    pub next_vk_chunk: u16,
+    /// SOLID-SEC-006 freeze-gate.  Flips to `true` on
+    /// `finalize_subgroup_vk`.  While `true`, `store_subgroup_vk_chunk`
+    /// refuses every write.
+    pub vk_finalized: bool,
+    /// SOLID-SEC-006 monotonic rotation counter.  Starts at 0; bumps
+    /// on every successful `rotate_subgroup_vk`.  Independent of
+    /// zk-verifier's `vk_generation` -- the two VKs roll separately.
+    pub vk_generation: u16,
+    /// SOLID-SEC-006 rotation-request timelock anchor.  Zero means no
+    /// pending rotation.  Non-zero means the authority has called
+    /// `request_subgroup_vk_rotation`; `rotate_subgroup_vk` refuses
+    /// until `Clock::unix_timestamp >= rotate_request_ts +
+    /// SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS`.
+    pub rotate_request_ts: i64,
+}
+
+impl SubgroupVerifierConfig {
+    // 32 authority + 1 bump + 1 paused + 1 vk_initialized
+    // + 2 next_vk_chunk + 1 vk_finalized + 2 vk_generation
+    // + 8 rotate_request_ts = 48 bytes.
+    //
+    // Compared to zk-verifier's `VerifierConfig::SPACE = 60`: we drop
+    // `proof_count` (8 bytes; nothing on this VK to count) and
+    // `timestamp_skew_seconds` (4 bytes; no Clock binding).  Any future
+    // field add must bump this constant in the same commit.
+    pub const SPACE: usize = 32 + 1 + 1 + 1 + 2 + 1 + 2 + 8;
+}
+
+/// Heap-backed VK byte buffer; layout mirrors zk-verifier's `VkStorage`.
+#[account]
+pub struct SubgroupVkStorage {
+    pub data: Vec<u8>,
+}
+
+/// SOLID-SEC-006 helper: is the pending subgroup-VK rotation past its
+/// timelock?  Pure so the state-transition invariants are host-testable
+/// without spinning up a validator.  Returns `false` when there is no
+/// pending rotation (`rotate_request_ts == 0`).
+pub fn subgroup_vk_rotation_timelock_expired(
+    config: &SubgroupVerifierConfig,
+    now_unix_ts: i64,
+) -> bool {
+    if config.rotate_request_ts == 0 {
+        return false;
+    }
+    now_unix_ts
+        >= config
+            .rotate_request_ts
+            .saturating_add(SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS)
+}
+
 // ─── Errors ────────────────────────────────────────────────────────────────
 
 #[error_code]
@@ -2987,6 +3341,25 @@ pub enum ErrorCode {
     IssuerNotRevoked,
     #[msg("DAO dispute window has not closed yet; wait until cooldown_ends_at to withdraw post-revoke (SEC-061 / H3)")]
     DisputeWindowOpen,
+    // ─── SEC-048 Phase E.2: subgroup-VK upload + freeze-gate errors ─────
+    #[msg("Subgroup VK chunk index does not match next expected chunk (SEC-048 Phase E.2)")]
+    SubgroupVkChunkOutOfOrder,
+    #[msg("Subgroup VK storage exceeds SUBGROUP_VK_MAX_BYTES (SEC-048 Phase E.2)")]
+    SubgroupVkStorageFull,
+    #[msg("Subgroup VK has not been uploaded; finalize requires final chunk first (SEC-048 Phase E.2)")]
+    SubgroupVkNotSet,
+    #[msg("Subgroup VK already finalized; rotation requires the request_subgroup_vk_rotation timelock path (SEC-048 Phase E.2)")]
+    SubgroupVkAlreadyFinalized,
+    #[msg("Subgroup VK is not finalized; rotation refuses until finalize_subgroup_vk lands (SEC-048 Phase E.2)")]
+    SubgroupVkNotFinalized,
+    #[msg("Subgroup VK rotation already pending; cancel before requesting another (SEC-048 Phase E.2)")]
+    SubgroupVkRotationAlreadyRequested,
+    #[msg("Subgroup VK rotation timelock has not expired (48h since request_subgroup_vk_rotation) (SEC-048 Phase E.2)")]
+    SubgroupVkRotationTimelockNotExpired,
+    #[msg("No pending subgroup VK rotation to complete (SEC-048 Phase E.2)")]
+    SubgroupVkNoPendingRotation,
+    #[msg("Clock returned a non-positive unix_timestamp; rotation request refused (SEC-048 Phase E.2)")]
+    SubgroupVkRotationClockInvalid,
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────
@@ -3511,5 +3884,92 @@ mod tests {
         let err = verify_issuer_binding_anchor(&buf, &[0u8; 32], 0, &[]).unwrap_err();
         let expected: u32 = ErrorCode::InvalidIssuerTreeBinding.into();
         assert_eq!(anchor_error_code(err), expected);
+    }
+
+    // ─── SEC-048 Phase E.2: SubgroupVerifierConfig state-machine tests ─
+
+    /// Build a fresh, post-`init_subgroup_verifier` config.  Mirrors the
+    /// state set by `init_subgroup_verifier` so each test starts from the
+    /// canonical zero state.
+    fn fresh_subgroup_config() -> SubgroupVerifierConfig {
+        SubgroupVerifierConfig {
+            authority: Pubkey::new_unique(),
+            bump: 255,
+            paused: false,
+            vk_initialized: false,
+            next_vk_chunk: 0,
+            vk_finalized: false,
+            vk_generation: 0,
+            rotate_request_ts: 0,
+        }
+    }
+
+    #[test]
+    fn subgroup_vk_config_space_matches_layout() {
+        // 32 authority + 1 bump + 1 paused + 1 vk_initialized
+        // + 2 next_vk_chunk + 1 vk_finalized + 2 vk_generation
+        // + 8 rotate_request_ts = 48.
+        assert_eq!(SubgroupVerifierConfig::SPACE, 48);
+        // SPACE plus the 8-byte Anchor discriminator must fit in
+        // Solana's per-CPI realloc cap; trivially true at 56 bytes.
+        assert!(8 + SubgroupVerifierConfig::SPACE < 1024);
+    }
+
+    #[test]
+    fn subgroup_vk_rotation_timelock_no_pending_returns_false() {
+        let cfg = fresh_subgroup_config();
+        // No request -> never expired, regardless of clock.
+        assert!(!subgroup_vk_rotation_timelock_expired(&cfg, 0));
+        assert!(!subgroup_vk_rotation_timelock_expired(&cfg, i64::MAX));
+    }
+
+    #[test]
+    fn subgroup_vk_rotation_timelock_inside_window_returns_false() {
+        let mut cfg = fresh_subgroup_config();
+        cfg.rotate_request_ts = 1_700_000_000;
+        // 47h59m elapsed -- still inside the 48h window.
+        let now = cfg.rotate_request_ts + SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS - 60;
+        assert!(!subgroup_vk_rotation_timelock_expired(&cfg, now));
+    }
+
+    #[test]
+    fn subgroup_vk_rotation_timelock_at_or_past_expiry_returns_true() {
+        let mut cfg = fresh_subgroup_config();
+        cfg.rotate_request_ts = 1_700_000_000;
+        // Exactly 48h elapsed.
+        let now_at = cfg.rotate_request_ts + SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS;
+        assert!(subgroup_vk_rotation_timelock_expired(&cfg, now_at));
+        // 1s past the window.
+        assert!(subgroup_vk_rotation_timelock_expired(&cfg, now_at + 1));
+        // Far past.
+        assert!(subgroup_vk_rotation_timelock_expired(&cfg, i64::MAX));
+    }
+
+    #[test]
+    fn subgroup_vk_rotation_timelock_handles_saturation_safely() {
+        // i64 overflow safety: a request at i64::MAX cannot complete
+        // (saturating_add -> i64::MAX so any finite `now` is < target).
+        let mut cfg = fresh_subgroup_config();
+        cfg.rotate_request_ts = i64::MAX;
+        assert!(!subgroup_vk_rotation_timelock_expired(&cfg, i64::MAX - 1));
+        // Equality at i64::MAX returns true (saturating_add caps there).
+        assert!(subgroup_vk_rotation_timelock_expired(&cfg, i64::MAX));
+    }
+
+    #[test]
+    fn subgroup_vk_rotation_timelock_is_48_hours() {
+        // Source-level pin against ADR-0015 + zk-verifier's matching
+        // const.  If the DAO ever lowers either, both must move
+        // together (or the SECURITY_REGISTRY entry must explicitly
+        // record the divergence).
+        assert_eq!(SUBGROUP_VK_ROTATION_TIMELOCK_SECONDS, 48 * 3600);
+    }
+
+    #[test]
+    fn subgroup_vk_max_bytes_fits_per_cpi_realloc_cap() {
+        // 8 (Anchor discriminator) + 4 (Vec len prefix) +
+        // SUBGROUP_VK_MAX_BYTES must be <= MAX_PERMITTED_DATA_INCREASE
+        // = 10240.  Mirrors zk-verifier's same gate.
+        assert_eq!(8 + 4 + SUBGROUP_VK_MAX_BYTES, 10240);
     }
 }
