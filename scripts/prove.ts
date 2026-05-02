@@ -472,7 +472,21 @@ async function main() {
   console.log('\nDone.');
 }
 
-main().catch(e => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // SEC-048 Phase E.5 (diagnosed 2026-05-02): snarkjs's
+    // `groth16.fullProve` (called inside `generateBatchProof`) spawns
+    // N worker_threads (one per CPU core) and does NOT terminate them.
+    // Combined with @solana/web3.js Connection's HTTP-keepalive
+    // socket, the Node event loop stays alive after main() returns.
+    // Without this explicit exit, `npm run e2e` hangs after the final
+    // `verified: true` print until SIGTERM.  Standard pattern for
+    // one-shot snarkjs-using scripts.  Confirmed via
+    // `process._getActiveHandles()` showing N MessagePort + 1 TCP
+    // Socket; see ~/.claude/.../memory/feedback_snarkjs_workers_hang.md.
+    process.exit(0);
+  })
+  .catch(e => {
+    console.error(e);
+    process.exit(1);
+  });

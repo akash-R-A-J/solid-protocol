@@ -61,15 +61,27 @@ Section 4, Days 1..10.
 
 ### Phase 4 -- P0 (blocking)
 
-  - SOLID-SEC-048  `register_issuer` BJJ prime-order subgroup check
-                   exceeds the 1.4M CU per-tx ceiling on BPF.
-                   Localnet/devnet currently runs an interim
-                   bypass (Cargo feature `sec007-skip-onchain` on
-                   issuer-registry; off-chain TS predicate
-                   `isInPrimeOrderSubgroup` as load-bearing gate;
-                   `Sec007Bypass` event for telemetry).  **MAINNET
-                   DEPLOY-BLOCKER** -- no Phase 5 sign-off without
-                   a real fix.
+  - SOLID-SEC-048  CLOSED 2026-05-02 via Phase E (Option B).  Small
+                   dedicated Groth16 circuit
+                   (`circuits/bjj_subgroup_proof.circom`) proves
+                   `[r] * P == identity AND on_curve(P) AND P != identity`
+                   off-chain (~50-150ms per registration); on-chain
+                   `solid_light::groth16::verify_groth16_proof::<2>`
+                   consumes a 256-byte proof inside `register_issuer`
+                   (measured 180,037 CU for the full ix; 35% of the
+                   500K cuIx).  `sec007-skip-onchain` Cargo feature
+                   DELETED; `Sec007Bypass` event DELETED.  Subgroup VK
+                   uploaded via new `init_subgroup_verifier` /
+                   `store_subgroup_vk_chunk` / `finalize_subgroup_vk`
+                   ix family with the same SOLID-SEC-006 48h-timelock
+                   rotation pattern as the batch VK.  Sibling
+                   SOLID-SEC-083 (auth-race hardening) closed in the
+                   same arc.  E2E green end-to-end on the no-bypass
+                   build: `verified: true` + replay-rejection.  See
+                   `sec/SECURITY_REGISTRY.md` SEC-048 for the full
+                   closure narrative + commit refs.
+
+                   --- ORIGINAL P0 PLAN (PRESERVED FOR HISTORY) ---
 
                    **Two-track strategy** (see SEC-048 entry in
                    `sec/SECURITY_REGISTRY.md` for the full rationale):

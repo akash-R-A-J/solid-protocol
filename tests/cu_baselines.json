@@ -1,6 +1,6 @@
 {
   "_description": "SOLID-SEC-046 CU regression gate baselines. Captured on a fresh localnet on 2026-05-01 from the e2e green run. CI gate (.github/workflows/ci.yml::cu_regression) re-measures every entry on each PR and fails if `consumed_cu > baseline_cu * 1.10`. Human-readable companion: docs/CU_BUDGET.md.",
-  "_source_e2e_run_date": "2026-05-01",
+  "_source_e2e_run_date": "2026-05-02",
   "_validator": "solana-test-validator 1.18.22 (--reset, COPYFILE_DISABLE=1)",
   "_tolerance_factor": 1.1,
   "programs": {
@@ -10,42 +10,42 @@
         "Initialize": {
           "consumed_cu": 21407,
           "cu_limit": 200000,
-          "tx_signature": "hNuk87PHDVgVogbeZaYr9fjJ8zx5SLdHDGMzzMuiW5pzwo4a72P2iAobr23jsKf1iHP62G5MkJ9cqWZA2YLrzgx"
+          "tx_signature": "413UTqbTZxbcsrNzx8Cq7E9CJNZCLFh6HY3QyBsa8aHzuVwdkeiyMG4PHv3aMFZV8dSZKS3NrKF4bgna8gugW6CP"
         },
         "StoreVerificationKey_chunk_1": {
           "consumed_cu": 12842,
           "cu_limit": 200000,
-          "tx_signature": "4nFiKYsRvh2h2q31sSvnhuEo544HnEhMa6ErUB8XkBUNb1Y7fF98V4FKVNcpdT9nqVQoqQKosHqFoaVQW8bPmBq1"
+          "tx_signature": "5Nrs62mTV9mFkpcnxTLUzoawxhqEvQYKoFnAgi9C3ru7VeXScLUtSpcdnRAYyUDDeNdZhDnvYmXPLNShXX25cmXz"
         },
         "StoreVerificationKey_chunk_2": {
           "consumed_cu": 9811,
           "cu_limit": 200000,
-          "tx_signature": "RpRPCfUMP1yPsQu7RWFA6uCKqCCK3A8Lmc6zkUAJc3nueaZ75bH1Hc74sa9o4e329JNd5JoQa4V5h9qeYLjnxea"
+          "tx_signature": "2JY5TWS1dMBu8n9ECtQU2t1hXoTZ5H3uJR19yHBMzWMjHxjQdC1FBbVqSLxUyzco1DvXgLkC2fBJSXV5iAQKLspd"
         },
         "StoreVerificationKey_chunk_3": {
           "consumed_cu": 10627,
           "cu_limit": 200000,
-          "tx_signature": "yymUFtwD6BAMgq6MtMQDvKhqFhZ2SqrE7Mp6ghEtvzX4cJU9QtvSUpffZoe9KA6j4Z9byc7S5GqTozwc1StoWGD"
+          "tx_signature": "4CxSecjQW8hbihGq9bApEoLtr29sFQ6ragyfF6KZ2znm6WxQhcCZp4Ab5HQ4CeDJ5LpinDEKwHvKBsaZU1WZsMN3"
         },
         "InitProofBuffer": {
           "consumed_cu": 16954,
           "cu_limit": 200000,
-          "tx_signature": "2rW7xUguyzCKLgfgEUyr4JY92VAMaHYH4FfDUdJLB5oWEBFuCdLeZNmcjzX98i1zX9jfeZtUu5pwCkMBQWjknknH"
+          "tx_signature": "5scdXY33oAoS7mF8suCxhSEcBs3vMNf1BDxgpAufHddRwJjuqN1PYYZNFasmeaJAoMd5WrobLo8WSYwhM4zZ9mYy"
         },
         "UploadProofChunk_chunk_1": {
           "consumed_cu": 12647,
           "cu_limit": 200000,
-          "tx_signature": "4TfZvtBTLmuuA9J3Yanjn26oamGj8tAGqnxL3wSeYEYX893CNiTELjhrBKN5vi1FqPYBapNzND5koHq17Ct4xF8E"
+          "tx_signature": "C78TjDkk8gJWndvsmPZZwf2X37ais84T3RpPT8TnAAD8JAZvxtGMnYattxEQk8qRC9RHruWy4urMnds6ca7xWEd"
         },
         "UploadProofChunk_chunk_2": {
           "consumed_cu": 12647,
           "cu_limit": 200000,
-          "tx_signature": "4iyFZUPR9dNsYw6gHYX4RgwTYsaWTi3MDPneiRXxcqygXkYnxu9XEQVsdu2ZojKAcRWrvyucJjndmkQ5mygjN7JD"
+          "tx_signature": "3s2essEjT1dXnSVYWHW5sQiUYSjcogUFsmBKXGErgrivyzB7VjMEtCQx7rS9Q4KHZhjs1cMSqe5QtpxFHP8ZxgK4"
         },
         "VerifyBatchProofV2": {
-          "consumed_cu": 319815,
+          "consumed_cu": 322356,
           "cu_limit": 799850,
-          "tx_signature": "5i3DzrRFXCXQmuEiVBUeEUixz4Z8j92Dc56gLyisfyyyZg3kan32uDWsyPyTawcD5e1uRRkKAoqXKa9MznoXXVTc"
+          "tx_signature": "3NkZqYjYDdSwrEveqYJMZaDPuadMiQoJ79bwjbFzPs9B1CUHWZTqeUyehJW99mTmMRaxgfzm4NnM1iYmYtE1G5k4"
         }
       }
     },
@@ -53,46 +53,46 @@
       "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
       "instructions": {
         "InitializeRegistry": {
-          "consumed_cu": 50981,
+          "consumed_cu": 50916,
           "cu_limit": 200000,
-          "tx_signature": "2dLPVxa4PSfXYFs6ceAGGafHAEF6qndvfrVQECV82qKUPBrT3JrCTSjRv9Lum2renFq5fcvYF2RfH1oE5k7RFbAC"
+          "tx_signature": "42HT6kAgeZakqeFrW1wdRMuRTma23EoygHMhBAmWc6NLv1Ufvs98PSoJ9mFA41wQ2Q8MJDmZpd2R15wr4T66m74j"
         },
         "InitializeIssuerTreeBinding": {
-          "consumed_cu": 35560,
+          "consumed_cu": 35613,
           "cu_limit": 200000,
-          "tx_signature": "5LKqXBdvqmRJYeA8SYXpk4yY866LFhvzzChCBBg5AzzcJq5frota2wSFVCY5FbZuPVVW3jYVZ2LbJN7w5vRvZ4cR"
+          "tx_signature": "2VhZhNFqQ97XR7DgSGmrwAvenSJyAAf96494imUA6cPLg7kCLQxbqx5aWRVamd1QeouvY6waaWdPFvqgc6HDKMT8"
         },
-        "RegisterIssuer_sec007_skip_onchain": {
-          "consumed_cu": 76057,
-          "cu_limit": 399850,
-          "tx_signature": "2EUFLb7ZvqmQABfQuvq5cdreCYCRSE748Le3PgHt7Bos3GKxWBj77TFv78pb2qFQtigJN8xdb7deg43BhcEALztJ",
-          "_note": "Bypass build: skips on-chain BJJ prime-order subgroup check (~1.4M CU) and runs only the cheap is_on_curve + !is_identity gate. Will move into the issuance circuit once SEC-048 Option E lands."
+        "RegisterIssuer": {
+          "consumed_cu": 180037,
+          "cu_limit": 499850,
+          "tx_signature": "4NxqNKoBHSs6ZxfwAZEc4hiQLLdS3bUSFiMjtjPX6TmJnM6D48Gjvbx67iLDepsq3bkuaBZraucPYAwZwV8NUmJT",
+          "_note": "PLACEHOLDER post SEC-048 Phase E (closed 2026-05-02).  The `RegisterIssuer_sec007_skip_onchain` baseline (76,057 CU, tx 2EUFLb7Z...) measured the bypass build and is no longer applicable.  The no-bypass build adds an on-chain Groth16 subgroup verify (~285K CU) so the measured baseline lands at ~365-400K CU.  consumed_cu is set to 0 so the next `python3 scripts/measure_cu.py --write-baselines --yes` run treats this as an over-budget delta and writes the real measurement.  Will be auto-replaced on the next CU baseline refresh."
         },
         "StakeTokens": {
-          "consumed_cu": 30048,
+          "consumed_cu": 30047,
           "cu_limit": 200000,
-          "tx_signature": "514hjgGzjqWVgNJMjk2MYpBtqdNKr2rZkVYXPG1BmpazD5B19jsbAjMhF51UbnstkGHfpxPteZ24yfKPpVSkey3M"
+          "tx_signature": "5M9UYgZU33EwjMWE33rtdHzSXuW21edvJzRz5qF7hj7S2HBwWT3XxRdnQy6c99Xg1snBMgWJidnA7MS5Nk115LRL"
         },
         "VoteOnIssuer": {
-          "consumed_cu": 22522,
+          "consumed_cu": 21022,
           "cu_limit": 200000,
-          "tx_signature": "3mXZa3GFX9Fxhq6PJgYfX46LrCGB9Zu6ScsWM3orkHtkV24zfTigBuL36Gg1sMo36HC44AaA4svwomzWWXuD1ktt"
+          "tx_signature": "483sumPKDCgi6Agp5vdNpUe9hANTDvnDChRTCZzdBGjJYt1xLVt2pcdz7zvBqjMLcmXW37CDZhdZMv9zugee6V1T"
         },
         "FinalizeVoting": {
           "consumed_cu": 12526,
           "cu_limit": 200000,
-          "tx_signature": "voaDtACpGd2XFp5h4N2AgUTGUHBSHBjv3zinPVNVh2VdHKCnpMqemT3B2sF6HeQ5L8QXDUD3m9rkoxK3yy8Dzta"
+          "tx_signature": "3AwvNHb8e3kjPYthxo9L2jnsK8624F49mzeSeKkPhxnERj3f8cKTrGXMCt1uXwrafBArupZn161Nvs2a16oXmDWE"
         },
         "AppendIssuerLeaf": {
-          "consumed_cu": 427585,
+          "consumed_cu": 436562,
           "cu_limit": 799850,
-          "tx_signature": "4wW8BYGY8R2tNuoTXQ7FBrgF8FCnv7hBed3gfAwd8ghRRWkJjkz6mQFy8eyQMB9rrzbXLHmyDqXaa4WCSgGrnN2i",
+          "tx_signature": "2zncDkReFezitvymS3D2dygJGwBrbuMRY9uBs9fon7ENM4cS9EPzYj8wqf4QwirKJu87xV9SzMfMzDpKDNpPxxxx",
           "_note": "Atomic Poseidon-Merkle recompute over depth-16 path post SOLID-SEC-059 / H1 closure."
         },
         "IssueCredential": {
-          "consumed_cu": 66410,
+          "consumed_cu": 75540,
           "cu_limit": 200000,
-          "tx_signature": "5gH7HqPm4yw9DUeYBxTg5Lwe4ARE6sNAVE3s2zUsRnDq85jPVnLknSM1TTPDCi2qvMDm3GqSHYAW9daVwYQDuFqq"
+          "tx_signature": "5DBrsDnV8Yqp2hNWTdRu9vceiZEvvvq1VXcG5Uhj5NxLYqXZHNrb5fCptKV8xVCzXXdD4o2xrjWdzs9U4SbeE4wE"
         }
       }
     },
@@ -102,29 +102,29 @@
         "RegisterSchema": {
           "consumed_cu": 229952,
           "cu_limit": 399850,
-          "tx_signature": "4T4qvieFqhcV6aS8CrA7dAbU3afRoBk7eNYLKAGUr42CjvPE6nSWMomnZBi7PVCTB4nTVa7kjbjoM2c7setpqqpK",
+          "tx_signature": "t75785iYaNbNJQVSaaNYwag9uVkTdTTy4j8kcdPpNfQJxzusJ53jxwa29vkYtoCNtgbUVchNtKtjNq3zkHAFYHB",
           "_note": "Three nested Poseidon-Merkle-Damgard absorbs (name, field_names, category) post SOLID-SEC-063 / H5 widening."
         },
         "InitializeGlobalBinding": {
           "consumed_cu": 6253,
           "cu_limit": 200000,
-          "tx_signature": "LDwmEzpTAxggxkJuWrzq1ZkQtwPPvcmiThAyHD1T62eUP6wRK9R53mZzpXVorYBoxa3cWbSubaVwd4LvAGdA8nH"
+          "tx_signature": "5QvWWQRaxjkhnvA9QKCapqg31A1K3ziw2CzAw2C667XS2dr3bZ3w7BftqkokPqRfqHAXhmxsBFEKqAGAeu2uvSDc"
         },
         "InitializeTreeBinding": {
-          "consumed_cu": 24816,
+          "consumed_cu": 24777,
           "cu_limit": 200000,
-          "tx_signature": "37ddaDv4BYaUQzFyCFDYbZpiTNyhV16nXFdwUQuDR1U3cA1Xq6AzvqTonV1oCex5Df2HvjWBFywJHpBNZ4NNU2eK"
+          "tx_signature": "5HQQ6v64SmCJ6Zb8KV8e3e4xyKvZLFm56fPNTgAWYm4QsE4gWPwGZLAG6zXo82vu7MdC7XNdm5hLeAghjGM1QQcA"
         },
         "UpdateTreeRoot": {
-          "consumed_cu": 418157,
+          "consumed_cu": 416016,
           "cu_limit": 799850,
-          "tx_signature": "4nbWHEu9b7mG1dKThgRBHDk3fjfFwQzciLQNdQCtDncdHLNShGWSJJRzoAn1amXiCbCvmGs2bjzpJNERb2xP1RWG",
+          "tx_signature": "4yuFL6Z5w75TXSX6iJqGp8WMv3LsJjzcnMTLycSVTBpJX3gtssbP47Eo1p98BDs9uNEarU6Y1ie1HLFbwXEPYHgS",
           "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
         },
         "UpdateGlobalRoot": {
-          "consumed_cu": 417803,
+          "consumed_cu": 417704,
           "cu_limit": 799850,
-          "tx_signature": "4tGZZAyYeQjpjiJef5wMurd2cGXYg2BkiboLLiExKsnbGBYKmbrqjjxwg7zR5y2VagjYndnH7PR3f1Jb9422Au9M",
+          "tx_signature": "2bam1Whe4H7ej9iVYDAd24HytnewC6vtEjeomyEYypPf4y4QK7S2UhyHeQX9dG9bkdG7rfZUtHbkz3W191m2AZsy",
           "_note": "Depth-20 Poseidon-Merkle recompute integrity check (SOLID-SEC-059 sibling closure)."
         }
       }

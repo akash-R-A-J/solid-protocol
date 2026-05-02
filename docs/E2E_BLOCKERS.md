@@ -366,8 +366,19 @@ has been updated to reflect the post-fix state.
 
 ### B9. `register_issuer` BJJ subgroup check exceeds 1.4M CU per-tx ceiling
 
-- **Status:** Fixed (claimed) via temporary feature-gated bypass; full
-  on-chain check pending SEC-048 remediation.
+- **Status:** **CLOSED 2026-05-02 via SEC-048 Phase E (Option B).**  Small
+  dedicated Groth16 subgroup circuit + on-chain
+  `solid_light::groth16::verify_groth16_proof::<2>` consumes a 256-byte
+  proof inside `register_issuer`; total ix CU 180,037 (35% of 500K cuIx).
+  `sec007-skip-onchain` Cargo feature DELETED; `Sec007Bypass` event DELETED.
+  E2E green end-to-end on the no-bypass build with `verified: true` +
+  replay-rejection (reference tx
+  `3NkZqYjYDdSwrEveqYJMZaDPuadMiQoJ79bwjbFzPs9B1CUHWZTqeUyehJW99mTmMRaxgfzm4NnM1iYmYtE1G5k4`,
+  Finalized).  Sibling SOLID-SEC-083 (HIGH; auth-race on
+  `init_subgroup_verifier`) discovered + closed in the same arc.  Full
+  closure narrative at `sec/SECURITY_REGISTRY.md` SEC-048 +
+  `plan/SESSION_LOG_2026-05-02.md`.  HISTORICAL note below preserved
+  for audit trail.
 - **Discovered:** 2026-04-25 while running `npm run bootstrap-issuer`
   against fresh localnet validator. Failure mode: transaction failed
   with `exceeded CUs meter at BPF instruction` even with

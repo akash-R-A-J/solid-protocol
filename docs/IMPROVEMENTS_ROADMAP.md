@@ -212,15 +212,19 @@ const nullifier = bigintToBytes32(BigInt(publicSignals[0]));
 
 ### P0-7 — SOLID-SEC-048: `register_issuer` BJJ subgroup check exceeds 1.4M CU per-tx ceiling on BPF
 
-**Location:** `programs/issuer-registry/src/lib.rs:189`,
-`crates/solid-core/src/babyjubjub.rs::require_in_prime_order_subgroup`,
-`programs/issuer-registry/Cargo.toml` (`sec007-skip-onchain` feature),
-`ts-sdk/packages/core/src/index.ts::isInPrimeOrderSubgroup`,
-`scripts/bootstrap_issuer.ts`.
+**Location:** `programs/issuer-registry/src/lib.rs::register_issuer`,
+`crates/solid-light/src/groth16.rs::verify_groth16_proof::<2>`,
+`circuits/bjj_subgroup_proof.circom`,
+`ts-sdk/packages/issuer/src/index.ts::generateSubgroupProof`,
+`scripts/initialize.ts` step [8/8],
+`scripts/bootstrap_issuer.ts` step [3/8].
 
-**Status:** Open with an interim feature-gated bypass live in the
-working tree for localnet/devnet only.  Mainnet builds MUST NOT enable
-`sec007-skip-onchain`.
+**Status:** **Closed 2026-05-02 via Phase E (Option B).**  See
+`sec/SECURITY_REGISTRY.md` SOLID-SEC-048 for the full closure
+narrative.  TL;DR: small dedicated Groth16 subgroup circuit + on-chain
+verify inside `register_issuer`; `sec007-skip-onchain` Cargo feature
+DELETED; `Sec007Bypass` event DELETED; e2e green end-to-end.  Sibling
+SOLID-SEC-083 (auth-race hardening) closed in the same arc.
 
 **What is wrong.**  `solid_core::babyjubjub::require_in_prime_order_subgroup`
 performs a full `r * P == O` check on the candidate issuer pubkey (~251

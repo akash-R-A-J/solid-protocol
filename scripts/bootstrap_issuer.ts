@@ -630,7 +630,21 @@ async function main() {
   console.log(`  governance_mint    : ${governanceMint.toBase58()}`);
 }
 
-main().catch(e => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // SEC-048 Phase E.5 (diagnosed 2026-05-02): snarkjs's `groth16.fullProve`
+    // (called inside `generateSubgroupProof`) spawns N worker_threads
+    // (one per CPU core) and does NOT terminate them after the proof
+    // is generated.  Combined with the @solana/web3.js Connection's
+    // HTTP-keepalive socket, the Node event loop stays alive after
+    // main() returns -- 27+ minute hangs observed before the explicit
+    // exit landed.  Active handles confirmed via
+    // process._getActiveHandles(): N MessagePorts + 1 TCP Socket.
+    // Standard pattern for one-shot scripts that use snarkjs is an
+    // explicit process.exit at the end of the happy path.
+    process.exit(0);
+  })
+  .catch(e => {
+    console.error(e);
+    process.exit(1);
+  });

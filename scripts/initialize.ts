@@ -671,8 +671,15 @@ async function main() {
   );
 
   // a) init_subgroup_verifier (idempotent on AccountAlreadyInUse).
+  // SOLID-SEC-083 (closed 2026-05-02): the handler now requires
+  // `registry_config` to be passed and constrains
+  // `authority == registry_config.authority`.  This script always
+  // runs the registry init in step [1/8] above, so by the time we
+  // reach here the constraint is satisfied; without registry init
+  // first (operator-error path), Anchor returns AccountNotInitialized.
   try {
     await issuerProgram.methods.initSubgroupVerifier().accounts({
+      registryConfig: registryPda,
       subgroupVerifierConfig: subgroupVerifierConfigPda,
       authority: wallet.publicKey,
       systemProgram: SystemProgram.programId,

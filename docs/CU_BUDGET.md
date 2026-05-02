@@ -45,7 +45,7 @@ deployed at the canonical IDs.  Wallet: `56cch2JpqChmm8ufqorRHGB2jbXs88drjPnQbBE
 |---|---:|---:|---:|---|
 | `InitializeRegistry` | 50,981 | 200,000 | 74.5% | `5u9V6GnXizi238uf7BozDERR7ctnd6XXubSKjyv9Q3FNBhn18TBDNuuqwNEtfpo9uYm5Be4TXE2rkXuG2vKKSkgX` |
 | `InitializeIssuerTreeBinding` | 35,599 | 200,000 | 82.2% | `5RtMnQME8JLYYRhVB8V1gdvbaNf7RJvpdSL1AtNoFjVizrgkciHeBYqL52LTRAXFtfXhrPyRrUCtgCVUJ5THCmwg` |
-| `RegisterIssuer` (sec007-skip-onchain) | 76,107 | 399,850 | 80.9% | `49TGLx3RL4DKEJURUzv6SzuRBKsCKbBVH6SdyQQv12rE48EJTVDphqBPTPF6nwwgMFscxgDpsxRHJb2o3U4H6a5D` |
+| `RegisterIssuer` (post SEC-048 Phase E; on-chain Groth16 subgroup verify) | TBD (re-baseline pending) | 499,850 | TBD | TBD (regenerate via `python3 scripts/measure_cu.py --write-baselines --yes` against the no-bypass build) |
 | `StakeTokens` | 31,548 | 200,000 | 84.2% | `4SCiznn7piT3ggYdd5Cc8zUue6TpbmkVzuyEjY6ZJMf9SvCPTtjECMBSqvEhb9bozyfEUyDXcHm2Y1EHM34cN1F3` |
 | `VoteOnIssuer` | 24,022 | 200,000 | 88.0% | `46B7oKYX8DtPmMQA5jiGyx648beAUxgUFzRJ9RngzGduNqt32ENtWLKxHH1FxdFKcbnJQyL1NYLaCYkGtu576W93` |
 | `FinalizeVoting` | 12,526 | 200,000 | 93.7% | `VRDS8jgY5LHyfQkAoYNr1bHK4v8PpHWJuxkp79tR1HREjX3mQUVAu6Rdzz6nD7UzFU8PFZrZXz5GzKN1mB8hhVg` |
@@ -84,7 +84,7 @@ families.
 |---|---:|---|
 | Default Anchor ix | 200,000 | Solana per-tx default; sufficient for ixs up to ~150K CU. |
 | `RegisterSchema` | 400,000 | H5 widened preimage (3 chained Poseidon-Merkle-Damgard absorbs). |
-| `RegisterIssuer` (bypass build) | 400,000 | Cheap consolation gate (`is_on_curve + !is_identity`) when `sec007-skip-onchain` is set; will bump to ~1.4M when SEC-048 Option E in-circuit subgroup-check lands and we drop the bypass. |
+| `RegisterIssuer` (post SEC-048 Phase E) | 500,000 | On-chain Groth16 verify of the prime-order subgroup invariant via `solid_light::groth16::verify_groth16_proof::<2>` (~285K CU pairing) + canonical-encoding pre-check + on-curve / non-identity pre-check + Anchor init + system_program::transfer CPI + 6 account decodes.  Empirical baseline TBD; 500K leaves ~2.8x headroom over the predicted 365-400K and ~2.8x under the 1.4M per-tx ceiling. |
 | Atomic Poseidon-recompute family (`AppendIssuerLeaf`, `RevokeIssuerAtomic`, `RequestWithdrawalAtomic`, `UpdateIssuerTreeRoot`, `UpdateTreeRoot`, `UpdateGlobalRoot`) | 800,000 | Depth-16/20 on-chain Poseidon-Merkle recompute. |
 | `VerifyBatchProofV2` | 800,000 | Groth16 verify (~315K CU baseline; 800K leaves ~2.5x headroom for pairing variance). |
 

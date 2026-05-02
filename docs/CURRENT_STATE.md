@@ -390,3 +390,76 @@ the vision and should never disagree with the deployed reality.
   Doc-lie at the function header explicitly miswrote circomlib's
   equation as the no-8 form (L6).  Fixed both sides; regression
   gate at `babyjubjub::tests::sec_053_eddsa_cofactor_8_round_trip`.
+
+# 10. Session deltas (2026-05-02 -- SEC-048 Phase E close)
+
+- **SOLID-SEC-048 closed end-to-end on 2026-05-02 via Phase E
+  (Option B).**  Subgroup-circuit Groth16 verify wired into
+  `register_issuer`; `sec007-skip-onchain` Cargo feature DELETED;
+  `Sec007Bypass` event DELETED; off-chain `isInPrimeOrderSubgroup`
+  retained as UX pre-submit gate (no longer load-bearing).  Phase
+  layout shipped in five logical commits:
+  - **E.1** (`cbbe088`).  Lift `verify_groth16_proof` / `VkBuf` /
+    `negate_g1_point` from `programs/zk-verifier/src/lib.rs` to
+    `crates/solid-light/src/groth16.rs`, parameterised over
+    `const N: usize` (public-input count).  Lets `register_issuer`
+    instantiate at `N=2` (subgroup circuit) without duplicating
+    ~150 lines of cryptographic primitives.  68/68 solid-light host
+    tests + 30/30 zk-verifier host tests; round-trip integration
+    test still green.
+  - **E.2** (`87cdd34`).  `SubgroupVerifierConfig` PDA + chunked-upload
+    ix family (`init_subgroup_verifier`, `store_subgroup_vk_chunk`,
+    `finalize_subgroup_vk`, request/cancel/`rotate_subgroup_vk`)
+    mirroring zk-verifier's `VerifierConfig` 1:1, seeded under
+    `b"subgroup-verifier-config"` so the two VKs roll independently.
+    Same SOLID-SEC-006 48h-timelock pattern; 7 new host tests.
+  - **E.3** (`0a97099`).  `register_issuer` consumes a 256-byte
+    `subgroup_proof: Vec<u8>` argument, byte-reverses
+    `bjj_pub_key_x` / `_y` LE -> BE for Groth16 publics, calls
+    `verify_groth16_proof::<2>`, rejects on
+    `ErrorCode::InvalidSubgroupProof`.  `is_on_curve + !is_identity`
+    retained as ~3.5K-CU pre-filter (defense-in-depth).
+    `sec007-skip-onchain` Cargo feature deleted; `Sec007Bypass`
+    event deleted.  Host round-trip test
+    `subgroup_host_verify_round_trip` consumes a real snarkjs proof
+    against the in-tree pinned VK and confirms the byte-encoding
+    contract end-to-end.
+  - **E.4** (`30343b5`).  SDK helper `generateSubgroupProof` in
+    `@solid-protocol/issuer`; new pin types `SUBGROUP_WASM_PIN` /
+    `SUBGROUP_ZKEY_PIN` / `SUBGROUP_VK_PIN`.  `scripts/initialize.ts`
+    new step [8/8] uploads + finalizes the subgroup VK with
+    SOLID-SEC-041-mirror sha256 gating.  `scripts/bootstrap_issuer.ts`
+    generates the proof + passes the new accounts.
+  - **E.6** (subgroup-VK auth-race fix; pending commit).  Closes
+    SOLID-SEC-083 (HIGH; discovered + closed in the same arc):
+    `init_subgroup_verifier` was a first-caller-wins singleton on a
+    fresh cluster; constraint `authority == registry_config.authority`
+    forces same key as registry admin.
+- **E2E green end-to-end on the no-bypass build.**  `npm run e2e`
+  exit code 0; `verified: true` reference tx
+  `3NkZqYjYDdSwrEveqYJMZaDPuadMiQoJ79bwjbFzPs9B1CUHWZTqeUyehJW99mTmMRaxgfzm4NnM1iYmYtE1G5k4`
+  (Finalized on the local validator; reproduce via `solana confirm
+  <SIG> --url http://127.0.0.1:8899`).  Replay rejected by nullifier
+  PDA init constraint.
+- **CU baselines refreshed.**  `RegisterIssuer` 180,037 CU (35% of
+  the 500K cuIx; well under the 1.4M per-tx ceiling) -- much lower
+  than the predicted 365-400K because the cheap `is_on_curve +
+  !is_identity` pre-filter handles obvious-bad inputs and the N=2
+  subgroup Groth16 verify is much cheaper than the N=32 batch verify
+  (fewer IC scalar muls).  `VerifyBatchProofV2` 322,356 CU (1.008x
+  baseline; clean).  21/21 ixs measured + pinned in
+  `tests/cu_baselines.json`; SOLID-SEC-046 CI gate active.
+- **Workflow learnings durably saved to memory.**  Three
+  observation-grade root-cause arcs surfaced this session:
+  - `| tail -N` buffers stdin until EOF -- never pipe a long-running
+    command through tail; redirect to file + `tail -f` instead.
+  - Always start e2e from a clean slate -- kill validator + wipe
+    test-ledger + wipe `state.json` + regen IDL + redeploy, in that
+    order, BEFORE every e2e run after a program-code change (IDL
+    drift after my SEC-083 fix masked as "Account does not exist").
+  - snarkjs `groth16.fullProve` leaves `worker_threads` alive (10
+    `MessagePort` handles + 1 `Socket` from @solana/web3.js
+    keepalive) -- one-shot Node scripts using snarkjs need explicit
+    `process.exit(0)` after `main()` succeeds.  Confirmed via
+    `process._getActiveHandles()` instrumentation; 27-minute hang
+    observed in `bootstrap_issuer.ts` before the fix.

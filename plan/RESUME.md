@@ -4,16 +4,53 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-01 late (post-NF-batch + 3 fix arcs +
-  SEC-048 Phase A/B/D-1).  This session shipped SEC-017 (prover
-  OsRng + workspace rebuild), SEC-081 (TS pubkey-literal CI gate +
-  5 regression tests), SEC-080 (schema-registry pre-CPI binding
-  anchor mirroring SEC-077, +5 host tests), the doc-consistency
-  sweep, and SEC-048 Option B Phases A/B/D-1 (spec correction,
-  isolated subgroup-check circuit + 6 mocha tests, parameterised
-  setup script + ceremony reusing the existing PTAU, end-to-end
-  snarkjs prove+verify smoke green).  E2E still reaches
-  `verified: true` end-to-end on a clean validator.  Quick state:
+- **Last updated:** 2026-05-02 (SEC-048 Phase E close).  This
+  session shipped Phase E.1..E.4 + the SOLID-SEC-083 hardening
+  (auth-race on `init_subgroup_verifier`) + three workflow learnings
+  (pipe-tail buffering / clean-slate-before-e2e / snarkjs hangs).
+  **SOLID-SEC-048 closed end-to-end on the no-bypass build:**
+  `npm run e2e` exit 0; `verified: true` reference tx
+  `3NkZqYjYDdSwrEveqYJMZaDPuadMiQoJ79bwjbFzPs9B1CUHWZTqeUyehJW99mTmMRaxgfzm4NnM1iYmYtE1G5k4`
+  Finalized on the local validator; replay rejected.
+  `sec007-skip-onchain` Cargo feature DELETED; `Sec007Bypass` event
+  DELETED.  Quick state:
+  - **HEAD:** post Phase E.4 commit `30343b5` + the pending E.6
+    SEC-083 / process.exit / docs-sweep commit (NOT YET PUSHED).
+    Five Phase E commits land locally before the push: `cbbe088`
+    (E.1) -> `87cdd34` (E.2) -> `0a97099` (E.3) -> `30343b5` (E.4) ->
+    (pending E.6).  Full receipts at
+    `plan/SESSION_LOG_2026-05-02.md`.
+  - **Host tests:** 279 total (solid-core 73 / solid-light 68 /
+    zk-verifier 30 / issuer-registry 33 / schema-registry 30) +
+    45 circuit witness tests, all green.
+  - **E2E:** `npm run e2e` exit 0 against the no-bypass build.
+    Reference tx confirmed Finalized on local validator.
+  - **CU baselines:** `RegisterIssuer` jumped 76,107 -> 180,037 CU
+    (on-chain Groth16 N=2 subgroup verify added; 35% of 500K cuIx);
+    `VerifyBatchProofV2` 322,356 CU (1.008x baseline).  21/21 ixs
+    within 1.10x tolerance.  SOLID-SEC-046 CI gate clean.
+  - **SEC-048 status:** **CLOSED 2026-05-02 via Phase E (Option B).**
+    Subgroup-circuit Groth16 verify wired into `register_issuer`;
+    bypass DELETED.
+  - **SEC-083 status:** **CLOSED 2026-05-02** (HIGH; auth-race on
+    `init_subgroup_verifier`; constraint `authority ==
+    registry_config.authority` added).
+  - **What's next:** push the local commits, then the multi-party
+    trusted setup ceremony (SOLID-SEC-012) which gates mainnet for
+    BOTH the batch circuit and the subgroup circuit.  Detailed
+    pickup notes at the bottom of
+    `plan/SESSION_LOG_2026-05-02.md::Pickup next session`.
+
+- **Previous update (preserved for history):** 2026-05-01 late
+  (post-NF-batch + 3 fix arcs + SEC-048 Phase A/B/D-1).  This
+  session shipped SEC-017 (prover OsRng + workspace rebuild),
+  SEC-081 (TS pubkey-literal CI gate + 5 regression tests), SEC-080
+  (schema-registry pre-CPI binding anchor mirroring SEC-077, +5
+  host tests), the doc-consistency sweep, and SEC-048 Option B
+  Phases A/B/D-1 (spec correction, isolated subgroup-check circuit
+  + 6 mocha tests, parameterised setup script + ceremony reusing
+  the existing PTAU, end-to-end snarkjs prove+verify smoke green).
+  Quick state at the time:
   - **HEAD:** `27d46ba` ("SEC-048 Phase D-1: parameterize setup.js
     + run subgroup ceremony").  Five commits this session:
     `f985b1e` (SEC-017 + prover rebuild) -> `1b7643a` (SEC-081) ->

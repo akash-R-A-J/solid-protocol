@@ -2990,8 +2990,32 @@ pub struct ReleaseVote<'info> {
 /// PDA singleton; mirrors zk-verifier's `Initialize` for the
 /// `VerifierConfig` PDA, but seeded under `b"subgroup-verifier-config"`
 /// so the two configs can be governed independently.
+///
+/// SOLID-SEC-083 (HIGH; closed 2026-05-02; SEC-048 Phase E hardening):
+/// Constrains `authority == registry_config.authority`.  Pre-fix,
+/// `init_subgroup_verifier` was a first-caller-wins singleton on a
+/// fresh cluster: an attacker could front-run the operator after
+/// `anchor deploy` but before `scripts/initialize.ts` ran, become
+/// the SubgroupVerifierConfig.authority, and then upload a
+/// permissive subgroup VK that admits any pubkey -- nullifying the
+/// SEC-048 Phase E.3 soundness gate.  The `registry_config` account
+/// + the `authority == registry_config.authority` constraint forces
+/// the SubgroupVerifierConfig.authority to be the SAME key that
+/// already controls the registry, so the only race window remaining
+/// is the (already-existing) one for `initialize_registry` itself.
+/// Operator runbook MUST run `initialize_registry` first
+/// (`scripts/initialize.ts` step [1/8]) before
+/// `init_subgroup_verifier` (step [8/8]).
 #[derive(Accounts)]
 pub struct InitSubgroupVerifier<'info> {
+    /// Live `RegistryConfig` -- the source of truth for the program's
+    /// admin authority.  Must exist before `init_subgroup_verifier`
+    /// can be called.
+    #[account(
+        seeds = [b"registry-config"],
+        bump,
+    )]
+    pub registry_config: Account<'info, RegistryConfig>,
     #[account(
         init, payer = authority,
         space = 8 + SubgroupVerifierConfig::SPACE,
@@ -2999,7 +3023,10 @@ pub struct InitSubgroupVerifier<'info> {
         bump
     )]
     pub subgroup_verifier_config: Account<'info, SubgroupVerifierConfig>,
-    #[account(mut)]
+    #[account(
+        mut,
+        constraint = authority.key() == registry_config.authority @ ErrorCode::Unauthorized
+    )]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
@@ -4009,6 +4036,27 @@ mod tests {
         // SUBGROUP_VK_MAX_BYTES must be <= MAX_PERMITTED_DATA_INCREASE
         // = 10240.  Mirrors zk-verifier's same gate.
         assert_eq!(8 + 4 + SUBGROUP_VK_MAX_BYTES, 10240);
+    }
+
+    /// SOLID-SEC-083 (HIGH; closed 2026-05-02).  Source-level pin that
+    /// asserts the `Unauthorized` ErrorCode discriminant exists and is
+    /// reachable.  The actual constraint
+    /// (`authority == registry_config.authority` on
+    /// `InitSubgroupVerifier`) is enforced by Anchor at handler-entry
+    /// time and can only be exercised by an integration test against a
+    /// real validator (or solana-bankrun).  The bankrun test is
+    /// tracked at `tests/integration/12_subgroup_vk_init_authority_race.test.ts`
+    /// (TODO; mirrors the auth-race coverage class).  Until that
+    /// lands, this test pins the failure error code so a refactor that
+    /// silently drops the constraint AND removes the error variant
+    /// fails compile.
+    #[test]
+    fn sec_083_unauthorized_error_code_pinned() {
+        let code: u32 = ErrorCode::Unauthorized.into();
+        assert!(
+            code > 0,
+            "ErrorCode::Unauthorized must resolve to a non-zero discriminant"
+        );
     }
 
     // ─── SEC-048 Phase E.3 round-trip integration test ──────────────────

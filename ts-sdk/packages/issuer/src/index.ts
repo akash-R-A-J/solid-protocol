@@ -20,6 +20,16 @@ import {
   sign,
   computeCommitment,
 } from '@solid-protocol/core';
+// SEC-048 Phase E.4 (2026-05-XX): static import matches the holder
+// package's pattern (`@solid-protocol/holder`'s generateBatchProof).
+// A dynamic `await import('snarkjs')` inside generateSubgroupProof
+// caused `bootstrap_issuer.ts` to hang after Summary print on Node 24
+// -- the dynamically-loaded snarkjs left worker_threads alive in a
+// way that held the event loop open even after the script body
+// completed.  Static import + identical loading semantics to the
+// holder package fixes the hang.
+// @ts-ignore -- snarkjs doesn't ship perfect types
+import * as snarkjs from 'snarkjs';
 import {
   ISSUER_REGISTRY_PROGRAM_ID,
   SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
@@ -355,9 +365,6 @@ export async function generateSubgroupProof(
   const ax = leBytesToDecimal(pubKeyX);
   const ay = leBytesToDecimal(pubKeyY);
 
-  // @ts-ignore -- snarkjs doesn't ship perfect types; same pattern as
-  // `@solid-protocol/holder`'s `generateBatchProof` import.
-  const snarkjs = await import('snarkjs');
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     { Ax: ax, Ay: ay },
     wasmBytes,
