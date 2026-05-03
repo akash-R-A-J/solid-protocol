@@ -1,0 +1,21 @@
+{
+  "name": "@solid-protocol/channel",
+  "version": "0.1.0",
+  "description": "Secure credential transport (ECIES) for the SolID Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.0",
+    "@noble/ed25519": "^2.0.0",
+    "@noble/hashes": "^1.3.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "rimraf": "^5.0.0"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,374 @@
+# Implementation Plan: SolID Wallet Extension + Console + Credential Channel
+
+## Goal
+
+Build three **independent, separately-deployable** projects:
+
+1. **`solid-credential-channel`** — TypeScript library for ECIES credential delivery
+2. **`solid-wallet`** — Chrome browser extension (Manifest V3) for credential storage + proof generation
+3. **`solid-console`** — Vercel-deployed web dashboard for DAO / Issuer / Verifier roles
+
+All three are **separate repos/directories on Desktop**, independent of the protocol codebase.
+
+---
+
+## User Decisions (Locked)
+
+| Decision | Answer |
+|----------|--------|
+| Wallet type | **Browser extension** (Chrome, Manifest V3), not web app |
+| Console deployment | **Vercel** |
+| Wallet distribution | Public download (Chrome Web Store in future) |
+| Wallet connection library | Best for long-term (`@solana/wallet-adapter`) |
+| credential-channel language | **TypeScript** (works in both extension + web contexts) |
+| Directory structure | **Completely separate** from protocol repo |
+| Console future-proofing | Built with hooks for monetization, API keys, usage tracking |
+| Transaction preview | Extension shows full details before any signing |
+
+---
+
+## Why TypeScript for credential-channel?
+
+The channel library runs in two places: (1) the browser extension popup and (2) issuer-side web apps. Both are JavaScript environments. Using TypeScript means:
+- Single library works everywhere — browser extension, Node.js server, web app
+- `tweetnacl` (X25519 + secretbox) is pure JS, no native deps, no WASM needed
+- The heavy crypto (Poseidon, BJJ) stays in the protocol's WASM bridge; the channel only does standard ECIES
+
+---
+
+## Proposed Changes
+
+### 1. solid-credential-channel (Standalone TS library)
+
+**Location:** `C:\Users\KIIT\Desktop\solid-credential-channel\`
+
+```
+solid-credential-channel/
+  package.json
+  tsconfig.json
+  src/
+    index.ts              -- Public API exports
+    derive-key.ts         -- wallet.signMessage() -> SHA-256 -> X25519 keypair
+    encrypt.ts            -- Issuer-side: ECIES encrypt credential bundle
+    decrypt.ts            -- Holder-side: ECIES decrypt credential bundle
+    types.ts              -- CredentialBundle, EncryptedEnvelope types
+  tests/
+    roundtrip.test.ts     -- encrypt -> decrypt round-trip
+    determinism.test.ts   -- same wallet = same derived key
+```
+
+**Core flow:**
+```
+ISSUER SIDE:
+  1. Issuer has cleartext CredentialBundle
+  2. Holder provides their channel public key (derived from wallet)
+  3. encryptCredential(bundle, holderChannelPubKey) -> EncryptedEnvelope
+  4. Issuer sends envelope over HTTPS / any transport
+
+HOLDER SIDE (in extension):
+  1. Extension derives channel key: wallet.signMessage("solid:channel:v1") -> X25519
+  2. decryptCredential(envelope, channelPrivKey) -> CredentialBundle
+  3. Extension stores decrypted credential in encrypted vault
+```
+
+**Dependencies:** `tweetnacl` (pure JS, 0 native deps, audited). Nothing else.
+
+---
+
+### 2. solid-wallet (Chrome Extension, Manifest V3)
+
+**Location:** `C:\Users\KIIT\Desktop\solid-wallet\`
+
+#### How Browser Extensions Store Data (Persistence Model)
+
+Browser extensions have **persistent storage** that survives browser restarts:
+
+| Storage API | Capacity | Use Case | Persists? |
+|-------------|----------|----------|-----------|
+| `chrome.storage.local` | 10MB (unlimited with permission) | Encrypted vault, settings | Yes, survives restarts + updates |
+| IndexedDB | Unlimited | Credential blobs, proof history | Yes, survives restarts |
+| `chrome.storage.session` | 10MB | Decrypted keys (memory-only while unlocked) | No, cleared on browser close |
+
+**Our storage map:**
+- `chrome.storage.local` → encrypted BJJ vault (AES-256-GCM, key from password via PBKDF2)
+- `IndexedDB` → encrypted credential blobs + plaintext metadata + proof history
+- `chrome.storage.session` → decrypted BJJ key (only while wallet is unlocked, wiped on browser close)
+
+This is identical to Phantom's architecture.
+
+#### Transaction Preview (What Holder Sees Before Signing)
+
+> [!IMPORTANT]
+> The extension shows a **full human-readable breakdown** before any signing:
+
+```
+┌─────────────────────────────────────────┐
+│  🔒 Proof Request from Acme DeFi       │
+│                                         │
+│  Verifier: 7xK9...mF2q                 │
+│  Network:  Devnet                       │
+│                                         │
+│  They want to verify:                   │
+│  ┌─────────────────────────────────┐    │
+│  │ ✓ age >= 21                     │    │
+│  │ ✓ country == US (840)           │    │
+│  │   Logic: AND (all must pass)    │    │
+│  └─────────────────────────────────┘    │
+│                                         │
+│  Using credential from:                 │
+│  Issuer: Acme Hospital                  │
+│  Schema: basic_identity_v1              │
+│  Expires: 2027-01-01                    │
+│                                         │
+│  What they will learn:                  │
+│  • Whether you pass the check (yes/no)  │
+│  • A nullifier (prevents reuse)         │
+│  • Nothing else about you               │
+│                                         │
+│  What they will NOT learn:              │
+│  • Your actual age or country           │
+│  • Your wallet address                  │
+│  • Your other credentials               │
+│                                         │
+│  [Approve]              [Deny]          │
+└─────────────────────────────────────────┘
+```
+
+#### Directory Structure
+
+```
+solid-wallet/
+  manifest.json              -- Manifest V3 (permissions, service worker, popup)
+  vite.config.ts             -- Vite build config for extension (multi-entry)
+  package.json
+  tsconfig.json
+  public/
+    icons/                   -- Extension icons (16, 48, 128px)
+    logo.svg                 -- SolID logo
+  src/
+    popup/                   -- Popup UI (React, opens on icon click)
+      main.tsx               -- React entry point
+      App.tsx                -- Router: Lock/Unlock/Dashboard/ProofRequest/Settings
+      pages/
+        LockScreen.tsx       -- Password entry to unlock vault
+        Dashboard.tsx        -- Credential cards grid
+        ProofRequest.tsx     -- Transaction preview + approve/deny
+        ImportCredential.tsx -- Paste/scan encrypted envelope -> decrypt -> store
+        Settings.tsx         -- Network, connected sites, export
+      components/
+        CredentialCard.tsx   -- Card with issuer, schema, expiration, status badge
+        ProofPreview.tsx     -- Human-readable query breakdown (shown before sign)
+        StatusBadge.tsx      -- Active/Expired/Revoked pill
+        NetworkIndicator.tsx -- Devnet/Mainnet dot
+      styles/
+        index.css            -- Full design system (dark theme)
+        animations.css       -- Micro-animations
+    background/
+      service-worker.ts      -- Background service worker (Manifest V3)
+      message-handler.ts     -- Handle messages from content script + popup
+      vault.ts               -- Encrypt/decrypt BJJ key with password
+      credential-store.ts    -- IndexedDB CRUD for credentials
+      proof-engine.ts        -- Groth16 proof generation (calls WASM)
+    content/
+      inject.ts              -- Content script: injects provider into page
+      provider.ts            -- window.solid API for dApps to request proofs
+    shared/
+      types.ts               -- Shared types across all contexts
+      constants.ts           -- Network URLs, program IDs
+      crypto.ts              -- PBKDF2, AES-256-GCM wrappers
+```
+
+#### Extension Communication Flow
+
+```
+dApp page                    Content Script              Service Worker           Popup
+   |                              |                           |                     |
+   |-- window.solid.requestProof()                            |                     |
+   |----> postMessage ----------->|                           |                     |
+   |                              |-- chrome.runtime.sendMessage -->|                |
+   |                              |                           |-- open popup ------->|
+   |                              |                           |                     |
+   |                              |                           |    (user sees       |
+   |                              |                           |     ProofPreview,   |
+   |                              |                           |     clicks Approve) |
+   |                              |                           |                     |
+   |                              |                           |<-- approve msg -----|
+   |                              |                           |                     |
+   |                              |                           |-- generate proof    |
+   |                              |                           |   (WASM in worker)  |
+   |                              |                           |                     |
+   |                              |<-- proof result ----------|                     |
+   |<---- proof bytes ------------|                           |                     |
+```
+
+#### Manifest V3
+
+```json
+{
+  "manifest_version": 3,
+  "name": "SolID Wallet",
+  "version": "0.1.0",
+  "description": "Private identity credentials for Solana",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["src/content/inject.ts"],
+    "run_at": "document_start"
+  }],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
+```
+
+---
+
+### 3. solid-console (Vercel Web App)
+
+**Location:** `C:\Users\KIIT\Desktop\solid-console\`
+
+#### Future-Proofing for Monetization
+
+Each role module has hooks for:
+- **Usage tracking** — proof verifications per day, credentials issued
+- **API key management** — verifiers can generate API keys for SDK access
+- **Tier system stubs** — free/pro/enterprise plan boundaries
+- **Analytics export** — CSV/JSON download of activity logs
+
+```
+solid-console/
+  package.json
+  vite.config.ts
+  vercel.json                    -- Vercel deployment config
+  tsconfig.json
+  public/
+    favicon.svg
+  src/
+    main.tsx
+    App.tsx                      -- Layout + lazy router
+    layout/
+      Sidebar.tsx                -- Role switcher: DAO | Issuer | Verifier
+      TopBar.tsx                 -- Wallet status + network + connection
+      AppShell.tsx               -- Sidebar + TopBar + content area
+    roles/
+      dao/                       -- Lazy-loaded chunk
+        index.tsx                -- Route definitions for /dao/*
+        DaoProvider.tsx          -- Independent React context + state
+        store.ts                 -- DAO-specific IndexedDB store
+        pages/
+          Overview.tsx           -- Registry stats, tree health, issuer count
+          Applications.tsx       -- Pending issuers: vote/approve/reject
+          ActiveIssuers.tsx      -- List with revoke action, stake info
+          VKManagement.tsx       -- VK status, rotation controls, both VKs
+          GovernanceLog.tsx      -- All DAO actions with tx links
+      issuer/                    -- Lazy-loaded chunk
+        index.tsx
+        IssuerProvider.tsx       -- Independent React context + state
+        store.ts                 -- Issuer-specific IndexedDB store
+        pages/
+          Register.tsx           -- Registration form + BJJ key gen + subgroup proof
+          Issue.tsx              -- Schema picker, field inputs, sign + submit
+          Credentials.tsx        -- Issued credentials log
+          Stake.tsx              -- Staking dashboard + withdrawal
+          TreeStatus.tsx         -- Schema tree capacity, recent appends
+      verifier/                  -- Lazy-loaded chunk
+        index.tsx
+        VerifierProvider.tsx     -- Independent React context + state
+        store.ts                 -- Verifier-specific IndexedDB store
+        pages/
+          QueryBuilder.tsx       -- Visual drag-and-drop predicate builder
+          Verify.tsx             -- Submit proof, see result
+          History.tsx            -- Verification log with nullifiers
+          Integration.tsx        -- SDK code snippets, API key management
+          Analytics.tsx          -- Charts: verifications/day, schemas, issuers
+    components/
+      DataTable.tsx              -- Sortable, virtual-scrolled table
+      StatCard.tsx               -- Metric card (icon + value + delta)
+      StatusBadge.tsx            -- Active/Pending/Revoked/Expired pills
+      TxLink.tsx                 -- Clickable Solana Explorer link
+      JsonViewer.tsx             -- Collapsible JSON display
+      Toast.tsx                  -- Success/error notifications
+      SkeletonLoader.tsx         -- Content placeholder during load
+      EmptyState.tsx             -- "No data yet" with illustration
+    hooks/
+      useConnection.ts           -- Solana RPC connection (devnet/mainnet)
+      useProgram.ts              -- Anchor program instances
+      useWallet.ts               -- Wallet adapter hook
+      useAnalytics.ts            -- Usage tracking (future monetization)
+    styles/
+      index.css                  -- Design system (matches wallet theme)
+      console.css                -- Console-specific grid layouts
+      animations.css             -- Page transitions, skeleton pulse
+    lib/
+      api-keys.ts                -- API key generation stubs (future)
+      usage-tracker.ts           -- Verification count tracking (future)
+      export.ts                  -- CSV/JSON export utility
+```
+
+#### Performance Guarantees (No Lag)
+
+| Technique | Where | Why |
+|-----------|-------|-----|
+| `React.lazy()` + `Suspense` | Each role module | Only loads code for the active role |
+| `React.memo` | All list items | Prevents re-render of unchanged items |
+| Virtual scrolling (`react-window`) | DataTable | Renders only visible rows, handles 10K+ items |
+| `useDeferredValue` | Search/filter inputs | Debounces expensive list filtering |
+| Skeleton loaders | Every data-fetching page | Perceived instant load |
+| CSS `contain: layout` | Card components | Isolates layout recalculation |
+| `will-change: transform` | Animated elements only | GPU compositing |
+| Code splitting | Per-role chunks | ~50KB per role instead of ~150KB monolith |
+
+---
+
+## Verification Plan
+
+### Automated
+- `solid-credential-channel`: Jest unit tests for encrypt/decrypt round-trip, key derivation determinism, invalid envelope rejection
+- Extensions can be tested with `chrome-extension-testing` library or manual sideloading
+
+### Manual Verification (Full E2E Demo)
+1. Load `solid-wallet` extension in Chrome via `chrome://extensions` (developer mode)
+2. Open `solid-console` on `localhost:5174` (or Vercel URL)
+3. **Console (DAO):** Initialize registry, approve an issuer
+4. **Console (Issuer):** Issue a credential -> encrypt with credential-channel -> get envelope
+5. **Wallet:** Import credential from envelope -> see card appear in dashboard
+6. **Console (Verifier):** Create a query -> send to holder
+7. **Wallet:** See proof request popup -> preview shows query details -> click Approve
+8. **Wallet:** Groth16 proof generates -> sends back to verifier
+9. **Console (Verifier):** See verification result in history log
+
+### Performance
+- Lighthouse audit on Console: target 90+ performance score
+- Extension popup: measure time-to-interactive, target < 200ms
+- Role switching in Console: target < 100ms (lazy loading warm cache)
+
+---
+
+## Build Order
+
+| # | Project | Estimated Time | Depends On |
+|---|---------|---------------|------------|
+| 1 | `solid-credential-channel` | ~1-2 hours | Nothing |
+| 2 | `solid-wallet` (extension) | ~5-6 hours | credential-channel |
+| 3 | `solid-console` (web app) | ~5-6 hours | Nothing (parallel with wallet) |
+
+**Total: ~12-14 hours of focused work.**
+
+Steps 2 and 3 can be parallelized since they're independent.
