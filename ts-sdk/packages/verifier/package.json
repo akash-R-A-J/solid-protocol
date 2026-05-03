@@ -1,7 +1,8 @@
 {
   "name": "@solid-protocol/verifier",
-  "version": "0.1.0",
-  "description": "On-chain proof verification and submission SDK",
+  "version": "0.2.0",
+  "description": "High-level private eligibility verification SDK for SolID",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
@@ -15,5 +16,8 @@
   },
   "devDependencies": {
     "typescript": "^5.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

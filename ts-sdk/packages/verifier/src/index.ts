@@ -22,6 +22,7 @@ import {
   VersionedTransaction,
   TransactionMessage,
   ComputeBudgetProgram,
+  clusterApiUrl,
 } from '@solana/web3.js';
 
 /** Per-tx CU limit for `verify_batch_proof`.  The handler itself runs
@@ -34,6 +35,8 @@ import { createHash } from 'crypto';
 import {
   PROGRAM_IDS,
   QueryBuilder,
+  MAX_PREDICATES,
+  NUM_FIELDS,
   type CompoundQuery,
   type MultiCredentialQuery,
 } from '@solid-protocol/core';
@@ -896,4 +899,996 @@ export function generateVerifierNonce(): Uint8Array {
   const nodeCrypto = require('crypto');
   nodeCrypto.randomFillSync(nonce);
   return nonce;
+}
+
+// ─── Product-level verifier SDK ─────────────────────────────────────────────
+
+export type SolidCluster = 'devnet' | 'mainnet-beta' | 'mainnet' | 'localnet';
+export type SchemaRef = string | { name: string; version: number } | { hash: string; name?: string; version?: number };
+export type PredicateOp = '==' | '!=' | '>' | '>=' | '<' | '<=' | 'EQ' | 'NE' | 'GT' | 'GTE' | 'LT' | 'LTE';
+export type PredicateValue = number | bigint | boolean;
+
+export interface RequirementPredicate {
+  field: string;
+  op: PredicateOp;
+  value: PredicateValue;
+}
+
+export interface ActionScope {
+  appId: string;
+  action: string;
+  nonce?: Uint8Array | string;
+}
+
+export interface RequirementSpec {
+  schema: SchemaRef;
+  predicates: RequirementPredicate[];
+  compoundLogic?: 'AND' | 'OR';
+  action: ActionScope | string;
+  expiresAt?: number;
+  trustedIssuers?: PublicKey[];
+}
+
+export interface SchemaFieldDescriptor {
+  name: string;
+  index: number;
+  type?: string;
+  description?: string;
+  rangeQueryable?: boolean;
+}
+
+export interface SchemaDescriptor {
+  name: string;
+  version: number;
+  category?: string;
+  hash: string;
+  fields: SchemaFieldDescriptor[];
+}
+
+export interface RequirementPredicateEncoding {
+  field: string;
+  fieldIndex: number;
+  op: Exclude<PredicateOp, '==' | '!=' | '>=' | '<=' | '>' | '<'>;
+  value: string;
+}
+
+export interface PublicInputBlueprint {
+  schemaHash: string;
+  predicateEncodings: RequirementPredicateEncoding[];
+  compoundLogic: 'AND' | 'OR';
+  verifierAddress: string;
+  verifierNonce: string;
+  expiresAt: number;
+}
+
+export interface Requirement {
+  readonly spec: RequirementSpec;
+  readonly fingerprint: string;
+  readonly schema: SchemaDescriptor;
+  readonly schemaHash: string;
+  readonly verifierAddress: PublicKey;
+  readonly publicInputs: PublicInputBlueprint;
+}
+
+export type VerificationError =
+  | 'MISSING_CREDENTIAL'
+  | 'EXPIRED_CREDENTIAL'
+  | 'REVOKED_CREDENTIAL'
+  | 'REVOKED_ISSUER'
+  | 'UNSUPPORTED_SCHEMA'
+  | 'PREDICATE_NOT_SATISFIED'
+  | 'USER_REJECTED'
+  | 'PROOF_GENERATION_FAILED'
+  | 'PROOF_REPLAYED'
+  | 'ARTIFACT_PIN_MISMATCH'
+  | 'VK_FROZEN'
+  | 'INVALID_PUBLIC_INPUTS'
+  | 'RPC_UNAVAILABLE'
+  | 'TRANSACTION_TIMEOUT'
+  | 'INSUFFICIENT_PAYER_BALANCE'
+  | 'UNKNOWN';
+
+export interface VerificationFailure {
+  verified: false;
+  reason: VerificationError;
+  detail?: string;
+  signature?: string;
+}
+
+export interface VerificationSuccess {
+  verified: true;
+  signature: string;
+  nullifier: string;
+  slot?: number;
+  issuer?: { pubkey: PublicKey; status: number; name?: string };
+  schema: { hash: string; ref: SchemaRef };
+}
+
+export type SolidVerificationResult = VerificationSuccess | VerificationFailure;
+
+export class SolidVerificationError extends Error {
+  readonly reason: VerificationError;
+  readonly detail?: string;
+
+  constructor(reason: VerificationError, detail?: string) {
+    super(detail == null ? reason : `${reason}: ${detail}`);
+    this.name = 'SolidVerificationError';
+    this.reason = reason;
+    this.detail = detail;
+  }
+}
+
+export interface SerializedProof {
+  proof?: unknown;
+  publicSignals: Array<string | number | bigint | Uint8Array>;
+  nullifier?: string | Uint8Array;
+  solanaProof?: {
+    proofA?: Uint8Array | string | number[];
+    proofB?: Uint8Array | string | number[];
+    proofC?: Uint8Array | string | number[];
+    proof_a?: Uint8Array | string | number[];
+    proof_b?: Uint8Array | string | number[];
+    proof_c?: Uint8Array | string | number[];
+  };
+  proofA?: Uint8Array | string | number[];
+  proofB?: Uint8Array | string | number[];
+  proofC?: Uint8Array | string | number[];
+  proof_a?: Uint8Array | string | number[];
+  proof_b?: Uint8Array | string | number[];
+  proof_c?: Uint8Array | string | number[];
+}
+
+export interface ProofRequestEnvelope {
+  version: 1;
+  requirement: Requirement;
+  artifactPins: ResolvedArtifactPins;
+  expiresAt: number;
+}
+
+export interface ProofRequestTransport {
+  send(request: ProofRequestEnvelope): Promise<SerializedProof>;
+}
+
+export interface ProofRequestHandle {
+  request: ProofRequestEnvelope;
+  proof: Promise<SerializedProof>;
+  cancel(): void;
+}
+
+export interface ResolvedArtifactPins {
+  batchWasm: string;
+  batchZkey: string;
+  batchVk: string;
+  subgroupWasm: string;
+  subgroupZkey: string;
+  subgroupVk: string;
+}
+
+export interface HealthReport {
+  ok: boolean;
+  cluster: SolidCluster;
+  programs: {
+    zkVerifier: boolean;
+    issuerRegistry: boolean;
+    schemaRegistry: boolean;
+  };
+  verifierConfig?: {
+    exists: boolean;
+    vkFinalized?: boolean;
+    vkGeneration?: number;
+  };
+  artifactPins: ResolvedArtifactPins;
+  artifactHost?: { ok: boolean; url: string; detail?: string };
+  indexer?: { ok: boolean; url: string; detail?: string };
+  errors: string[];
+}
+
+export interface SolidVerifierConfig {
+  cluster: SolidCluster;
+  connection?: Connection;
+  programIds?: Partial<{
+    zkVerifier: PublicKey;
+    issuerRegistry: PublicKey;
+    schemaRegistry: PublicKey;
+  }>;
+  artifactPins?: Partial<ResolvedArtifactPins>;
+  artifactHostUrl?: string;
+  indexerUrl?: string;
+  requestTimeoutMs?: number;
+  proofRequestTtlMs?: number;
+  trustedIssuers?: PublicKey[];
+  trustedSchemas?: SchemaRef[];
+  schemaCatalog?: SchemaDescriptor[];
+}
+
+export interface VerifyProofArgs {
+  proof: SerializedProof;
+  requirement: Requirement;
+  payer: Keypair;
+  lookupTable?: AddressLookupTableAccount;
+}
+
+export interface RequestProofArgs {
+  wallet: PublicKey;
+  requirement: Requirement;
+  transport: ProofRequestTransport;
+  timeoutMs?: number;
+}
+
+export interface VerifyRequirementArgs {
+  wallet: PublicKey;
+  payer: Keypair;
+  requirement?: Requirement;
+  spec?: RequirementSpec;
+  transport: ProofRequestTransport;
+  timeoutMs?: number;
+  lookupTable?: AddressLookupTableAccount;
+}
+
+const DEFAULT_ARTIFACT_HOST = 'https://artifacts.solid.example/v0.6.1/';
+const DEFAULT_INDEXER_URL = 'https://indexer.solid.example';
+
+const DEFAULT_ARTIFACT_PINS: ResolvedArtifactPins = {
+  batchVk: '8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146',
+  batchWasm: 'add8cb0390511405faf2ffb1213d3792b858c7b2082d5b4b92a84dcd627e61b4',
+  batchZkey: '7f43bbac249e8c913ac384ff4b007138d1ffb5bc489a16be42737598d96395e8',
+  subgroupVk: '938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9',
+  subgroupWasm: '2c00e5a455a3b6fe1dc2a8761737acf2911baf396aab70165de3abd2673608b0',
+  subgroupZkey: 'ea401ea9cbeb9ef829be30e0080b83a3c82544af53367b95a17f24a75845bd4a',
+};
+
+const DEFAULT_SCHEMA_CATALOG: SchemaDescriptor[] = [
+  {
+    name: 'basic_identity_v1',
+    version: 1,
+    category: 'Hospitality',
+    hash: 'c27b4c5f3e75c3f0320d02298d06d689a2d3c7e973fbbd23022c567e37bb8306',
+    fields: [
+      { index: 0, name: 'age', type: 'uint64', rangeQueryable: true, description: 'Age in years' },
+      { index: 1, name: 'country_code', type: 'uint64', description: 'ISO 3166-1 numeric country code' },
+      { index: 2, name: 'resident_region', type: 'uint64', description: 'Region code' },
+      { index: 3, name: 'id_type', type: 'enum', description: 'Identity document type' },
+      { index: 4, name: 'verification_level', type: 'uint64', rangeQueryable: true, description: '1=Self, 2=KYC, 3=InPerson' },
+      { index: 5, name: 'issued_date', type: 'timestamp', rangeQueryable: true, description: 'Issuance timestamp' },
+      { index: 6, name: 'nationality', type: 'uint64', description: 'Nationality code' },
+      { index: 7, name: '_reserved', type: 'uint64', description: 'Reserved for future use' },
+    ],
+  },
+];
+
+const ARTIFACT_PIN_ENV: Record<keyof ResolvedArtifactPins, string> = {
+  batchWasm: 'SOLID_CIRCUIT_WASM_SHA256',
+  batchZkey: 'SOLID_CIRCUIT_ZKEY_SHA256',
+  batchVk: 'SOLID_VK_SHA256',
+  subgroupWasm: 'SOLID_SUBGROUP_WASM_SHA256',
+  subgroupZkey: 'SOLID_SUBGROUP_ZKEY_SHA256',
+  subgroupVk: 'SOLID_SUBGROUP_VK_SHA256',
+};
+
+const ARTIFACT_SIDECARS: Record<keyof ResolvedArtifactPins, string> = {
+  batchWasm: 'circuits/build/batch_credential_query.wasm.sha256',
+  batchZkey: 'circuits/build/batch_credential_query.zkey.sha256',
+  batchVk: 'circuits/build/verification_key.sha256',
+  subgroupWasm: 'circuits/build/bjj_subgroup_proof.wasm.sha256',
+  subgroupZkey: 'circuits/build/bjj_subgroup_proof.zkey.sha256',
+  subgroupVk: 'circuits/build/bjj_subgroup_verification_key.sha256',
+};
+
+const ARTIFACT_FILENAMES: Record<keyof ResolvedArtifactPins, string> = {
+  batchWasm: 'batch_credential_query.wasm',
+  batchZkey: 'batch_credential_query.zkey',
+  batchVk: 'verification_key.json',
+  subgroupWasm: 'bjj_subgroup_proof.wasm',
+  subgroupZkey: 'bjj_subgroup_proof.zkey',
+  subgroupVk: 'bjj_subgroup_verification_key.json',
+};
+
+export class SolidVerifier {
+  readonly connection: Connection;
+  readonly cluster: SolidCluster;
+  readonly programIds: {
+    zkVerifier: PublicKey;
+    issuerRegistry: PublicKey;
+    schemaRegistry: PublicKey;
+  };
+  readonly artifactHostUrl: string;
+  readonly indexerUrl?: string;
+  readonly artifactPins: ResolvedArtifactPins;
+  private readonly schemaCatalog: SchemaDescriptor[];
+  private readonly requestTimeoutMs: number;
+  private readonly proofRequestTtlMs: number;
+
+  constructor(config: SolidVerifierConfig) {
+    this.cluster = config.cluster;
+    this.connection = config.connection ?? new Connection(endpointForCluster(config.cluster), 'confirmed');
+    this.programIds = {
+      zkVerifier: config.programIds?.zkVerifier ?? new PublicKey(PROGRAM_IDS.zkVerifier),
+      issuerRegistry: config.programIds?.issuerRegistry ?? new PublicKey(PROGRAM_IDS.issuerRegistry),
+      schemaRegistry: config.programIds?.schemaRegistry ?? new PublicKey(PROGRAM_IDS.schemaRegistry),
+    };
+    this.artifactHostUrl = normalizeBaseUrl(config.artifactHostUrl ?? DEFAULT_ARTIFACT_HOST);
+    this.indexerUrl = config.indexerUrl ?? DEFAULT_INDEXER_URL;
+    this.artifactPins = resolveArtifactPins(config.artifactPins);
+    this.schemaCatalog = [...DEFAULT_SCHEMA_CATALOG, ...(config.schemaCatalog ?? [])];
+    this.requestTimeoutMs = config.requestTimeoutMs ?? 5 * 60 * 1000;
+    this.proofRequestTtlMs = config.proofRequestTtlMs ?? 5 * 60 * 1000;
+  }
+
+  defineRequirement(spec: RequirementSpec): Requirement {
+    const schema = this.resolveSchema(spec.schema);
+    const predicates = normalizePredicates(spec.predicates, schema);
+    const verifierNonce = normalizeActionNonce(spec.action);
+    const action = normalizeAction(spec.action);
+    const canonical = {
+      schemaHash: schema.hash,
+      predicates,
+      compoundLogic: spec.compoundLogic ?? 'AND',
+      action: {
+        appId: action.appId,
+        action: action.action,
+        nonce: bytesToHex(verifierNonce),
+      },
+      expiresAt: spec.expiresAt ?? 0,
+      trustedIssuers: (spec.trustedIssuers ?? []).map(k => k.toBase58()).sort(),
+    };
+    const fingerprint = createHash('sha256')
+      .update(stableJson(canonical))
+      .digest('hex');
+
+    return {
+      spec,
+      fingerprint,
+      schema,
+      schemaHash: schema.hash,
+      verifierAddress: this.programIds.zkVerifier,
+      publicInputs: {
+        schemaHash: schema.hash,
+        predicateEncodings: predicates,
+        compoundLogic: spec.compoundLogic ?? 'AND',
+        verifierAddress: this.programIds.zkVerifier.toBase58(),
+        verifierNonce: bytesToHex(verifierNonce),
+        expiresAt: spec.expiresAt ?? 0,
+      },
+    };
+  }
+
+  async requestProof(args: RequestProofArgs): Promise<SerializedProof> {
+    const proof = this.requestProofHandle(args).proof;
+    return proof;
+  }
+
+  requestProofHandle(args: RequestProofArgs): ProofRequestHandle {
+    const controller = new AbortController();
+    const request: ProofRequestEnvelope = {
+      version: 1,
+      requirement: args.requirement,
+      artifactPins: this.artifactPins,
+      expiresAt: Date.now() + this.proofRequestTtlMs,
+    };
+    const timeoutMs = args.timeoutMs ?? this.requestTimeoutMs;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const proof = Promise.race([
+      args.transport.send(request),
+      new Promise<SerializedProof>((_, reject) => {
+        controller.signal.addEventListener('abort', () => {
+          reject(new SolidVerificationError('TRANSACTION_TIMEOUT', `Proof request timed out after ${timeoutMs}ms`));
+        });
+      }),
+    ]).finally(() => clearTimeout(timer));
+
+    return {
+      request,
+      proof,
+      cancel: () => controller.abort(),
+    };
+  }
+
+  async verifyProof(args: VerifyProofArgs): Promise<SolidVerificationResult> {
+    try {
+      const normalized = normalizeSerializedProof(args.proof);
+      validatePublicSignals(args.requirement, normalized.fullPublicInputs);
+      const [nullifierPda] = deriveNullifierPda(normalized.nullifier, this.programIds.zkVerifier);
+      const existingNullifier = await this.connection.getAccountInfo(nullifierPda);
+      if (existingNullifier != null) {
+        return {
+          verified: false,
+          reason: 'PROOF_REPLAYED',
+          detail: `Nullifier ${bytesToHex(normalized.nullifier)} has already been used.`,
+        };
+      }
+
+      const trees = deriveTreesFromPublicInputs(
+        normalized.fullPublicInputs,
+        this.programIds.schemaRegistry,
+        this.programIds.issuerRegistry,
+      );
+      const request: VerificationRequest = {
+        query: buildQueryFromRequirement(args.requirement, normalized.fullPublicInputs),
+        proofData: {
+          proof_a: normalized.proofA,
+          proof_b: normalized.proofB,
+          proof_c: normalized.proofC,
+          publicInputs: extractWirePublicInputs(normalized.fullPublicInputs),
+          nullifier: normalized.nullifier,
+        },
+      };
+      const lowLevel = await verifyOnChain(
+        this.connection,
+        args.payer,
+        request,
+        trees,
+        this.programIds.zkVerifier,
+        args.lookupTable,
+      );
+      const status = await this.connection.getSignatureStatuses([lowLevel.transactionSignature]);
+      return {
+        verified: true,
+        signature: lowLevel.transactionSignature,
+        nullifier: bytesToHex(lowLevel.nullifier),
+        slot: status.value[0]?.slot,
+        schema: { hash: args.requirement.schemaHash, ref: args.requirement.spec.schema },
+      };
+    } catch (err) {
+      return normalizeVerificationFailure(err);
+    }
+  }
+
+  async verifyRequirement(args: VerifyRequirementArgs): Promise<SolidVerificationResult> {
+    const requirement = args.requirement ?? this.defineRequirement(requiredSpec(args.spec));
+    try {
+      const proof = await this.requestProof({
+        wallet: args.wallet,
+        requirement,
+        transport: args.transport,
+        timeoutMs: args.timeoutMs,
+      });
+      return this.verifyProof({
+        proof,
+        requirement,
+        payer: args.payer,
+        lookupTable: args.lookupTable,
+      });
+    } catch (err) {
+      return normalizeVerificationFailure(err);
+    }
+  }
+
+  async health(): Promise<HealthReport> {
+    const errors: string[] = [];
+    const [zk, issuer, schema] = await Promise.all([
+      this.connection.getAccountInfo(this.programIds.zkVerifier).catch((err) => {
+        errors.push(`zkVerifier RPC error: ${String(err)}`);
+        return null;
+      }),
+      this.connection.getAccountInfo(this.programIds.issuerRegistry).catch((err) => {
+        errors.push(`issuerRegistry RPC error: ${String(err)}`);
+        return null;
+      }),
+      this.connection.getAccountInfo(this.programIds.schemaRegistry).catch((err) => {
+        errors.push(`schemaRegistry RPC error: ${String(err)}`);
+        return null;
+      }),
+    ]);
+
+    const [configPda] = deriveVerifierConfigPda(this.programIds.zkVerifier);
+    const configInfo = await this.connection.getAccountInfo(configPda).catch((err) => {
+      errors.push(`verifier config RPC error: ${String(err)}`);
+      return null;
+    });
+    const verifierConfig = configInfo == null
+      ? { exists: false }
+      : {
+          exists: true,
+          vkFinalized: configInfo.data[50] === 1,
+          vkGeneration: configInfo.data.length >= 53 ? configInfo.data.readUInt16LE(51) : undefined,
+        };
+
+    const artifactHost = await pingJson(`${this.artifactHostUrl}.well-known/solid-protocol.json`);
+    if (!artifactHost.ok) errors.push(`artifact host unavailable: ${artifactHost.detail ?? artifactHost.url}`);
+    const indexer = this.indexerUrl ? await pingJson(`${trimTrailingSlash(this.indexerUrl)}/v1/health`) : undefined;
+    if (indexer && !indexer.ok) errors.push(`indexer unavailable: ${indexer.detail ?? indexer.url}`);
+
+    const programs = {
+      zkVerifier: zk?.executable === true,
+      issuerRegistry: issuer?.executable === true,
+      schemaRegistry: schema?.executable === true,
+    };
+    return {
+      ok: programs.zkVerifier && programs.issuerRegistry && programs.schemaRegistry && verifierConfig.exists && errors.length === 0,
+      cluster: this.cluster,
+      programs,
+      verifierConfig,
+      artifactPins: this.artifactPins,
+      artifactHost,
+      indexer,
+      errors,
+    };
+  }
+
+  async loadArtifact(kind: keyof ResolvedArtifactPins): Promise<Uint8Array> {
+    const url = `${this.artifactHostUrl}${ARTIFACT_FILENAMES[kind]}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new SolidVerificationError('RPC_UNAVAILABLE', `Failed to fetch ${url}: HTTP ${res.status}`);
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const actual = createHash('sha256').update(bytes).digest('hex');
+    const expected = this.artifactPins[kind];
+    if (actual !== expected) {
+      throw new SolidVerificationError(
+        'ARTIFACT_PIN_MISMATCH',
+        `${kind} SHA-256 mismatch: expected ${expected}, got ${actual}`,
+      );
+    }
+    return bytes;
+  }
+
+  private resolveSchema(ref: SchemaRef): SchemaDescriptor {
+    if (typeof ref === 'object' && 'hash' in ref) {
+      const hash = normalizeHex32(ref.hash, 'schema.hash');
+      return this.schemaCatalog.find(s => s.hash === hash) ?? {
+        name: ref.name ?? hash,
+        version: ref.version ?? 0,
+        hash,
+        fields: [],
+      };
+    }
+    const name = typeof ref === 'string' ? ref : ref.name;
+    const version = typeof ref === 'string' ? undefined : ref.version;
+    const schema = this.schemaCatalog.find(s =>
+      s.name === name && (version == null || s.version === version),
+    );
+    if (!schema) {
+      throw new SolidVerificationError(
+        'UNSUPPORTED_SCHEMA',
+        `Schema ${typeof ref === 'string' ? ref : `${ref.name}@${ref.version}`} is not in this verifier's schema catalog. ` +
+          `Pass schema: { hash } or add schemaCatalog to SolidVerifier config.`,
+      );
+    }
+    return schema;
+  }
+}
+
+export function walletAdapterTransport(wallet: unknown): ProofRequestTransport {
+  return {
+    async send(request: ProofRequestEnvelope): Promise<SerializedProof> {
+      const maybeWallet = wallet as {
+        requestProof?: (request: ProofRequestEnvelope) => Promise<SerializedProof>;
+        solid?: { requestProof?: (request: ProofRequestEnvelope) => Promise<SerializedProof> };
+      };
+      if (typeof maybeWallet.requestProof === 'function') {
+        return maybeWallet.requestProof(request);
+      }
+      if (typeof maybeWallet.solid?.requestProof === 'function') {
+        return maybeWallet.solid.requestProof(request);
+      }
+      const solid = (globalThis as typeof globalThis & {
+        window?: { solid?: { requestProof?: (request: ProofRequestEnvelope) => Promise<SerializedProof> } };
+      }).window?.solid;
+      if (typeof solid?.requestProof === 'function') {
+        return solid.requestProof(request);
+      }
+      throw new SolidVerificationError(
+        'MISSING_CREDENTIAL',
+        'No SolID proof transport is available. Pass walletAdapterTransport(walletWithSolID), httpTransport(...), or a custom transport.',
+      );
+    },
+  };
+}
+
+export function httpTransport(endpoint: string, init?: RequestInit): ProofRequestTransport {
+  return {
+    async send(request: ProofRequestEnvelope): Promise<SerializedProof> {
+      const res = await fetch(endpoint, {
+        ...init,
+        method: init?.method ?? 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(init?.headers ?? {}),
+        },
+        body: JSON.stringify(request),
+      });
+      if (!res.ok) {
+        throw new SolidVerificationError('RPC_UNAVAILABLE', `Holder endpoint ${endpoint} returned HTTP ${res.status}`);
+      }
+      return res.json() as Promise<SerializedProof>;
+    },
+  };
+}
+
+export function explainVerificationError(
+  err: VerificationError,
+  detail?: string,
+): { humanReadable: string; suggestedAction: string } {
+  const table: Record<VerificationError, { humanReadable: string; suggestedAction: string }> = {
+    MISSING_CREDENTIAL: {
+      humanReadable: 'This wallet does not have a credential that can satisfy the requirement.',
+      suggestedAction: 'Ask the user to claim the required credential, then try again.',
+    },
+    EXPIRED_CREDENTIAL: {
+      humanReadable: 'The matching credential is expired.',
+      suggestedAction: 'Ask the user to refresh or re-issue the credential.',
+    },
+    REVOKED_CREDENTIAL: {
+      humanReadable: 'The credential has been revoked.',
+      suggestedAction: 'Ask the user to contact the issuer or claim a fresh credential.',
+    },
+    REVOKED_ISSUER: {
+      humanReadable: 'The credential issuer is no longer trusted by the registry.',
+      suggestedAction: 'Use a credential from an approved issuer.',
+    },
+    UNSUPPORTED_SCHEMA: {
+      humanReadable: 'The verifier does not recognize this credential schema.',
+      suggestedAction: 'Add the schema to the verifier catalog or choose a supported requirement.',
+    },
+    PREDICATE_NOT_SATISFIED: {
+      humanReadable: 'The wallet has a credential, but it does not satisfy the requested predicates.',
+      suggestedAction: 'Show the user which eligibility condition failed.',
+    },
+    USER_REJECTED: {
+      humanReadable: 'The user rejected the proof request.',
+      suggestedAction: 'Let the user retry when they are ready.',
+    },
+    PROOF_GENERATION_FAILED: {
+      humanReadable: 'The holder could not generate a proof.',
+      suggestedAction: 'Check holder artifacts, credentials, and Merkle proof availability.',
+    },
+    PROOF_REPLAYED: {
+      humanReadable: 'This proof has already been used.',
+      suggestedAction: 'Request a fresh proof with a fresh verifier nonce.',
+    },
+    ARTIFACT_PIN_MISMATCH: {
+      humanReadable: 'A prover or verifier artifact failed its SHA-256 integrity check.',
+      suggestedAction: 'Do not continue. Refresh artifacts from the canonical SolID release.',
+    },
+    VK_FROZEN: {
+      humanReadable: 'The verifier is in a verification-key rotation window.',
+      suggestedAction: 'Retry after the rotation finalizes.',
+    },
+    INVALID_PUBLIC_INPUTS: {
+      humanReadable: 'The proof public inputs do not match the requirement.',
+      suggestedAction: 'Regenerate the proof from the holder using the exact requirement envelope.',
+    },
+    RPC_UNAVAILABLE: {
+      humanReadable: 'The Solana RPC, holder endpoint, artifact host, or indexer is unavailable.',
+      suggestedAction: 'Retry with a healthy endpoint or check SolID devnet status.',
+    },
+    TRANSACTION_TIMEOUT: {
+      humanReadable: 'The proof request or verification transaction timed out.',
+      suggestedAction: 'Retry, or increase the timeout for slow wallets/RPCs.',
+    },
+    INSUFFICIENT_PAYER_BALANCE: {
+      humanReadable: 'The verifier payer does not have enough SOL for fees and rent.',
+      suggestedAction: 'Fund the payer and retry.',
+    },
+    UNKNOWN: {
+      humanReadable: 'Verification failed for an unexpected reason.',
+      suggestedAction: 'Log the detail string and report it if it persists.',
+    },
+  };
+  const value = table[err];
+  return detail == null ? value : {
+    humanReadable: value.humanReadable,
+    suggestedAction: `${value.suggestedAction} Detail: ${detail}`,
+  };
+}
+
+function endpointForCluster(cluster: SolidCluster): string {
+  if (cluster === 'localnet') return 'http://127.0.0.1:8899';
+  if (cluster === 'mainnet') return clusterApiUrl('mainnet-beta');
+  return clusterApiUrl(cluster);
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+function trimTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+function readSidecar(pathName: string): string | undefined {
+  try {
+    // Optional Node-only sidecar support. Browser builds fall back to env/default pins.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs');
+    if (!fs.existsSync(pathName)) return undefined;
+    return fs.readFileSync(pathName, 'utf8').trim().toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveArtifactPins(overrides: Partial<ResolvedArtifactPins> | undefined): ResolvedArtifactPins {
+  const result = { ...DEFAULT_ARTIFACT_PINS, ...(overrides ?? {}) };
+  for (const key of Object.keys(result) as Array<keyof ResolvedArtifactPins>) {
+    const env = process.env[ARTIFACT_PIN_ENV[key]]?.trim().toLowerCase();
+    const sidecar = readSidecar(ARTIFACT_SIDECARS[key]);
+    result[key] = normalizeHex32(env || sidecar || result[key], key);
+  }
+  return result;
+}
+
+function normalizePredicates(predicates: RequirementPredicate[], schema: SchemaDescriptor): RequirementPredicateEncoding[] {
+  if (predicates.length === 0 || predicates.length > MAX_PREDICATES) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `Requirement must have 1-${MAX_PREDICATES} predicates.`);
+  }
+  return predicates.map((pred) => {
+    const field = schema.fields.find(f => f.name === pred.field);
+    if (!field) {
+      throw new SolidVerificationError('UNSUPPORTED_SCHEMA', `Field "${pred.field}" is not present in schema ${schema.name}.`);
+    }
+    if (field.index < 0 || field.index >= NUM_FIELDS) {
+      throw new SolidVerificationError('UNSUPPORTED_SCHEMA', `Field "${pred.field}" has invalid index ${field.index}.`);
+    }
+    return {
+      field: pred.field,
+      fieldIndex: field.index,
+      op: normalizeOp(pred.op),
+      value: predicateValueToString(pred.value),
+    };
+  });
+}
+
+function normalizeOp(op: PredicateOp): RequirementPredicateEncoding['op'] {
+  const mapped = ({
+    '==': 'EQ',
+    '!=': 'NE',
+    '>': 'GT',
+    '>=': 'GTE',
+    '<': 'LT',
+    '<=': 'LTE',
+    EQ: 'EQ',
+    NE: 'NE',
+    GT: 'GT',
+    GTE: 'GTE',
+    LT: 'LT',
+    LTE: 'LTE',
+  } as const)[op];
+  if (!mapped) throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `Unsupported predicate operator: ${op}`);
+  return mapped;
+}
+
+function predicateValueToString(value: PredicateValue): string {
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  return BigInt(value).toString();
+}
+
+function normalizeAction(action: ActionScope | string): ActionScope {
+  return typeof action === 'string' ? { appId: 'solid-app', action } : action;
+}
+
+function normalizeActionNonce(action: ActionScope | string): Uint8Array {
+  const normalized = normalizeAction(action);
+  if (normalized.nonce instanceof Uint8Array) {
+    if (normalized.nonce.length !== 32) throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'action.nonce must be 32 bytes.');
+    return normalized.nonce;
+  }
+  if (typeof normalized.nonce === 'string') {
+    return hexToBytes(normalizeHex32(normalized.nonce, 'action.nonce'));
+  }
+  return generateVerifierNonce();
+}
+
+function requiredSpec(spec: RequirementSpec | undefined): RequirementSpec {
+  if (spec == null) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'verifyRequirement requires either requirement or spec.');
+  }
+  return spec;
+}
+
+function normalizeHex32(value: string, label: string): string {
+  const hex = value.startsWith('0x') ? value.slice(2) : value;
+  const lower = hex.toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(lower)) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `${label} must be a 32-byte lowercase hex string.`);
+  }
+  return lower;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('hex');
+}
+
+function stableJson(value: unknown): string {
+  if (value == null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
+}
+
+interface NormalizedProof {
+  proofA: Uint8Array;
+  proofB: Uint8Array;
+  proofC: Uint8Array;
+  fullPublicInputs: Uint8Array[];
+  nullifier: Uint8Array;
+}
+
+function normalizeSerializedProof(proof: SerializedProof): NormalizedProof {
+  const publicSignals = proof.publicSignals.map(publicSignalToBytes32);
+  if (publicSignals.length !== NR_PUBLIC_INPUTS) {
+    throw new SolidVerificationError(
+      'INVALID_PUBLIC_INPUTS',
+      `Expected ${NR_PUBLIC_INPUTS} public signals, got ${publicSignals.length}.`,
+    );
+  }
+  const solanaProof = proof.solanaProof ?? {};
+  const proofA = bytesLikeToU8(proof.proofA ?? proof.proof_a ?? solanaProof.proofA ?? solanaProof.proof_a, 64, 'proofA');
+  const proofB = bytesLikeToU8(proof.proofB ?? proof.proof_b ?? solanaProof.proofB ?? solanaProof.proof_b, 128, 'proofB');
+  const proofC = bytesLikeToU8(proof.proofC ?? proof.proof_c ?? solanaProof.proofC ?? solanaProof.proof_c, 64, 'proofC');
+  const nullifier = proof.nullifier == null
+    ? publicSignals[0]
+    : (typeof proof.nullifier === 'string'
+        ? hexToBytes(normalizeHex32(proof.nullifier, 'nullifier'))
+        : bytesLikeToU8(proof.nullifier, 32, 'nullifier'));
+  return { proofA, proofB, proofC, fullPublicInputs: publicSignals, nullifier };
+}
+
+function bytesLikeToU8(value: Uint8Array | string | number[] | undefined, length: number, label: string): Uint8Array {
+  if (value == null) throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `${label} is required.`);
+  const bytes = typeof value === 'string'
+    ? hexToBytes(normalizeFixedHex(value, length, label))
+    : value instanceof Uint8Array
+      ? value
+      : Uint8Array.from(value);
+  if (bytes.length !== length) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `${label} must be ${length} bytes, got ${bytes.length}.`);
+  }
+  return bytes;
+}
+
+function normalizeFixedHex(value: string, length: number, label: string): string {
+  const hex = value.startsWith('0x') ? value.slice(2) : value;
+  const lower = hex.toLowerCase();
+  if (!/^[0-9a-f]+$/.test(lower) || lower.length !== length * 2) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `${label} must be ${length} bytes of hex.`);
+  }
+  return lower;
+}
+
+function publicSignalToBytes32(value: string | number | bigint | Uint8Array): Uint8Array {
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32) throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'public signal bytes must be 32 bytes.');
+    return value;
+  }
+  const bigintValue = typeof value === 'bigint' ? value : BigInt(value);
+  return bigintToBytes32BE(bigintValue);
+}
+
+function bigintToBytes32BE(n: bigint): Uint8Array {
+  if (n < 0n) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'public signal cannot be negative.');
+  }
+  const hex = n.toString(16).padStart(64, '0');
+  if (hex.length > 64) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'public signal exceeds 32 bytes.');
+  }
+  return hexToBytes(hex);
+}
+
+function bytes32BEToBigInt(bytes: Uint8Array): bigint {
+  return BigInt(`0x${bytesToHex(bytes)}`);
+}
+
+function validatePublicSignals(requirement: Requirement, fullPublicInputs: Uint8Array[]): void {
+  const activeSchemaHashes = fullPublicInputs.slice(6, 10).map(bytesToHex).filter(h => h !== ZERO32_HEX);
+  if (!activeSchemaHashes.includes(requirement.schemaHash)) {
+    throw new SolidVerificationError(
+      'INVALID_PUBLIC_INPUTS',
+      `Proof schema hashes do not include requirement schema ${requirement.schemaHash}.`,
+    );
+  }
+  const numPredicates = Number(bytes32BEToBigInt(fullPublicInputs[27]));
+  if (numPredicates !== requirement.publicInputs.predicateEncodings.length) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'Proof predicate count does not match requirement.');
+  }
+  const compoundLogic = Number(bytes32BEToBigInt(fullPublicInputs[28]));
+  const expectedLogic = requirement.publicInputs.compoundLogic === 'AND' ? 0 : 1;
+  if (compoundLogic !== expectedLogic) {
+    throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', 'Proof compound logic does not match requirement.');
+  }
+  requirement.publicInputs.predicateEncodings.forEach((pred, i) => {
+    const field = Number(bytes32BEToBigInt(fullPublicInputs[15 + i]));
+    const op = Number(bytes32BEToBigInt(fullPublicInputs[19 + i]));
+    const value = bytes32BEToBigInt(fullPublicInputs[23 + i]).toString();
+    if (field !== pred.fieldIndex || op !== OP_CODE[pred.op] || value !== pred.value) {
+      throw new SolidVerificationError('INVALID_PUBLIC_INPUTS', `Predicate ${i} does not match requirement.`);
+    }
+  });
+}
+
+const ZERO32_HEX = '0'.repeat(64);
+const OP_CODE: Record<RequirementPredicateEncoding['op'], number> = {
+  EQ: 1,
+  NE: 2,
+  GT: 3,
+  GTE: 4,
+  LT: 5,
+  LTE: 6,
+};
+
+function deriveTreesFromPublicInputs(
+  fullPublicInputs: Uint8Array[],
+  schemaRegistryProgramId: PublicKey,
+  issuerRegistryProgramId: PublicKey,
+): SchemaTreeAccounts {
+  const schemaTrees = fullPublicInputs.slice(6, 10).map((schemaHash) => {
+    if (bytesToHex(schemaHash) === ZERO32_HEX) return PublicKey.default;
+    return PublicKey.findProgramAddressSync(
+      [Buffer.from('schema-tree-binding'), Buffer.from(schemaHash)],
+      schemaRegistryProgramId,
+    )[0];
+  });
+  return {
+    globalTree: PublicKey.findProgramAddressSync([Buffer.from('global-binding')], schemaRegistryProgramId)[0],
+    schemaTree0: schemaTrees[0],
+    schemaTree1: schemaTrees[1],
+    schemaTree2: schemaTrees[2],
+    schemaTree3: schemaTrees[3],
+    issuerTreeBinding: PublicKey.findProgramAddressSync([Buffer.from('issuer-tree-binding')], issuerRegistryProgramId)[0],
+  };
+}
+
+function buildQueryFromRequirement(requirement: Requirement, fullPublicInputs: Uint8Array[]): MultiCredentialQuery {
+  return {
+    schemaHashes: fullPublicInputs.slice(6, 10),
+    predicates: requirement.publicInputs.predicateEncodings.map((pred) => ({
+      credentialIndex: 0,
+      fieldIndex: pred.fieldIndex,
+      operator: pred.op,
+      value: BigInt(pred.value),
+    })),
+    compoundLogic: requirement.publicInputs.compoundLogic,
+    verifierAddress: requirement.verifierAddress.toBytes(),
+    verifierNonce: hexToBytes(requirement.publicInputs.verifierNonce),
+    expirationTimestamp: requirement.publicInputs.expiresAt,
+    globalRoot: fullPublicInputs[1],
+    queryContextHash: new Uint8Array(32),
+  };
+}
+
+function normalizeVerificationFailure(err: unknown): VerificationFailure {
+  if (err instanceof SolidVerificationError) {
+    return { verified: false, reason: err.reason, detail: err.detail };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  if (lower.includes('insufficient') || lower.includes('0x1')) {
+    return { verified: false, reason: 'INSUFFICIENT_PAYER_BALANCE', detail: message };
+  }
+  if (lower.includes('already in use') || lower.includes('nullifier') && lower.includes('already')) {
+    return { verified: false, reason: 'PROOF_REPLAYED', detail: message };
+  }
+  if (lower.includes('vk') && (lower.includes('frozen') || lower.includes('finalized'))) {
+    return { verified: false, reason: 'VK_FROZEN', detail: message };
+  }
+  if (lower.includes('sha-256') || lower.includes('artifact') && lower.includes('mismatch')) {
+    return { verified: false, reason: 'ARTIFACT_PIN_MISMATCH', detail: message };
+  }
+  if (lower.includes('timeout') || lower.includes('block height exceeded')) {
+    return { verified: false, reason: 'TRANSACTION_TIMEOUT', detail: message };
+  }
+  if (lower.includes('fetch') || lower.includes('network') || lower.includes('rpc')) {
+    return { verified: false, reason: 'RPC_UNAVAILABLE', detail: message };
+  }
+  if (lower.includes('public input') || lower.includes('proof_a') || lower.includes('proofb') || lower.includes('predicate')) {
+    return { verified: false, reason: 'INVALID_PUBLIC_INPUTS', detail: message };
+  }
+  return { verified: false, reason: 'UNKNOWN', detail: message };
+}
+
+async function pingJson(url: string): Promise<{ ok: boolean; url: string; detail?: string }> {
+  try {
+    const res = await fetch(url, { method: 'GET' });
+    return res.ok ? { ok: true, url } : { ok: false, url, detail: `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, url, detail: err instanceof Error ? err.message : String(err) };
+  }
 }

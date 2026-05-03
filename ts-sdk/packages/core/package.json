@@ -2,6 +2,7 @@
   "name": "@solid-protocol/core",
   "version": "0.1.0",
   "description": "Core WASM bindings and typed re-exports for SolID Protocol",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

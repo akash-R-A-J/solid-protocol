@@ -2,6 +2,7 @@
   "name": "@solid-protocol/issuer",
   "version": "0.2.0",
   "description": "Credential issuance SDK. Wraps `issuer-registry::issue_credential` (SPL Account Compression append with PDA-signed tree authority).",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

@@ -2,6 +2,7 @@
   "name": "@solid-protocol/holder",
   "version": "0.2.0",
   "description": "Proof generation SDK for credential holders. Builds Groth16 witnesses, fetches Merkle proofs from an SPL Account-Compression adapter, and returns Solana-formatted Groth16 proofs.",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

@@ -2,6 +2,7 @@
   "name": "@solid-protocol/light",
   "version": "0.2.0",
   "description": "SPL Account-Compression backend adapter for the SolID protocol. Provides credential-tree creation, leaf append, root reads, and Merkle-proof retrieval. The package name is kept for API stability; the implementation is 100% SPL Account Compression.",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

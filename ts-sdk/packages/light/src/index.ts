@@ -48,7 +48,6 @@ import {
   ValidDepthSizePair,
 } from '@solana/spl-account-compression';
 import BN from 'bn.js';
-import { createHash } from 'crypto';
 
 /**
  * Anchor `emit!` event-discriminator for `CredentialIssued`.
@@ -57,10 +56,9 @@ import { createHash } from 'crypto';
  * issuer-registry program.  M11 / SOLID-SEC-073 (closed 2026-05-01)
  * regression gate.
  */
-const CREDENTIAL_ISSUED_DISCRIMINATOR: Buffer = createHash('sha256')
-  .update('event:CredentialIssued')
-  .digest()
-  .subarray(0, 8);
+const CREDENTIAL_ISSUED_DISCRIMINATOR: Buffer = Buffer.from([
+  0xc2, 0xd8, 0x1c, 0x9f, 0x59, 0x1d, 0x48, 0xb1,
+]);
 
 // ─── Canonical IDs ─────────────────────────────────────────────────────────
 
