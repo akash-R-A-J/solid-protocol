@@ -10,12 +10,13 @@ EdDSA with Poseidon for issuance signatures, and SPL Account Compression for
 credential trees. Three Anchor programs (zk-verifier, issuer-registry,
 schema-registry) plus a TypeScript SDK plus Circom circuits.
 
-Current release is v0.6.1 (April 2026, post-Phase-3-impl-4). The
+Current release is v0.6.1 (May 2026, post-Phase-E close-out). The
 canonical state-of-the-protocol document is
-sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md. The
-previous v0.6 audit is superseded but kept in place for history.
-The older docs/POST_REMEDIATION_AUDIT.md is the Phase 1 post-fix
-record and is flagged historical at the top of that file.
+sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md.
+The 2026-04-25 v0.6.1 deep audit is superseded but kept for
+history; the 2026-04-24 v0.6 audit and the older
+docs/POST_REMEDIATION_AUDIT.md are flagged historical at the top
+of those files.
 
 ## Hard invariants
 
@@ -53,6 +54,21 @@ soundness or availability:
 - Nullifier preimage is 6-input Poseidon (ADR-0006 revision): adds
   issuerTreeRoot so revoking any issuer invalidates every
   pre-revocation proof's nullifier universe (SOLID-SEC-008).
+- Verification-key SHA-256 pins are load-bearing. Both circuits
+  ship through the SEC-058 artifact pin chain in
+  ts-sdk/packages/sdk/src/artifact_integrity.ts (env > sidecar >
+  config). Current canonical pins:
+  - batch circuit (batch_credential_query): VK
+    8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146
+    (post-SEC-050 padding-canonicality re-run, 2026-04-28).
+  - subgroup circuit (bjj_subgroup_proof): VK
+    938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9
+    (Phase E live ceremony, 2026-05-02).
+  Bumping either VK requires a chunked rotation through
+  request_vk_rotation / commit_vk_rotation (batch) or the
+  subgroup-mirror trio (rotate_subgroup_vk / store_subgroup_vk_chunk
+  / finalize_subgroup_vk) under the 48-hour ADR-0015 timelock and
+  a corresponding bump of the .sha256 sidecar in circuits/build/.
 
 ## Build sequence
 
@@ -127,7 +143,7 @@ COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
 # stale `governanceMint` poisons `initialize_registry` and the script's
 # self-heal path fires (clear error + auto-clear cache + re-run).
 bash scripts/sync_program_keypairs.sh --reset-state   # hydrate target/deploy + wipe state cache
-anchor build   # SEC-048 closed (Phase E, 2026-05-XX); no `--features` flag
+anchor build   # SEC-048 closed (Phase E, 2026-05-02); no `--features` flag
 anchor deploy --provider.cluster localnet
 
 # SOLID_VOTING_PERIOD_SECONDS MUST be the same for `initialize.ts` (which

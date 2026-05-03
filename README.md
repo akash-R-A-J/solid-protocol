@@ -1,263 +1,284 @@
 # SolID Protocol
 
-Private onchain identity infrastructure for Solana.
+**Private eligibility verification for Solana apps. Without storing user PII.**
 
-Prove who you are without revealing who you are.
+SolID lets a Solana app privately check whether a wallet satisfies an
+issuer-signed eligibility claim -- KYC, accreditation, residency, age,
+membership, jurisdiction -- without the app ever receiving the underlying
+data. The check is a Groth16 proof verified by an on-chain program, with
+revocation-aware issuer trust roots, schema governance, and one-shot
+nullifier replay protection.
 
-SolID enables selective disclosure and privacy-preserving verification of identity
-credentials on Solana using zero-knowledge proofs. It is built on SPL Account
-Compression for credential state, Groth16 plus alt_bn128 syscalls for on-chain
-proof verification, and BabyJubJub with Poseidon for the issuance signature
-scheme.
+## What problem this solves
 
-v0.6 (April 2026, post-Phase-2).  Builds on the v0.3 remediation set
-(Phase 1) with ADR-0014's compressed issuer tree and 6-input nullifier
-(Phase 2).  Every active proof now proves Merkle membership of a
-BJJ-bound Approved-issuer leaf, and revocation is atomic (status flip
-plus `replace_leaf` CPI in one instruction).  Public-input contract
-is 32 inputs with named indices in zk-verifier (`ISSUER_TREE_ROOT_
-INPUT_INDEX = 10`, `VERIFIER_ADDRESS_INPUT_INDEX = 29`,
-`VERIFIER_NONCE_INPUT_INDEX = 30`, `CURRENT_TIMESTAMP_INPUT_INDEX =
-31`).  Canonical post-fix assessment lives at
-`sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md`.
+Solana apps that gate participation today have four bad options:
 
-Phase 3 progress at the time of this release: SEC-007 (BJJ
-subgroup check), SEC-006 Part 1 (VK freeze-gate + 48-hour rotation
-timelock, ADR-0015), SEC-041 (content-addressed VK artifact via
-`SOLID_VK_SHA256` gate), SEC-044 (Cooldown-is-verify-negative
-amendment to ADR-0014: atomic `request_withdrawal_atomic`),
-SEC-045 (atomic handlers update `IssuerTreeBinding.current_root`
-in-ix; folded into SEC-059's Poseidon-recompute fix), SEC-046
-(CU regression gate live in CI; baselines at `tests/cu_baselines.json`),
-SEC-054 / B13 (legacy-tx overflow → buffer-account chunked upload:
-`init_proof_buffer` + `upload_proof_chunk` + `verify_batch_proof_v2`),
-SEC-058/059/061-064/066/067 (the 9 P0/P1 audit findings closed
-2026-04-30), and the NF-batch (SEC-072/077/078/079, closed 2026-05-01)
-have all landed.  E2E reaches `verified: true` end-to-end on localnet.
-42 of 67 registry findings are now closed.  Open residuals: SEC-010
-(cross-language vectors 3/10 → 10/10), SEC-012 (multi-party trusted
-setup, mainnet blocker), SEC-043 (`IssuerTreeBinding.operator` single
-signer), SEC-048 (BJJ subgroup CU on BPF; interim bypass live), SEC-080
-(NF-03; schema-registry pre-CPI binding anchor mirror), plus 19 other
-MEDIUM/LOW/INFO items.  SEC-006 Part 2 (circuit-bound `vk_generation`)
-is deferred behind the next trusted-setup cycle.  See
-`sec/SECURITY_REGISTRY.md` for the full backlog.
+1. Collect and store PII themselves (regulatory exposure).
+2. Outsource to a centralized KYC iframe (still hold a token; centralized
+   trust).
+3. Maintain an allowlist (operationally painful; non-portable).
+4. Use a non-private soulbound token (privacy is gone).
 
-## Architecture
+SolID gives them a fifth option:
 
-Layers, top to bottom.
+> A Solana program privately verifies an issuer-signed claim and learns
+> only `eligible: true` plus a few public predicate parameters.
+> The user's name, ID number, address, and date of birth never leave the
+> holder.
 
+## Where SolID fits
+
+Four roles, four products:
+
+| Role     | Question they need answered                                | Today's answer                                                                                |
+| -------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Verifier | "Can this wallet do this action right now?"                | Submit a holder-generated proof to `verify_batch_proof_v2`; check `verified: true`.           |
+| Issuer   | "Can I issue and revoke a credential for this user?"       | `register_issuer` (with on-chain BJJ subgroup proof) + DAO approval + `issue_credential` CPI. |
+| Holder   | "What am I revealing, and what stays private?"             | Hold credential locally; generate a Groth16 proof scoped to the verifier and a query.         |
+| Operator | "Are the trust roots and artifacts what they should be?"   | All program IDs + VK + artifact hashes pinned and CI-gated; see `docs/DEVNET_STATUS.md`.      |
+
+Today the bottom three layers (programs + circuits + low-level SDK)
+are production-quality. The user-facing wrappers, holder UI, and
+hosted devnet defaults are the next milestone -- see
+[`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md).
+
+## Status
+
+- v0.6.1, post-Phase-E close-out (2026-05-02).
+- Three Anchor programs deployed-shape on localnet; first sanctioned
+  devnet deploy is the next milestone.
+- 279/279 host + circuit unit tests green; clean-slate localnet
+  e2e green end-to-end including replay rejection.
+- Canonical state-of-protocol audit:
+  [`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`](sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md).
+- Devnet status page (program IDs, VK pins, artifact hashes,
+  known limitations): [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md).
+- 6 of 67 registry findings are CRITICAL; all 6 are closed. 19 of
+  23 HIGH closed. Open backlog is in
+  [`sec/SECURITY_REGISTRY.md`](sec/SECURITY_REGISTRY.md). Mainnet
+  blockers (multi-party ceremony; governance multisig on slash and
+  on the issuer-tree operator) are tracked separately and do **not**
+  apply to devnet.
+
+## How a verification flow looks today
+
+The high-level `verifyRequirement(...)` wrapper in
+`@solid-protocol/verifier` is being designed
+([`plan/VERIFIER_SDK_SHAPE.md`](plan/VERIFIER_SDK_SHAPE.md)) and is
+**not yet shipped**. The current shipped surface is the chunked-upload
+orchestration; what an integrator writes today:
+
+```ts
+import { verifyOnChainV2 } from "@solid-protocol/verifier";
+
+const { signature, verified } = await verifyOnChainV2({
+  connection,
+  payer,
+  proof,            // Groth16 proof bytes (G1.A | G2.B | G1.C)
+  publicSignals,    // 21-element wire subset of the 32-input contract
+  issuerTreeRoot,
+  schemaTreeRoots,
+  // ... + a dozen more accounts the SDK derives for you
+});
 ```
-Applications
-  Healthcare dApps, Hospitality, Supply Chain, DeFi.
-TypeScript SDK
-  @solid-protocol/core      WASM-powered crypto primitives
-  @solid-protocol/issuer    Credential issuance via SPL AC CPI
-  @solid-protocol/holder    ZK proof generation via snarkjs
-  @solid-protocol/verifier  On-chain proof submission
-  @solid-protocol/light     SPL AC adapter and Merkle proof adapters
-  @solid-protocol/sdk       High-level facade over the sub-packages
-On-chain programs (Anchor)
-  zk-verifier       Groth16 verification, PDA-per-nullifier replay protection
-  issuer-registry   DAO stake and vote, SPL AC issue_credential, slashing,
-                    IssuerTreeBinding + atomic revoke_issuer_atomic (ADR-0014)
-  schema-registry   Schemas, SchemaTreeBinding, GlobalStateBinding
-Foundation
-  SPL Account Compression    concurrent Merkle trees
-  groth16-solana             alt_bn128 syscall verification
-  circomlib                  proven ZK circuit primitives
+
+The target shape -- one call, no manual account derivation -- is the
+core of the upcoming verifier SDK:
+
+```ts
+const { verified, reason } = await solid.verifyRequirement({
+  wallet,
+  schema: "kyc_basic_v1",
+  predicates: [
+    { field: "kyc_level", op: ">=", value: 1 },
+    { field: "restricted_jurisdiction", op: "==", value: 0 },
+  ],
+  action: "join_launchpad_pool",
+});
+
+if (!verified) {
+  // typed reason: MISSING_CREDENTIAL | EXPIRED_CREDENTIAL | REVOKED_ISSUER | ...
+}
 ```
+
+This is what gets a developer from "evaluating SolID" to "integrated
+in 15 minutes."
 
 ## Quick start
 
-### Prerequisites
+Prerequisites: the toolchain pinned by `flake.nix` and
+`scripts/bootstrap.sh` provisions `.toolchain/bin/`. You need
+exactly:
 
-The full toolchain is pinned by flake.nix and scripts/bootstrap.sh. Outside Nix
-install these versions exactly:
-
-- Rust 1.79.0 with wasm32-unknown-unknown target
-- Solana CLI 1.18.22
-- Anchor CLI 0.30.1
-- circom 2.1.9, snarkjs 0.7.5
-- Node 18 with npm 10+
-- wasm-pack 0.13.1
-
-### Reproducible setup
+- Rust 1.79.0 + `wasm32-unknown-unknown`
+- Solana CLI 1.18.22, Anchor 0.30.1
+- circom 2.1.9, snarkjs 0.7.5, wasm-pack 0.13.1
+- Node 18 + npm 10
 
 ```
-nix develop
-# or
-bash scripts/bootstrap.sh
+nix develop                    # or: bash scripts/bootstrap.sh
 export PATH="$PWD/.toolchain/bin:$PATH"
-```
 
-A VS Code Devcontainer wraps the flake for one-click onboarding.
-
-### Build and test
-
-```
-# Rust crates plus zk-verifier host tests
-cargo test -p solid-core -p solid-light
-cargo test -p zk-verifier --lib
-
-# BPF build of the three Anchor programs
+# Build
+cd circuits && npm install && node scripts/setup.js && cd ..
+wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+bash scripts/sync_program_keypairs.sh
 anchor build
-
-# Circuits: compile then run the trusted setup
-cd circuits && node scripts/setup.js && cd ..
-
-# WASM bridge for the TS SDK.
-# The canonical bridge lives in the top-level wasm/ crate, not in
-# crates/solid-core (which stays BPF-compatible per SOLID-SEC-028 /
-# ADR-0002).
-wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
-
-# TypeScript SDK
 cd ts-sdk && npm ci && npm run build && cd ..
-```
 
-### Deploy to devnet
-
-```
-solana config set --url devnet
-solana airdrop 2
-
-# Sanity check: Anchor.toml, declare_id, deployments/devnet.json must agree.
-python3 scripts/check_program_ids.py
-
-anchor deploy --provider.cluster devnet
-
-# Refresh deployments/devnet.json after the deploy completes.
-python3 scripts/regen_devnet_manifest.py > deployments/devnet.json
-```
-
-If check_program_ids.py fails, follow
-[docs/PROGRAM_ID_RECONCILIATION.md](docs/PROGRAM_ID_RECONCILIATION.md).
-
-### End-to-end run (localnet)
-
-Preferred path is the Phase 2 close-out script, which is idempotent and
-re-run-safe:
-
-```
-solana-test-validator --reset &
+# E2E (clean-slate localnet)
+COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 \
+  solana-test-validator --reset \
+    --clone-upgradeable-program cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK \
+    --clone-upgradeable-program noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV \
+    --url https://api.devnet.solana.com &
+bash scripts/sync_program_keypairs.sh --reset-state
 anchor deploy --provider.cluster localnet
-cd ts-sdk && npm run e2e
+export SOLID_VOTING_PERIOD_SECONDS=120
+npm run e2e
 ```
 
-`npm run e2e` invokes, in order: `initialize.ts` (registry + schema +
-VK; skips issuer-tree binding when no tree yet), `backfill_issuer_
-tree.ts` (SPL AC tree + `IssuerTreeBinding` PDA + enroll approved
-issuers), `bootstrap_issuer.ts` (register + DAO-approve +
-`append_issuer_leaf` + `update_issuer_tree_root`), `issue.ts` (CPI
-`issue_credential` + snapshot issuer preimage), `prove.ts` (seed
-local replicas + generate proof + `verify_batch_proof` + replay
-reject).  Every step guards against re-entry into already-approved
-or already-enrolled states.
+`npm run e2e` runs `init-onchain` -> `backfill-issuer-tree` ->
+`bootstrap-schema-tree` -> `bootstrap-issuer` -> `issue` -> `prove`
+end-to-end and exits 0 with a final `verified: true` log line on
+the local validator.
 
-Shared state lives under `$XDG_RUNTIME_DIR/solid-e2e/` (or
-`$TMPDIR/solid-e2e-$uid/`) with 0700 directories and 0600 files
-(SOLID-SEC-020).  `initialize.ts` still honours `SOLID_TREE_PUBKEY`
-and `SOLID_GOVERNANCE_MINT` for pinning pre-existing accounts.
+## Architecture
 
-## Packages
+Layered top to bottom; each layer has exactly one source of truth.
 
-| Package | Type | Description |
-|---|---|---|
-| solid-core | Rust crate | Poseidon hash, BabyJubJub EdDSA, commitments, nullifiers |
-| solid-light | Rust crate | SPL AC binding helpers, schema and global root parsers |
-| solid-prover | Rust crate (tools/solid-prover) | Native Groth16 prover via ark-circom |
-| @solid-protocol/core | TypeScript | WASM loader plus QueryBuilder |
-| @solid-protocol/issuer | TypeScript | issue_credential wrapper |
-| @solid-protocol/holder | TypeScript | Groth16 proof generation, MerkleProofAdapter |
-| @solid-protocol/verifier | TypeScript | On-chain proof submission, PDA helpers |
-| @solid-protocol/light | TypeScript | SPL AC adapter, LocalReplicaAdapter, event parsing |
-| @solid-protocol/sdk | TypeScript | One-call facade over core, holder, verifier, light |
-| zk-verifier | Anchor | Groth16 verification with PDA-per-nullifier replay protection |
-| issuer-registry | Anchor | DAO stake, vote, slash, issue_credential |
-| schema-registry | Anchor | Schemas, SchemaTreeBinding, GlobalStateBinding |
+```
+Apps          Eligibility-gated Solana apps
+              (DeFi, launchpads, DAO membership, gated mints)
+
+TS SDK        @solid-protocol/sdk          (one-call facade -- TODO product wrapper)
+              @solid-protocol/verifier     (verifyOnChainV2 chunked-upload)
+              @solid-protocol/issuer       (issueCredential + generateSubgroupProof)
+              @solid-protocol/holder       (Groth16 fullProve + Merkle adapters)
+              @solid-protocol/light        (SPL AC adapter; PDA derivers)
+              @solid-protocol/core         (WASM-built Poseidon / BJJ / nullifier)
+
+Programs      zk-verifier                  Groth16 verify; nullifier PDA replay reject
+              issuer-registry              DAO stake/vote, on-chain BJJ subgroup proof,
+                                           SPL AC issue_credential, atomic revoke
+              schema-registry              Schemas + SchemaTreeBinding + GlobalStateBinding
+
+Circuits      batch_credential_query       32 public inputs; ADR-0014 issuer-tree binding
+              bjj_subgroup_proof           Phase E live ceremony; 2 public inputs
+
+Foundation    SPL Account Compression      concurrent Merkle trees (depth 20 / 16)
+              groth16-solana               alt_bn128 syscall verification
+              circomlib                    audited circuit primitives
+```
+
+Programs and circuits are the contract; everything else is a
+consumer. See `CLAUDE.md` for the hard invariants and
+`docs/CURRENT_STATE.md` for the per-component snapshot.
+
+## Cryptographic primitives (for protocol integrators)
+
+- **Groth16 over alt_bn128.** On-chain verification via Solana's
+  `alt_bn128_*` syscalls. G2 elements use `(imag, real)` ordering
+  per the syscall ABI; SDKs translate snarkjs's `(real, imag)`
+  output (SOLID-SEC-067).
+- **BabyJubJub EdDSA-Poseidon, cofactor-8.** Off-chain sign produces
+  `S = r + h * 8 * sk`; the in-circuit `EdDSAPoseidonVerifier` checks
+  `S * Base8 == R8 + h * 8 * A` (SOLID-SEC-053).
+- **Poseidon hashes.** 6-input nullifier preimage
+  `Poseidon(masterKey, revNonce, verifierAddr, queryCtxHash,
+  verifierNonce, issuerTreeRoot)` (ADR-0006 revision); 5-input
+  schema hash; 5-input credential commitment; 2-input Merkle.
+- **Nullifier replay protection.** One PDA per proof, init-only.
+  Atomic O(1).
+- **Owner-checks.** The on-chain verifier rejects any `global_tree`,
+  `schema_tree_N`, or `issuer_tree_binding` account whose owner is
+  not the expected registry program. This is what makes the trust
+  roots forge-resistant (ADR-0014).
+- **VK rotation.** ADR-0015 freeze gate + 48-hour timelock; chunked
+  upload mirror for both the batch and subgroup verification keys.
 
 ## Documentation
 
-- [Architecture Overview](docs/architecture.md)
-- [State Compression, SPL Account Compression integration](docs/light-protocol.md)
-- [Integration Guide](docs/integration-guide.md)
-- [Issuer Guide](docs/issuer-guide.md)
-- [Verifier Guide](docs/verifier-guide.md)
-- [Circuit Design](docs/circuits.md)
-- [Key Management](docs/key-management.md)
-- [Schema Reference](docs/schemas.md)
-- [Revocation Design (v1 and v1.1 SMT)](docs/REVOCATION_DESIGN.md)
-- [Deployment, E2E Testing, and Verification](docs/DEPLOYMENT_AND_TESTING.md) -- canonical runbook: install toolchain, build, deploy, run, verify correctness, probe security invariants
-- [Program-ID Reconciliation Runbook](docs/PROGRAM_ID_RECONCILIATION.md)
-- [Post-Remediation Audit -- Phase 1 (April 2026)](docs/POST_REMEDIATION_AUDIT.md) -- historical; superseded by the v0.6 deep audit
-- [v0.6.1 Deep Comprehensive Audit -- post-Phase-3-impl-4 (2026-04-25)](sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md) -- **canonical state-of-protocol**
-- [v0.6 Deep Comprehensive Audit -- post-Phase-2 (2026-04-24)](sec/audits/2026-04-24_v0.6_deep_comprehensive_audit.md) -- superseded by v0.6.1
-- [Security Registry](sec/SECURITY_REGISTRY.md)
+Product / integrator-facing:
 
-## How it works
+- [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md) -- current devnet
+  IDs, VK pins, artifact hashes, known limitations.
+- [`docs/integration-guide.md`](docs/integration-guide.md)
+- [`docs/issuer-guide.md`](docs/issuer-guide.md)
+- [`docs/verifier-guide.md`](docs/verifier-guide.md)
+- [`docs/REVOCATION_DESIGN.md`](docs/REVOCATION_DESIGN.md)
 
-### Issuer attests a credential
+Devnet rollout planning (load-bearing for the next release):
 
-The issuer hashes credential data with Poseidon, signs it with BabyJubJub EdDSA,
-and calls issuer-registry::issue_credential. That instruction CPIs into SPL AC
-append using an issuer-registry-owned tree-authority PDA. The leaf lands in a
-per-schema concurrent Merkle tree whose root is tracked by
-schema-registry::SchemaTreeBinding.
+- [`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md)
+  -- strategic positioning, competitive landscape, demo design.
+- [`plan/DEVNET_ROLLOUT_PUNCHLIST.md`](plan/DEVNET_ROLLOUT_PUNCHLIST.md)
+  -- tactical per-task list, Tier A/B/C/D. **Tier A + Tier B is the
+  bar before public devnet launch.**
+- [`plan/VERIFIER_SDK_SHAPE.md`](plan/VERIFIER_SDK_SHAPE.md)
+  -- design sketch for the upcoming `@solid-protocol/verifier`
+  high-level wrapper (not yet shipped).
 
-### Holder generates a proof
+Product architecture (per-actor):
 
-The holder:
+- [`docs/CREDENTIAL_DELIVERY_DESIGN.md`](docs/CREDENTIAL_DELIVERY_DESIGN.md)
+  -- issuer-to-holder credential package format and three delivery
+  channels.
+- [`docs/HOLDER_STORAGE_AND_WALLET.md`](docs/HOLDER_STORAGE_AND_WALLET.md)
+  -- holder storage architecture and proposed Wallet Standard
+  `solid:credentials@1` feature spec.
+- [`docs/SDK_INTEGRATOR_MATRIX.md`](docs/SDK_INTEGRATOR_MATRIX.md)
+  -- five-actor SDK package surface (verifier, issuer, holder, dao,
+  light) including the new `@solid-protocol/dao` package.
 
-1. Derives a per-schema BabyJubJub subkey via Poseidon(masterKey, schemaHash)
-   then BabyPbk, exactly matching the circuit's IdentityAnchor.
-2. Computes the per-schema identity leaf Poseidon(subAx, subAy, revocationNonce).
-3. Fetches the Merkle inclusion proof for that leaf from the global-state tree.
-4. Fetches the credential's Merkle proof from its schema-scoped tree.
-5. Runs the batch Groth16 circuit proving for example
-   "I hold a valid credential where age is at least 21 and country is US"
-   without revealing age, country, or identity.
+Protocol / cryptography:
 
-### Verifier checks on-chain
+- [`docs/architecture.md`](docs/architecture.md)
+- [`docs/circuits.md`](docs/circuits.md)
+- [`docs/light-protocol.md`](docs/light-protocol.md) (SPL Account
+  Compression integration)
+- [`docs/key-management.md`](docs/key-management.md)
+- [`docs/schemas.md`](docs/schemas.md)
+- [`docs/PROGRAM_ID_RECONCILIATION.md`](docs/PROGRAM_ID_RECONCILIATION.md)
+- [`docs/CU_BUDGET.md`](docs/CU_BUDGET.md)
+- [`docs/DEPLOYMENT_AND_TESTING.md`](docs/DEPLOYMENT_AND_TESTING.md)
 
-The verifier calls zk-verifier::verify_batch_proof, which:
+Audit history:
 
-1. Validates the Groth16 proof via alt_bn128 syscalls.
-2. Confirms the proof is bound to this verifier program's ID.
-3. Confirms each schema's Merkle root against its SchemaTreeBinding PDA,
-   rejecting any account not owned by schema-registry.
-4. Confirms the global-state root against the GlobalStateBinding PDA with the
-   same ownership check.
-5. ADR-0014: confirms the issuer-tree root against the IssuerTreeBinding PDA,
-   owner-checked against issuer-registry.  The circuit additionally proves
-   per-credential Merkle membership of a BJJ-bound issuer leaf, so revoking
-   any issuer invalidates every pre-revocation proof (SOLID-SEC-004 /
-   SOLID-SEC-008).
-6. Initialises a fresh nullifier PDA via init, giving atomic O(1) replay
-   protection.
+- [`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`](sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md)
+  -- canonical post-Phase-E full-system audit.
+- [`sec/audits/2026-05-01_v0.6.1_comprehensive_audit_synthesis.md`](sec/audits/2026-05-01_v0.6.1_comprehensive_audit_synthesis.md)
+  -- NF-batch synthesis (superseded).
+- [`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`](sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md)
+  -- post-Phase-3-impl-4 (superseded).
+- [`sec/SECURITY_REGISTRY.md`](sec/SECURITY_REGISTRY.md)
 
 ## Trust model
 
-- DAO-governed issuer registry. Issuers stake SOL and are approved via token-
-  weighted voting with flash-loan protection (100-slot stake maturity).
-- Slashing. Malicious issuers lose stake to the DAO treasury PDA via
-  slash_issuer and submit_fraud_proof. Lamports move atomically, not just
-  accounting.
-- Voting discipline. vote_on_issuer increments active_votes_count and refuses
-  votes after voting_ends_at. release_vote is required before the voter can
-  unstake.
-- Nullifiers (ADR-0006 Phase 2 revision). Each proof mints a unique
-  Poseidon(masterKey, revNonce, verifierAddr, queryCtxHash, verifierNonce,
-  issuerTreeRoot) nullifier PDA, scoped to the verifier AND to a specific
-  issuer-tree epoch (so a revoked issuer's old proofs cannot replay after
-  root rotation).
-- Backend-agnostic verifier. The verifier parses the trust roots by byte
-  offset and rejects any account whose owner is not the expected registry
-  program (schema-registry for global / schema trees; issuer-registry for
-  the issuer tree); storage backend can be swapped without a circuit change.
+- **DAO-governed issuers.** Issuers stake SOL, are admitted via
+  token-weighted vote with a 100-slot flash-loan window, and prove
+  on-chain that their BabyJubJub key sits in the prime-order subgroup
+  before they can issue (Phase E close-out, 2026-05-02).
+- **Atomic revocation.** `revoke_issuer_atomic` flips status, bumps
+  the revocation nonce, CPIs `replace_leaf` into the SPL AC issuer
+  tree, and writes the new Poseidon root into `IssuerTreeBinding`
+  in a single instruction. Old proofs become un-replayable
+  immediately because their nullifier universe is keyed on the
+  pre-revocation `issuerTreeRoot`.
+- **Slashing.** Lamports move atomically from the issuer's stake
+  vault to the DAO treasury PDA via `slash_issuer` and
+  `submit_fraud_proof`. (Both will be governance-multisig-gated
+  before mainnet; SOLID-SEC-013.)
+- **Voting discipline.** `vote_on_issuer` enforces the deadline,
+  increments `active_votes_count`, and refuses unstake until
+  `release_vote` is called -- voters cannot withdraw governance
+  weight to a winning side mid-vote.
+- **Backend-agnostic verifier.** The verifier reads trust roots by
+  byte offset and rejects accounts whose owner is not the expected
+  registry program. The SPL AC backend can be swapped without a
+  circuit change.
 
 ## License
 
-Dual licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at your
-option.
+Dual licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT)
+at your option.

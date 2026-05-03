@@ -3538,7 +3538,7 @@ pub struct IssuerLeafReplaced {
     pub merkle_tree: Pubkey,
 }
 
-// `Sec007Bypass` event REMOVED in SEC-048 Phase E.3 (2026-05-XX).
+// `Sec007Bypass` event REMOVED in SEC-048 Phase E.3 (2026-05-02).
 // The on-chain Groth16 verify against the subgroup VK is the
 // load-bearing soundness gate at registration time; there is no
 // bypass to telemetry-trace.  See SECURITY_REGISTRY.md SEC-048

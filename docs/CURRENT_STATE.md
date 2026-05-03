@@ -1,8 +1,8 @@
 > SolID Protocol -- Current State
 > ===============================
 >
-> Per-component snapshot of the implementation as of v0.6
-> (post-Phase-2, pre-Phase-3-close).  Every row is a direct mirror of
+> Per-component snapshot of the implementation as of v0.6.1
+> (post-Phase-E close-out, 2026-05-02).  Every row is a direct mirror of
 > a section in [`SYSTEM_VISION.md`](./SYSTEM_VISION.md) so the two
 > documents can be read side-by-side: vision on the left, current
 > reality on the right.
@@ -49,17 +49,19 @@ fixed first.
 | Item                                                              | Status | Where                                                      |
 | ----------------------------------------------------------------- | ------ | ---------------------------------------------------------- |
 | `RegistryConfig` and `IssuerAccount` data layouts                 | [X]    | programs/issuer-registry/src/lib.rs                        |
-| `register_issuer` (stake + BJJ pubkey)                            | [X]    | programs/issuer-registry/src/lib.rs                        |
-| `sec007-skip-onchain` feature flag for BJJ subgroup CU            | [X]    | programs/issuer-registry/src/lib.rs                        |
+| `register_issuer` (stake + BJJ pubkey + on-chain Groth16 subgroup proof) | [X] | programs/issuer-registry/src/lib.rs (Phase E.3, 2026-05-02) |
 | `vote_on_issuer` + `finalize_voting` (DAO admission)              | [X]    | programs/issuer-registry/src/lib.rs                        |
+| `SubgroupVerifierConfig` PDA + chunked subgroup-VK upload         | [X]    | programs/issuer-registry/src/lib.rs (Phase E.2)            |
+| `init_subgroup_verifier` authority constraint (SEC-083)           | [X]    | programs/issuer-registry/src/lib.rs (Phase E.6)            |
 | `append_issuer_leaf` (CPI: SPL AC append, signed by `issuer-tree-authority`) | [X] | programs/issuer-registry/src/lib.rs |
 | `update_issuer_tree_root` (push new root into binding)            | [X]    | programs/issuer-registry/src/lib.rs                        |
 | `revoke_issuer_atomic` (one-ix replace_leaf + nonce bump + root)  | [X]    | programs/issuer-registry/src/lib.rs                        |
 | `initialize_issuer_tree_binding` (init-only)                      | [X]    | programs/issuer-registry/src/lib.rs                        |
 | `issue_credential` (CPI: SPL AC append, signed by `[b"tree-authority", schema_hash]`) | [X] | programs/issuer-registry/src/lib.rs:1582 |
-| `request_withdrawal_atomic` (mirror of `revoke_issuer_atomic`)    | [ ]    | SOLID-SEC-044 (LOW)                                        |
+| `request_withdrawal_atomic` (mirror of `revoke_issuer_atomic`)    | [X]    | SOLID-SEC-044 (closed Phase 3 impl 4)                      |
+| `withdraw_after_revoke` (post-cooldown stake withdrawal + 24h dispute window) | [X] | SOLID-SEC-061 (closed 2026-04-30); SDK helper still TODO |
 | Squads 3-of-5 gating on `issuer_tree_operator`                    | [ ]    | SOLID-SEC-043 (MEDIUM); mainnet blocker                    |
-| Cross-language vectors: 3/10 primitives covered                   | [~]    | SOLID-SEC-010 (HIGH); tests/vectors/                       |
+| Cross-language vectors: 2/10 primitives covered                   | [~]    | SOLID-SEC-010 (HIGH); tests/vectors/                       |
 
 ## 1.3 schema-registry
 
@@ -105,7 +107,8 @@ fixed first.
 | `@solid-protocol/light`       | [X]    | LocalReplicaAdapter, PDA derivers, SPL AC ID exports       |
 | `@solid-protocol/issuer`      | [X]    | `issueCredential` builds the CPI'd issue tx                |
 | `@solid-protocol/holder`      | [~]   | Has `generateProof`; `SolID.prove()` is incomplete (P2-14) |
-| `@solid-protocol/verifier`    | [ ]    | Missing entirely (P0-6)                                    |
+| `@solid-protocol/verifier`    | [~]    | `verifyOnChainV2` chunked-upload orchestration shipped (SEC-054); high-level `verifyRequirement(...)` wrapper not yet authored |
+| `@solid-protocol/issuer::generateSubgroupProof`     | [X]    | Phase E.4 (2026-05-02); pinned via SUBGROUP_WASM_PIN / SUBGROUP_ZKEY_PIN / SUBGROUP_VK_PIN |
 
 # 5. Scripts (the wrappers)
 

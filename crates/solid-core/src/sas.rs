@@ -42,6 +42,10 @@ pub struct SasAttestation {
 #[derive(Debug)]
 pub struct SasAttestationBuilder {
     schema_id: [u8; 32],
+    // Captured for future use — current SAS CPI derives the attester from the
+    // signing context, not the instruction data, so the field is held but not
+    // serialised by `build_instruction_data`.
+    #[allow(dead_code)]
     attester: [u8; 32],
     subject: [u8; 32],
     data: Vec<u8>,

@@ -14,7 +14,7 @@ no-idl = []
 no-log-ix-name = []
 cpi = ["no-entrypoint"]
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
-# SEC-048 closure (Phase E, 2026-05-XX): the `sec007-skip-onchain`
+# SEC-048 closure (Phase E, 2026-05-02): the `sec007-skip-onchain`
 # escape hatch was REMOVED.  `register_issuer` now consumes a Groth16
 # proof of the prime-order-subgroup invariant (`[r] * P == identity`)
 # via the small subgroup circuit at `circuits/bjj_subgroup_proof.circom`;

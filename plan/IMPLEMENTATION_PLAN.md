@@ -4,9 +4,23 @@ Living plan. Single source of truth for scope, phasing, and
 acceptance. Every item references `SOLID-SEC-NNN` in
 `sec/SECURITY_REGISTRY.md` and/or `ADR-NNNN` in `adr/`.
 
-- Protocol version in scope: v0.6.1 (Phase 3 impl 1-4 closed) ->
-  v1.0 mainnet
-- Last revision: 2026-04-28 (circuit/ZK audit + e2e bring-up).
+- Protocol version in scope: v0.6.1 (Phase E closed) -> v1.0 mainnet
+- Last revision: 2026-05-02 (Phase E close-out + SEC-083 + full
+  system audit). **SOLID-SEC-048 closed end-to-end** via Phase E
+  (Option B) -- subgroup-circuit Groth16 verify is now wired into
+  `register_issuer` on-chain; the `sec007-skip-onchain` Cargo feature
+  is DELETED (no localnet/devnet/mainnet bypass remains); the
+  `Sec007Bypass` event is DELETED. **§1.16 of this plan is therefore
+  CLOSED;** the Standing exception register now contains zero active
+  exceptions. **SOLID-SEC-083 closed in the same arc** -- the
+  `init_subgroup_verifier` authority constraint forces the same key
+  as the registry admin so the subgroup VK is not first-caller-wins
+  on a fresh cluster. The Phase E full-system audit
+  (`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`)
+  is the canonical post-fix snapshot. Reference green
+  `verify_batch_proof_v2` tx on the no-bypass build:
+  `5hckZo1xsRPrzt3obKG5cmVLV42psxdxTjhZzcJZjEyJAeJNo2wvxPLs6haJfSXNA327SZefbw2kz1qNM5k4WiHJ`.
+- Prior revision: 2026-04-28 (circuit/ZK audit + e2e bring-up).
   Five SEC findings landed in code: **SOLID-SEC-045** (atomic
   binding update via on-chain Keccak path-recompute helper),
   **SOLID-SEC-049 NEW** (`SPL_AC_REPLACE_LEAF_DISCRIMINATOR`
@@ -100,27 +114,20 @@ mature, externally-audited mainnet at the end of Phase 3.
    against audit submission.
 
 > **Standing exception register.** The non-negotiables above
-> ADMIT NO EXCEPTIONS for production / mainnet artifacts.  They
-> permit one explicitly-named, time-boxed, infrastructure-gated
-> exception for development clusters only:
->
->   * **SOLID-SEC-048 (`sec007-skip-onchain` Cargo feature on
->     issuer-registry, lit 2026-04-25).**  Violates rule (1) on
->     localnet/devnet only -- the feature exists *because* the
->     root-cause fix for the BPF CU exhaustion is multi-week
->     (circuit constraint, SDK cofactor-clear, or `sol_babyjubjub_*`
->     syscall) and `npm run e2e` cannot otherwise run.  The
->     feature is opt-in (no default); mainnet builds MUST reject
->     it via a CI gate (P0-7 deliverable in
->     `docs/IMPROVEMENTS_ROADMAP.md`); a `Sec007Bypass` event is
->     emitted on every triggering call and a production-cluster
->     monitor MUST alert on observation.  Exception lifts on
->     SOLID-SEC-048 close (real fix landed AND
->     `tests/integration/register_issuer_compute_units.test.ts`
->     green on a no-feature build).  Any further candidate
->     exception goes through the same form: registered finding +
->     CI mainnet-build rejection + on-chain telemetry +
->     time-boxed close criteria.  See §1.16 and §6 row "SEC-048".
+> ADMIT NO EXCEPTIONS for production / mainnet artifacts.  As of
+> the 2026-05-02 Phase E close-out the register contains
+> **zero active exceptions**. The previous SOLID-SEC-048
+> exception (`sec007-skip-onchain` Cargo feature) was closed when
+> Phase E wired the subgroup-circuit Groth16 verify into
+> `register_issuer` on-chain; the feature flag and the
+> `Sec007Bypass` event have been DELETED from the tree.
+> Historical record: see §1.16 below for the original exception
+> registration; `sec/SECURITY_REGISTRY.md::SOLID-SEC-048` for
+> closure receipts; `plan/INTEGRATION_AND_TEST_STATUS_2026-05-02.md`
+> §3 for the empirical e2e green on the no-bypass build. Any
+> future candidate exception goes through the same form:
+> registered finding + CI mainnet-build rejection + on-chain
+> telemetry + time-boxed close criteria.
 
 ---
 
@@ -235,7 +242,23 @@ all-null deploy fields).
 
 ### 1.16 Active interim bypass -- SOLID-SEC-048 (BJJ subgroup BPF CU)
 
-**Status as of 2026-04-25 late-session:** lit on the working tree;
+**STATUS: CLOSED on 2026-05-02 via Phase E (Option B).**  The
+subgroup-circuit Groth16 verify is wired into `register_issuer`
+on-chain (256-byte `subgroup_proof` arg, 180,037 CU at N=2);
+the `sec007-skip-onchain` Cargo feature is deleted; the
+`Sec007Bypass` event is deleted.  The §1.16 narrative below is
+preserved for historical context only -- any reader
+encountering it should treat every "is bypassed" / "MUST NOT" /
+"interim" claim as describing the **pre-2026-05-02** state.
+The §6 regression-gate row `register_issuer_compute_units`
+no longer applies (the no-feature build now succeeds because
+the real fix landed); `mainnet_build_rejects_sec007_skip_onchain_feature`
+is moot because the feature no longer exists.
+See `sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`
+§2 invariant 12 for the closure proof and §5 for the live ix
+caller matrix.
+
+**Status as of 2026-04-25 late-session (HISTORICAL):** lit on the working tree;
 mainnet deploy-blocker; promoted to Phase 4 P0 (top of list); no
 P1/P2 work in any phase advances against this until the real fix
 (or its regression-gate proxy) is in CI.

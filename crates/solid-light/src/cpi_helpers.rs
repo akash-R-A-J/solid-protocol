@@ -1446,8 +1446,7 @@ mod tests {
         let path: Vec<[u8; 32]> = (0..depth)
             .map(|i| [sibling_pattern.wrapping_add(i as u8); 32])
             .collect();
-        let expected = compute_poseidon_merkle_root(&leaf, leaf_index, &path)
-            .expect("recompute");
+        let expected = compute_poseidon_merkle_root(&leaf, leaf_index, &path).expect("recompute");
         (expected, path)
     }
 
