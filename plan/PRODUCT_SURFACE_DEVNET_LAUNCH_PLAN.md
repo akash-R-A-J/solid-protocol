@@ -1235,9 +1235,17 @@ Near-term metric:
 4. Add subgroup wasm/zkey sidecar hash generation.
 5. Write `docs/DEVNET_QUICKSTART.md`.
 6. Build `examples/private-launchpad-gate`.
-7. Create high-level verifier SDK wrapper.
-8. Create issuer credential package format.
-9. Create holder claim/prove MVP.
+7. ~~Create high-level verifier SDK wrapper.~~ Done -- verified
+   2026-05-04 at `ts-sdk/packages/verifier/src/index.ts:1186-1450`
+   (`SolidVerifier` class). Remaining work for A3 closure: npm
+   publish + devnet defaults. See `plan/DEVNET_READINESS_CHECKLIST.md`
+   sections 2.C and 3.
+8. Create issuer credential package format. (Note:
+   `@solid-protocol/channel` already implements ECIES envelope
+   encryption / decryption; pending fixes for the package's
+   missing `tsconfig.json` and dep-import mismatch -- see
+   `DEVNET_READINESS_CHECKLIST.md` items 2.A.1 / 2.A.2 / 2.A.3.)
+9. Create holder claim/prove MVP -- in progress in `solid-wallet`.
 10. Record the 5-minute verifier integration video.
 
 ## Non-Goals for Devnet Launch

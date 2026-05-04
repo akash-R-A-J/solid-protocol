@@ -1,5 +1,5 @@
 /**
- * @solid-protocol/credential-channel -- Encryption (Issuer Side)
+ * @solid-protocol/channel -- Encryption (Issuer Side)
  *
  * Implements ECIES (Elliptic Curve Integrated Encryption Scheme):
  *   1. Generate ephemeral X25519 keypair
@@ -11,6 +11,7 @@ import nacl from 'tweetnacl';
 import { encodeBase64 } from 'tweetnacl-util';
 
 import type { CredentialBundle, EncryptedEnvelope } from './types.js';
+import { assertChannelPublicKey, assertCredentialBundle } from './validation.js';
 
 /**
  * Encrypt a credential bundle for a specific holder.
@@ -29,7 +30,8 @@ export function encryptCredential(
   bundle: CredentialBundle,
   holderChannelPublicKey: Uint8Array,
 ): EncryptedEnvelope {
-  validatePublicKey(holderChannelPublicKey);
+  assertCredentialBundle(bundle);
+  assertChannelPublicKey(holderChannelPublicKey);
 
   // 1. Generate ephemeral keypair (fresh per envelope = forward secrecy)
   const ephemeral = nacl.box.keyPair();
@@ -61,13 +63,4 @@ export function encryptCredential(
  */
 export function serializeEnvelope(envelope: EncryptedEnvelope): string {
   return JSON.stringify(envelope);
-}
-
-/**
- * Validate that a public key is the correct length.
- */
-function validatePublicKey(key: Uint8Array): void {
-  if (!(key instanceof Uint8Array) || key.length !== 32) {
-    throw new Error(`Invalid public key: expected 32-byte Uint8Array, got ${key?.length ?? 'null'}`);
-  }
 }

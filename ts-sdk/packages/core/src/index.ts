@@ -71,10 +71,36 @@ let wasmModule: any = null;
  */
 export async function initWasm(): Promise<void> {
   if (wasmModule) return;
-  // The module is built out-of-band; path is resolved at runtime.
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore — ambient types come from wasm/solid_wasm.d.ts once built
+  if (isBrowserLikeRuntime()) {
+    // Browser / extension-worker target.  This wrapper is generated with
+    // `wasm-bindgen --target web`, so it uses fetch/import.meta.url instead
+    // of Node's require/module/fs surface.
+    const mod = await import('../wasm-web/solid_wasm.js');
+    await mod.default();
+    wasmModule = mod;
+    return;
+  }
+
+  // Node target used by protocol scripts and local tests.  Built out of band
+  // with wasm-pack's nodejs target.
   wasmModule = await import('../wasm/solid_wasm.js');
+}
+
+function isBrowserLikeRuntime(): boolean {
+  const g = globalThis as typeof globalThis & {
+    window?: unknown;
+    document?: unknown;
+    self?: unknown;
+    navigator?: unknown;
+    process?: unknown;
+  };
+  return (
+    typeof g.window !== 'undefined'
+    || typeof g.document !== 'undefined'
+    || (typeof g.self !== 'undefined'
+      && typeof g.navigator !== 'undefined'
+      && typeof g.process === 'undefined')
+  );
 }
 
 function ensureInit() {

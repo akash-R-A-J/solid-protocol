@@ -1,7 +1,7 @@
 # SolID Devnet Rollout Punchlist
 
 Status: Active. Tactical task list.
-Last updated: 2026-05-02.
+Last updated: 2026-05-04.
 
 ## Commitment
 
@@ -23,6 +23,8 @@ Companion docs:
 - `docs/HOLDER_STORAGE_AND_WALLET.md` -- holder storage architecture
   and Wallet Standard integration spec.
 - `docs/SDK_INTEGRATOR_MATRIX.md` -- per-actor SDK package surface.
+- `../solid-wallet/REAL_WALLET_DEPLOYMENT_CHECKLIST.md` -- wallet
+  runtime config, issuer/verifier usage, and real holder deployment gate.
 
 ## Conventions
 
@@ -39,6 +41,167 @@ Status legend (mirrors `docs/CURRENT_STATE.md`):
 - `[ ]` open -- not started.
 - `[~]` partial -- some scaffolding, blocked or incomplete.
 - `[X]` closed -- shipped + acceptance test green.
+
+---
+
+## Current ordered devnet blockers -- 2026-05-04
+
+This section is the current "what is left, in order" list. It supersedes
+older product-side wording that assumed the verifier SDK and holder wallet
+did not exist yet.
+
+### 0. Freeze the devnet source of truth
+
+- **What:** Keep `deployments/devnet.json`, `docs/DEVNET_STATUS.md`,
+  wallet constants, console constants, and SDK defaults aligned on the
+  same program IDs, schema hashes, tree addresses, artifact URLs, and
+  artifact pins.
+- **Why:** Every other step depends on all clients proving against the
+  same verifier program, schema registry, issuer registry, circuit
+  artifacts, and tree roots. If these disagree, failures look like proof
+  bugs but are actually configuration drift.
+- **Acceptance:** One config manifest can be consumed by protocol
+  scripts, `@solid-protocol/verifier`, `solid-wallet`, and
+  `solid-console` without manual copy/paste.
+
+### 1. First sanctioned devnet deploy
+
+- **What:** Deploy `schema-registry`, `issuer-registry`, and
+  `zk-verifier`; initialize verifier config and verification keys;
+  regenerate `deployments/devnet.json`.
+- **Why:** Localnet green proves the system works in a controlled
+  validator. Public devnet requires executable program accounts and a
+  canonical manifest that external apps can trust.
+- **Acceptance:** The three program IDs resolve to executable accounts on
+  devnet and `scripts/check_program_ids.py` passes against the manifest.
+
+### 2. Register the launch schema set
+
+- **What:** Register at least `schemas/basic_identity_v1.json` on devnet
+  and record its schema PDA, schema hash, field list, and credential tree.
+- **Why:** Issuers and verifiers need a shared schema contract. Wallet
+  proof previews and verifier requirement encoding are only meaningful if
+  field names, indices, and hashes are canonical.
+- **Acceptance:** `basic_identity_v1` is queryable from the schema
+  registry / indexer API and matches the repo schema byte-for-byte.
+
+### 3. Initialize and expose the compressed-state trees
+
+- **What:** Create and record:
+  - Per-schema credential tree for each launch schema.
+  - Global identity-state tree.
+  - Singleton issuer Merkle tree.
+  - Current issuer-tree root.
+- **Why:** Holder proof generation needs inclusion paths for credentials,
+  identity state, and issuer status. Without these addresses and roots,
+  the wallet cannot produce real proofs.
+- **Acceptance:** Tree addresses and current roots are present in the
+  devnet manifest/status API and can be read by wallet/console config.
+
+### 4. Host pinned circuit artifacts
+
+- **What:** Host:
+  - `batch_credential_query.wasm`
+  - `batch_credential_query.zkey`
+  - `verification_key.json`
+  - subgroup wasm/zkey/VK files
+  with SHA-256 pins.
+- **Why:** The SDK and wallet now enforce artifact integrity. This is what
+  prevents a malicious or stale host from feeding holders the wrong
+  circuit bytes.
+- **Acceptance:** Public HTTPS URLs serve the artifact bytes and the
+  hashes match `docs/DEVNET_STATUS.md` / sidecar `.sha256` files.
+
+### 5. Deploy the Merkle proof indexer
+
+- **What:** Run an indexer that watches credential issuance, identity
+  state, issuer approvals/revocations, tree root updates, and exposes
+  Merkle proof endpoints consumed by the wallet.
+- **Why:** The wallet uses real `@solid-protocol/holder` proof
+  generation. It cannot invent Merkle paths and should not fall back to
+  stubs.
+- **Acceptance:** Given a credential commitment, identity leaf, or issuer
+  leaf, the indexer returns a non-stub proof with root/siblings/path
+  indices matching the current devnet tree state.
+
+### 6. Publish or link the SDK packages for integrators
+
+- **What:** Publish `@solid-protocol/verifier@0.2.0` and
+  `@solid-protocol/sdk@0.3.0`, or document a temporary local-package
+  install path for devnet pilots.
+- **Why:** The high-level wrapper code exists, but external developers
+  need an installable integration surface. Without this, partners still
+  have to monorepo-link.
+- **Acceptance:** A fresh app can install the SDK and call
+  `defineRequirement`, `requestProof`, and `verifyRequirement` without
+  importing local files from this repo.
+
+### 7. Finish `solid-console` as the real control plane
+
+- **What:** Replace demo/simulation paths with real registry, issuer,
+  issuance, verifier, schema, and status flows.
+- **Why:** Console is the operator/admin/product surface. Without it,
+  devnet can work technically but still feels like scripts plus docs.
+- **Acceptance:** From the console, an operator can register/view schemas,
+  register/approve issuers, issue a credential to a wallet-derived holder
+  key, inspect roots/indexer health, build verifier requirements, and run
+  a proof request without editing scripts.
+
+### 8. Configure and test `solid-wallet` against devnet
+
+- **What:** Load the built extension, configure indexer URL, artifact base
+  URL, global state tree, issuer Merkle tree, and issuer tree root; import
+  a real holder credential package.
+- **Why:** The wallet code path is now real, but it needs live
+  infrastructure. This is the difference between "builds" and "proves."
+- **Acceptance:** The wallet can receive a verifier proof envelope, show a
+  disclosure preview, generate a Groth16 proof, and return serialized
+  proof bytes to the requesting app.
+
+### 9. Wire issuer flow to wallet-derived holder keys
+
+- **What:** Issuer UI/CLI must call
+  `window.solid.getHolderPublicKey(schemaHash)` and issue credentials to
+  that BabyJubJub public key.
+- **Why:** Issuing to guessed or random holder keys breaks identity
+  cohesion in the holder SDK. Real credentials must target the holder key
+  derived by the wallet for the schema.
+- **Acceptance:** A credential issued by console/issuer CLI imports into
+  the wallet and passes holder SDK identity-cohesion checks during proof
+  generation.
+
+### 10. Wire verifier flow through `@solid-protocol/verifier`
+
+- **What:** Verifier apps and console verifier pages should build
+  `Requirement` objects and send `ProofRequestEnvelope` requests to the
+  wallet instead of hand-rolling query JSON.
+- **Why:** The SDK is the stable product surface. It owns field encoding,
+  action scoping, artifact pins, public input shape, and typed errors.
+- **Acceptance:** Console/demo verifier code no longer constructs raw
+  proof requests manually; it uses `SolidVerifier.defineRequirement` and
+  `requestProof` / `verifyRequirement`.
+
+### 11. Run one real devnet E2E from scratch
+
+- **What:** Execute the full external-user path:
+  deploy -> register schema -> approve issuer -> ask wallet for holder
+  key -> issue credential -> import into wallet -> request proof ->
+  approve -> verify on-chain -> replay rejects.
+- **Why:** Unit/build success is not enough for a ZK protocol. The public
+  devnet claim needs one full, recorded transaction path through all
+  deployed systems.
+- **Acceptance:** A clean run produces a successful devnet verification
+  signature, a failed replay attempt, and updated docs/status entries.
+
+### 12. Publish quickstarts and demo surface
+
+- **What:** Update public docs, examples, and demo deployment:
+  verifier quickstart, issuer guide, wallet setup, console guide, error
+  codes, and private launchpad gate.
+- **Why:** Devnet only matters if outside developers can reproduce it
+  without asking the core team for hidden steps.
+- **Acceptance:** A developer can go from empty app to verified proof
+  using the docs and deployed systems.
 
 ---
 
@@ -92,31 +255,32 @@ Status legend (mirrors `docs/CURRENT_STATE.md`):
 
 ### A3. `@solid-protocol/verifier` high-level wrapper
 
-- **Status:** [~] (`verifyOnChainV2` low-level orchestration shipped;
-  high-level `verifyRequirement` and `defineRequirement` not started).
-- **Effort:** 10-14 days (2 weeks).
+- **Status:** [~] (code path implemented locally:
+  `SolidVerifier`, `defineRequirement`, `requestProof`,
+  `verifyProof`, `verifyRequirement`, typed errors, artifact pin
+  loading, and README. Still needs package publishing and devnet E2E
+  acceptance before flipping to `[X]`).
+- **Effort remaining:** 1-2 days for publish/release polish once devnet
+  defaults exist.
 - **Dependency:** A2 (so default config can resolve artifact URLs).
 - **Acceptance:** `plan/VERIFIER_SDK_SHAPE.md` "Acceptance criteria" all
   hold. Specifically: a new developer can `npm install` and reach
   `result.verified === true` in under 15 minutes against devnet
   starting from the published quickstart.
-- **Implementation order (per VERIFIER_SDK_SHAPE.md):**
-  1. Resolved `Requirement` + public-input encoder (1-2 days).
-  2. `verifyProof` wrapping `verifyOnChainV2` with typed error
-     translation (2-3 days).
-  3. `requestProof` over wallet-adapter transport (2 days).
-  4. `defineRequirement` + `verifyRequirement` convenience method
-     (1 day).
-  5. Holder-side `canSatisfy` + `previewDisclosure` in
-     `@solid-protocol/holder` (3 days).
-  6. `health()` + docs + reference example (2-3 days).
-- **Open design questions** still pending decision: see
-  `plan/VERIFIER_SDK_SHAPE.md` "Open design questions" section.
+- **Remaining substeps:**
+  1. Point default devnet config at real artifact/indexer URLs.
+  2. Publish `@solid-protocol/verifier@0.2.0`.
+  3. Publish/update `@solid-protocol/sdk@0.3.0`.
+  4. Run the 15-minute quickstart from a fresh app against devnet.
 
 ### A4. Holder claim/prove web MVP
 
-- **Status:** [ ]
-- **Effort:** 10-14 days (2 weeks).
+- **Status:** [~] (`solid-wallet` extension now has real credential
+  import, encrypted-at-rest storage, pending proof approvals, holder SDK
+  proof generation, artifact pin checks, and injected provider methods.
+  Still needs real devnet config, real issuer-issued credential package,
+  and live E2E acceptance).
+- **Effort remaining:** 2-4 days after A1/A2/B1 are live.
 - **Dependency:** A3 partial (the Holder-side methods land in step 5
   of A3); can start scaffolding the UI before then.
 - **Acceptance:** A non-technical user can: (1) connect a wallet, (2)
@@ -125,18 +289,34 @@ Status legend (mirrors `docs/CURRENT_STATE.md`):
   request from a verifier app, (5) see a plain-language disclosure
   preview, (6) generate and submit the proof. All without reading
   protocol documentation.
-- **Implementation surface:**
-  - Encrypted IndexedDB storage (per
-    `docs/HOLDER_STORAGE_AND_WALLET.md`).
-  - Deterministic master key derived from wallet signature.
-  - Claim-link decrypt flow (per
-    `docs/CREDENTIAL_DELIVERY_DESIGN.md`).
-  - Disclosure preview screen.
-  - Proof-request listener (wallet-adapter transport).
-  - Backup/restore via encrypted JSON.
-- **Stack recommendation:** Next.js + shadcn/ui + Wallet Standard.
-  Deploy to Vercel under `holder.solid.example`. Mobile responsive
-  but not a native app (defer mobile to v1.1).
+- **Remaining substeps:**
+  1. Configure wallet against live `indexerUrl`, `artifactBaseUrl`,
+     `globalStateTree`, `issuerMerkleTree`, and `issuerTreeRoot`.
+  2. Import a real issuer-generated holder credential package.
+  3. Prove against a real verifier request envelope.
+  4. Add backup/restore and claim-link decrypt if required for the
+     public demo path.
+
+### A7. `solid-console` real devnet control plane
+
+- **Status:** [ ]
+- **Effort:** 5-8 days.
+- **Dependency:** A1 + A3 + A4 partial + B1 for live status/proof data.
+- **Acceptance:** The console can operate the public devnet without demo
+  simulations: schema browsing, issuer registration/status, credential
+  issuance to wallet-derived holder keys, verifier requirement builder,
+  proof request flow, and infrastructure health panels all hit real
+  deployed systems.
+- **Implementation order:**
+  1. Replace demo issuer registration with real issuer-registry calls.
+  2. Replace demo credential issuance with real `@solid-protocol/issuer`
+     issuance targeting `window.solid.getHolderPublicKey(schemaHash)`.
+  3. Replace hardcoded schema fields with schema catalog/registry data.
+  4. Wire verifier pages to `@solid-protocol/verifier`.
+  5. Add devnet config/status page for program IDs, artifact pins,
+     tree addresses, indexer lag, issuer tree root, and schema roots.
+  6. Add error surfaces based on `VerificationError` and registry
+     errors instead of generic simulation messages.
 
 ### A5. Issuer CLI
 
@@ -413,7 +593,7 @@ These are not blocking devnet but will accumulate cost if deferred.
 
 | Tier | Total items | Closed | Open |
 | --- | --- | --- | --- |
-| A    | 6           | 0      | 6    |
+| A    | 7           | 0      | 7    |
 | B    | 6           | 0      | 6    |
 | C    | 5           | 0      | 5    |
 | D    | 3           | 0      | 3    |

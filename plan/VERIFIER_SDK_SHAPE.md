@@ -1,17 +1,28 @@
 # `@solid-protocol/verifier` -- High-level SDK Shape
 
-Status: Design sketch (not shipped). Drafted 2026-05-02.
+Status: **Shipped** (2026-05-04 audit pass-2 verification). Originally
+drafted 2026-05-02 as a design sketch; the 2026-05-04 SDK audit pass-2
+verified the implementation lives at
+`ts-sdk/packages/verifier/src/index.ts:1186-1450` (`SolidVerifier`
+class) with `defineRequirement` (:1217), `requestProof` (:1255),
+`verifyProof` (:1286), `verifyRequirement` (:1336), `health` (:1356),
+`loadArtifact` (:1408), `walletAdapterTransport` (:1452),
+`httpTransport` (:1479), `explainVerificationError` (:1499),
+typed `VerificationError` (16 variants, :973-989), and
+`SolidVerificationError` (:1009). Remaining work to flip the
+`DEVNET_ROLLOUT_PUNCHLIST.md` A3 status from `[~]` to `[X]` is
+publish + devnet acceptance, not implementation.
 
-This document is the proposed shape for the high-level verifier SDK
-that hides every protocol detail an integrator should not need to
-think about: account derivation, proof buffers, Merkle reconstruction,
-public-input ordering, artifact pinning, nullifier construction.
+This document is the contract the wrapper satisfies. It is preserved
+as a design reference so integrators can understand the principles
+behind the API; the source of truth for behavior is the implementation
+at the citations above.
 
-The current shipped surface (`verifyOnChainV2` in
-`ts-sdk/packages/verifier/src/index.ts`) does the on-chain orchestration
-correctly but exposes too much protocol vocabulary to be the right
-integration point for app developers. This document is the contract
-the wrapper must satisfy.
+The current shipped surface includes both:
+- The high-level `SolidVerifier` (this document's subject).
+- The lower-level `verifyOnChainV2` orchestration
+  (`ts-sdk/packages/verifier/src/index.ts:698`) for callers that need
+  raw access. `SolidVerifier.verifyProof` delegates to it internally.
 
 The audience for this document is two readers:
 - a Solana app developer who has 15 minutes to evaluate SolID and is

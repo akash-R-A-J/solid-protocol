@@ -1,11 +1,67 @@
 # Holder Storage and Wallet Integration
 
-Status: Design. Drafted 2026-05-02.
+Status: Design + partial implementation. Last reconciled 2026-05-04.
 
 This document specifies where credentials live on the holder side and
 how SolID expects wallets to integrate. It is the authority for the
 two-layer architecture (web holder app + Wallet Standard interface)
 and for the deterministic key-derivation scheme.
+
+## Current implementation state (2026-05-04)
+
+What has shipped is the M1 channel-fix milestone, which delivers a
+narrower slice of this design:
+
+- **Form factor**: a Chrome extension (`solid-wallet`), not the Layer 1
+  web holder app at `holder.solid.example`. The extension owns its own
+  identity seed inside an encrypted vault rather than deriving keys via
+  external `wallet.signMessage`. Layer 1 (web holder app) and Layer 2
+  (Wallet Standard) below remain forward design.
+- **Channel**: `@solid-protocol/channel` is the canonical wire format.
+  Issuer-to-holder delivery uses an `EncryptedEnvelope` (NaCl box / X25519
+  + XSalsa20-Poly1305) wrapping a JSON-serialized `CredentialBundle`.
+  References to `CredentialPackage` and `encryptedFields` later in this
+  doc are pre-implementation naming and have been superseded -- see
+  `docs/CREDENTIAL_DELIVERY_DESIGN.md` for the canonical wire format.
+- **Channel public key**: the wallet exposes a base64-encoded X25519
+  public key derived deterministically from the unlocked identity seed
+  via `deriveChannelKeyFromMasterSeed("solid:channel:v1" || seed)`. The
+  user copies this from the wallet's Settings page and pastes it into
+  the issuer console at issue time. See `Settings.tsx` -> "Channel
+  Public Key" affordance.
+- **Holder-side cryptographic verification at import time**: every
+  decrypted bundle is run through `assertCredentialIsSoundForWallet`
+  before it touches IndexedDB. See "Holder-side credential integrity
+  gate" below.
+- **No `holderPrivateKey` on the wire or in storage**: the wallet derives
+  the per-schema BJJ private key just-in-time at proof generation via
+  `deriveCredentialKey(masterSeed, schemaHash)`. Nothing in the bundle
+  or in the encrypted IndexedDB record carries a holder secret. A
+  defense-in-depth check at proof time (`fromJsonCredential`) re-derives
+  the holder pubkey and refuses to proceed if the stored
+  `holderPubKeyX/Y` no longer matches the wallet identity.
+- **Holder revocation nonce**: the wallet's `WalletSettings` has a new
+  `holderRevocationNonce: string` (decimal) field that feeds the
+  6-input Poseidon nullifier preimage at proof time. Default is `'0'`
+  for fresh identities. The settings field is plumbed end to end
+  (background -> popup) but is not yet user-editable through the UI; a
+  user who has rotated their identity-state revocation nonce must
+  currently edit the value through `chrome.storage.local`. UI input is
+  a tracked gap.
+- **The 3-key derivation scheme described under "The derivation scheme"
+  below has not shipped as written.** The extension currently derives
+  three things from the unlocked vault seed: (a) a storage key
+  (`deriveCredentialStorageKey`); (b) the channel keypair via
+  `deriveChannelKeyFromMasterSeed`; (c) per-schema BJJ keypairs via
+  `deriveCredentialKey(masterSeed, schemaHash)`. These are
+  domain-separated but the canonical-message + HKDF wrapping below is
+  forward design.
+
+The remainder of this document describes the longer-term target. Where
+the target diverges from what is implemented, the divergence is
+intentional -- this doc is the destination, not a status report.
+
+----
 
 The audience is two readers: (1) the SolID team building the holder
 web app and the Wallet Standard reference implementation; (2) wallet
@@ -45,6 +101,70 @@ native SolID support.
    infrastructure beyond what is strictly required for proof
    submission. No analytics, no error reporting that includes
    credential content, no remote logging.
+
+## Holder-side credential integrity gate
+
+This is the structural + cryptographic admission policy every imported
+credential must pass before it is encrypted into IndexedDB.
+
+The check lives in
+`solid-wallet/src/shared/credential-integrity.ts::assertCredentialIsSoundForWallet`
+and runs after `decryptCredential` and before
+`bundleToCredentialRecord` in
+`solid-wallet/src/background/proof-engine.ts::importCredentialEnvelope`.
+
+**Inputs:**
+
+- The decrypted `CredentialBundle` produced by the channel package.
+- The wallet's unlocked master identity seed (32 bytes, from the
+  encrypted vault).
+
+**Checks (each fails closed with a typed error):**
+
+1. **WRONG_HOLDER**: the bundle's `holderPublicKey.{x,y}` must equal
+   `deriveCredentialKey(masterSeed, bundle.schemaHash).public_key_{x,y}`.
+   This proves the credential was issued to *this wallet's* derived BJJ
+   pubkey for *this* schema. A bundle whose holderPublicKey was set to
+   a different identity is rejected.
+2. **INVALID_HOLDER_KEY**: the holder BJJ pubkey is in the BabyJubJub
+   prime-order subgroup (via `isInPrimeOrderSubgroup`). Closes any
+   small-subgroup attacks on the holder side.
+3. **INVALID_ISSUER_KEY**: the issuer BJJ pubkey is in the prime-order
+   subgroup. Required because the issuer-tree leaf is computed from the
+   issuer pubkey, and the EdDSA verifier later treats the pubkey as
+   prime-order.
+4. **INVALID_COMMITMENT**: the bundle's `commitment` (32-byte hex)
+   equals `computeCommitment(attestationData, schemaHash, holderPubKeyX,
+   holderPubKeyY, salt)`. This binds the commitment to its declared
+   inputs -- a tampered attestation, schema, holder, or salt fails the
+   recompute.
+5. **INVALID_ISSUER_SIGNATURE**: the issuer's BJJ EdDSA signature
+   `{R8x, R8y, S}` verifies over `commitment` under the issuer's BJJ
+   pubkey. This is the actual unforgeability gate.
+
+**What this check does NOT verify (out of scope for the holder gate):**
+
+- That the issuer is currently approved on-chain. The wallet does not
+  consult the issuer-registry at import time; staleness is acceptable
+  here and the verifier-side enforces fresh issuer-tree roots at proof
+  time anyway.
+- That the credential's commitment is actually present at
+  `merkleProof.leafIndex` in `treeAddress`. The merkle proof is a hint
+  captured at issuance; the wallet refreshes from a `MerkleProofAdapter`
+  before each proof generation, and the on-chain verifier rejects any
+  proof whose tree root does not match the chain.
+- Subgroup checks on the issuer signature's R8 point. Those are
+  enforced inside `@solid-protocol/core::verify` per the SOLID-SEC-053
+  cofactor-8 fix (CLAUDE.md hard invariants).
+
+**Why these checks belong in the wallet, not the channel package:**
+
+The channel package is intentionally crypto-WASM-free so it can be
+audited and ship independently of the BJJ + Poseidon primitives. The
+wallet imports `@solid-protocol/core`'s WASM bridge for these checks.
+Splitting this way also lets a future verifier-side service (e.g.
+solid-console) reuse the same channel package without dragging in the
+holder-only integrity rules.
 
 ## Two-layer architecture
 

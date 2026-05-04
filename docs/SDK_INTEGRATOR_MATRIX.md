@@ -26,9 +26,9 @@ threshold for what "easy integration" means.
 
 | Actor | Question | Package | Status today |
 | --- | --- | --- | --- |
-| App / Verifier | "Can this wallet do this action?" | `@solid-protocol/verifier` | Low-level shipped; high-level wrapper not yet. |
+| App / Verifier | "Can this wallet do this action?" | `@solid-protocol/verifier` | Low-level shipped; high-level `SolidVerifier` shipped (`ts-sdk/packages/verifier/src/index.ts:1186`). Pending npm publish + devnet defaults. |
 | Issuer | "Can I issue and revoke this credential?" | `@solid-protocol/issuer` | Mid-level shipped (incl. `generateSubgroupProof`); high-level wrapper not yet. |
-| Holder / Wallet | "What am I revealing? What stays private?" | `@solid-protocol/holder` | Has `generateProof`; user-facing methods not yet. |
+| Holder / Wallet | "What am I revealing? What stays private?" | `@solid-protocol/holder` | Has `generateBatchProof` + `generateProof`; user-facing methods (`importCredential`, `canSatisfy`, etc.) not yet. |
 | DAO Member / Governor | "Should I admit / slash this issuer?" | `@solid-protocol/dao` | **Does not exist.** New package. |
 | Indexer / Operator | "Are the trust roots and artifacts healthy?" | `@solid-protocol/light` (extended) | SPL AC adapter shipped; subscription/health surface not yet. |
 
@@ -45,11 +45,14 @@ Already specified in detail in `plan/VERIFIER_SDK_SHAPE.md`. Summary:
 
 | Method | What it does | Status |
 | --- | --- | --- |
-| `defineRequirement(spec)` | Resolve a `RequirementSpec` to a typed `Requirement` with public-input encoding. | TODO |
-| `requestProof({ wallet, requirement, transport })` | Send a proof request to the holder; return a handle. | TODO |
-| `verifyProof({ proof, requirement, payer })` | Submit on-chain; return typed `VerificationResult`. | TODO |
-| `verifyRequirement(args)` | One-shot: defineRequirement + requestProof + verifyProof. | TODO |
-| `health()` | Probe artifact pins, program IDs, indexer; for status pages. | TODO |
+| `defineRequirement(spec)` | Resolve a `RequirementSpec` to a typed `Requirement` with public-input encoding. | Shipped (`verifier/src/index.ts:1217`). |
+| `requestProof({ wallet, requirement, transport })` | Send a proof request to the holder; return a handle. | Shipped (`verifier/src/index.ts:1255`). |
+| `verifyProof({ proof, requirement, payer })` | Submit on-chain; return typed `VerificationResult`. | Shipped (`verifier/src/index.ts:1286`). |
+| `verifyRequirement(args)` | One-shot: defineRequirement + requestProof + verifyProof. | Shipped (`verifier/src/index.ts:1336`). |
+| `health()` | Probe artifact pins, program IDs, indexer; for status pages. | Shipped (`verifier/src/index.ts:1356`). |
+| `loadArtifact(kind)` | Fetch + SHA-256-verify a circuit artifact. | Shipped (`verifier/src/index.ts:1408`). |
+| `walletAdapterTransport(wallet)`, `httpTransport(endpoint)` | Pluggable transports for `requestProof`. | Shipped (`verifier/src/index.ts:1452`, `:1479`). |
+| `explainVerificationError(err, detail?)` | 16-variant typed-error -> human-readable + suggested action. | Shipped (`verifier/src/index.ts:1499`). |
 | `verifyOnChainV2(args)` | Low-level chunked-upload orchestration. | Shipped (SEC-054). |
 | `buildVerifyBatchProofIx`, `derivePdas`, `checkIssuerStatus` | Lower-level building blocks; re-exported. | Shipped. |
 
@@ -279,8 +282,13 @@ not at import time. Document this in the bundling guide.
 
 This matches `plan/DEVNET_ROLLOUT_PUNCHLIST.md`:
 
-1. **Tier A3** -- `@solid-protocol/verifier` high-level wrapper.
-2. **Tier A4** -- `@solid-protocol/holder` user-facing methods.
+1. ~~**Tier A3** -- `@solid-protocol/verifier` high-level wrapper.~~
+   **Implemented** (`verifier/src/index.ts:1186-1450`); remaining work
+   is npm publish + devnet defaults, tracked under
+   `DEVNET_ROLLOUT_PUNCHLIST.md` A3 substeps.
+2. **Tier A4** -- `@solid-protocol/holder` user-facing methods
+   (`importCredential`, `importFromClaimLink`, `canSatisfy`,
+   `previewDisclosure`, `exportEncryptedBackup`, `restoreFromBackup`).
 3. **Tier A5** -- `@solid-protocol/issuer` high-level wrapper +
    issuer CLI on top.
 4. **Tier B1 dependency** -- `@solid-protocol/light`

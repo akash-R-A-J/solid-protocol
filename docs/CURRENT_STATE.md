@@ -107,7 +107,7 @@ fixed first.
 | `@solid-protocol/light`       | [X]    | LocalReplicaAdapter, PDA derivers, SPL AC ID exports       |
 | `@solid-protocol/issuer`      | [X]    | `issueCredential` builds the CPI'd issue tx                |
 | `@solid-protocol/holder`      | [~]   | Has `generateProof`; `SolID.prove()` is incomplete (P2-14) |
-| `@solid-protocol/verifier`    | [~]    | `verifyOnChainV2` chunked-upload orchestration shipped (SEC-054); high-level `verifyRequirement(...)` wrapper not yet authored |
+| `@solid-protocol/verifier`    | [X]    | `verifyOnChainV2` chunked-upload orchestration shipped (SEC-054); high-level `SolidVerifier` wrapper shipped (`ts-sdk/packages/verifier/src/index.ts:1186-1450`) -- `defineRequirement`, `requestProof`, `verifyProof`, `verifyRequirement`, `health`, `loadArtifact`, `walletAdapterTransport`, `httpTransport`, 16-variant typed `VerificationError`, `explainVerificationError` |
 | `@solid-protocol/issuer::generateSubgroupProof`     | [X]    | Phase E.4 (2026-05-02); pinned via SUBGROUP_WASM_PIN / SUBGROUP_ZKEY_PIN / SUBGROUP_VK_PIN |
 
 # 5. Scripts (the wrappers)

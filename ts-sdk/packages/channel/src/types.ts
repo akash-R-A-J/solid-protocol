@@ -1,5 +1,5 @@
 /**
- * @solid-protocol/credential-channel
+ * @solid-protocol/channel
  *
  * Type definitions for the secure ECIES credential delivery channel.
  *
@@ -91,6 +91,16 @@ export interface CredentialBundle {
 
   /** Issuer revocation nonce at time of issuance. */
   issuerRevocationNonce: string;
+
+  /**
+   * Issuer's leaf index in the issuer tree at time of issuance (decimal string).
+   *
+   * Captured at issuance so the holder can request the correct Merkle path
+   * for the issuer-tree membership proof at proof-generation time.  May be
+   * stale if the issuer was revoked-and-readmitted; the holder should
+   * refresh from the on-chain IssuerAccount before relying on it.
+   */
+  issuerTreeLeafIndex: string;
 }
 
 /**
@@ -109,7 +119,7 @@ export interface EncryptedEnvelope {
   /** Unique nonce for this envelope (base64, 24 bytes). */
   nonce: string;
 
-  /** AES-256-GCM ciphertext of the JSON-serialized CredentialBundle (base64). */
+  /** NaCl box ciphertext of the JSON-serialized CredentialBundle (base64). */
   ciphertext: string;
 }
 

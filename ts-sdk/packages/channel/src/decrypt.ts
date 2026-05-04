@@ -1,5 +1,5 @@
 /**
- * @solid-protocol/credential-channel -- Decryption (Holder Side)
+ * @solid-protocol/channel -- Decryption (Holder Side)
  *
  * Reverses the ECIES envelope:
  *   1. Decode the envelope fields from base64
@@ -8,9 +8,16 @@
  *   4. Parse and validate the CredentialBundle
  */
 import nacl from 'tweetnacl';
-import { decodeBase64 } from 'tweetnacl-util';
 
 import type { CredentialBundle, EncryptedEnvelope } from './types.js';
+import {
+  assertChannelSecretKey,
+  assertCredentialBundle,
+  assertEncryptedEnvelope,
+  decodeBase64Field,
+  NACL_BOX_NONCE_BYTES,
+  X25519_PUBLIC_KEY_BYTES,
+} from './validation.js';
 
 /**
  * Decrypt an encrypted credential envelope.
@@ -30,13 +37,17 @@ export function decryptCredential(
   envelope: EncryptedEnvelope,
   channelSecretKey: Uint8Array,
 ): CredentialBundle {
-  validateEnvelope(envelope);
-  validateSecretKey(channelSecretKey);
+  assertEncryptedEnvelope(envelope);
+  assertChannelSecretKey(channelSecretKey);
 
   // 1. Decode base64 fields
-  const ephemeralPubKey = decodeBase64(envelope.ephemeralPublicKey);
-  const nonce = decodeBase64(envelope.nonce);
-  const ciphertext = decodeBase64(envelope.ciphertext);
+  const ephemeralPubKey = decodeBase64Field(
+    envelope.ephemeralPublicKey,
+    X25519_PUBLIC_KEY_BYTES,
+    'ephemeralPublicKey',
+  );
+  const nonce = decodeBase64Field(envelope.nonce, NACL_BOX_NONCE_BYTES, 'nonce');
+  const ciphertext = decodeBase64Field(envelope.ciphertext, decodeCiphertextLength(envelope.ciphertext), 'ciphertext');
 
   // 2. Decrypt with NaCl box.open
   const plaintext = nacl.box.open(ciphertext, nonce, ephemeralPubKey, channelSecretKey);
@@ -56,8 +67,10 @@ export function decryptCredential(
     throw new Error('Decrypted data is not valid JSON — envelope may be corrupted');
   }
 
-  // 4. Basic structural validation
-  validateBundle(bundle);
+  // 4. Protocol-level structural validation. Cryptographic validity
+  // (commitment recomputation, signature verification, on-chain roots) is
+  // enforced by the wallet/holder/verifier packages.
+  assertCredentialBundle(bundle);
 
   return bundle;
 }
@@ -74,65 +87,11 @@ export function parseEnvelope(json: string): EncryptedEnvelope {
   }
 
   const envelope = parsed as EncryptedEnvelope;
-  validateEnvelope(envelope);
+  assertEncryptedEnvelope(envelope);
   return envelope;
 }
 
-/**
- * Validate envelope structure.
- */
-function validateEnvelope(envelope: EncryptedEnvelope): void {
-  if (!envelope || typeof envelope !== 'object') {
-    throw new Error('Envelope must be a non-null object');
-  }
-  if (envelope.version !== 1) {
-    throw new Error(`Unsupported envelope version: ${envelope.version}`);
-  }
-  if (typeof envelope.ephemeralPublicKey !== 'string' || !envelope.ephemeralPublicKey) {
-    throw new Error('Missing or invalid ephemeralPublicKey');
-  }
-  if (typeof envelope.nonce !== 'string' || !envelope.nonce) {
-    throw new Error('Missing or invalid nonce');
-  }
-  if (typeof envelope.ciphertext !== 'string' || !envelope.ciphertext) {
-    throw new Error('Missing or invalid ciphertext');
-  }
-}
-
-/**
- * Validate secret key shape.
- */
-function validateSecretKey(key: Uint8Array): void {
-  if (!(key instanceof Uint8Array) || key.length !== 32) {
-    throw new Error(`Invalid secret key: expected 32-byte Uint8Array, got ${key?.length ?? 'null'}`);
-  }
-}
-
-/**
- * Structural validation of a decrypted CredentialBundle.
- * Does NOT verify cryptographic integrity — that's the circuit's job.
- */
-function validateBundle(bundle: CredentialBundle): void {
-  const required: (keyof CredentialBundle)[] = [
-    'version',
-    'schemaHash',
-    'attestationData',
-    'issuerSignature',
-    'issuerPublicKey',
-    'holderPublicKey',
-    'salt',
-    'commitment',
-    'treeAddress',
-    'merkleProof',
-  ];
-
-  for (const field of required) {
-    if (bundle[field] === undefined || bundle[field] === null) {
-      throw new Error(`CredentialBundle is missing required field: ${field}`);
-    }
-  }
-
-  if (!Array.isArray(bundle.attestationData) || bundle.attestationData.length === 0) {
-    throw new Error('attestationData must be a non-empty array');
-  }
+function decodeCiphertextLength(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
 }

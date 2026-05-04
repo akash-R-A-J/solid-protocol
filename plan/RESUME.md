@@ -4,7 +4,97 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-02 (SEC-048 Phase E close).  This
+- **Last updated:** 2026-05-04 (SDK audit pass-2 + devnet checklist).
+  No code changes this session; documentation-only pass. Two main
+  findings:
+  1. **Pre-flight items 0.2 / 0.3 / 0.4 in a draft devnet checklist
+     were stale.** Verified directly: `cargo clippy -p solid-core
+     -p solid-light -- -D warnings` exits 0 (`crates/solid-core/src/sas.rs:48`
+     already has `#[allow(dead_code)]` on `attester`); `cargo fmt
+     --all -- --check` exits 0; `README.md:47`,
+     `docs/CURRENT_STATE.md:4`, and `CLAUDE.md:65` already reference
+     v0.6.1 post-Phase-E and the subgroup VK pin. Lesson: future
+     status claims must cite a file:line and date of verification
+     before trusting the audit.
+  2. **`verifyRequirement` wrapper is shipped, not "10-14 days of
+     work" as a pass-1 audit claimed.** Pass-2 audit verified
+     `SolidVerifier` class at
+     `ts-sdk/packages/verifier/src/index.ts:1186-1450` -- includes
+     `defineRequirement` (:1217), `requestProof` (:1255),
+     `verifyProof` (:1286), `verifyRequirement` (:1336),
+     `health` (:1356), `loadArtifact` (:1408),
+     `walletAdapterTransport` (:1452), `httpTransport` (:1479),
+     `explainVerificationError` (:1499), 16-variant typed
+     `VerificationError` (:973-989), `SolidVerificationError`
+     (:1009). Pass-1 audit's Explore agent stopped reading at
+     line 575 of a 1894-line file. **This collapses the devnet
+     critical path from 23-30 days to 8-14 days.**
+
+  Real SDK bugs surfaced by pass-2 (none on-chain; all in the
+  TS SDK):
+  - **`@solid-protocol/channel` cannot be installed.** No
+    `tsconfig.json` (every other package has one); `npm run build`
+    exits 0 silently with no `dist/`. `package.json:13` declares
+    `@noble/ed25519` + `@noble/hashes` but source imports
+    `tweetnacl` + `tweetnacl-util` -- neither stack is installed
+    at `ts-sdk/node_modules/`. Docstrings reference the import
+    name `@solid-protocol/credential-channel`; published name is
+    `@solid-protocol/channel`.
+  - **`holder.generateProof` (single-credential path,
+    `holder/src/index.ts:107-282`) uses singular `merkleRoot` /
+    `schemaHash` arg shape**; current circuit
+    `batch_credential_query.circom` expects plural arrays. Either
+    delete the function or rewrite for the batch circuit.
+  - **`@solana/web3.js` should be `peerDependencies` not
+    `dependencies`** across all 7 packages -- duplicate copies
+    cause `instanceof PublicKey` failures across package
+    boundaries.
+  - **Polish items (B1-B10 in the checklist):** missing exports/
+    engines/LICENSE fields, two different artifact-host placeholder
+    URLs (`verifier/src/index.ts:1128` vs `sdk/src/config.ts:32`),
+    `validatePublicSignals` doesn't check verifierAddress / nonce
+    slots, etc.
+
+  What landed (docs only):
+  - **NEW:** `plan/DEVNET_READINESS_CHECKLIST.md` (full rewrite,
+    9 sections, bug list folded in, critical path revised to
+    8-14 days, "no workarounds" rule).
+  - **EDITED:** `plan/VERIFIER_SDK_SHAPE.md` header (Status:
+    Shipped + citations).
+  - **EDITED:** `docs/CURRENT_STATE.md:110` (verifier row [~] -> [X]).
+  - **EDITED:** `docs/SDK_INTEGRATOR_MATRIX.md` (verifier row
+    + per-method table + implementation order).
+  - **EDITED:** `plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md:1230`
+    (Immediate Next 10 Tasks: item 7 marked done with citations).
+  - **VERIFIED ALREADY CURRENT (no edit needed):**
+    `docs/DEVNET_STATUS.md` (lines 140-148, 183-186 already say
+    wrapper exists locally + needs npm publish);
+    `plan/DEVNET_ROLLOUT_PUNCHLIST.md` A3 (already `[~]` with
+    accurate "1-2 days for publish/release polish" remaining work).
+
+  Verification artifacts:
+  - `npm run build` from `ts-sdk/` -- exits 0; six of seven
+    packages emit working `dist/` (channel emits nothing per the
+    bug above).
+  - Discriminator cross-check: `python3
+    sha256('global:issue_credential')[:16] = ffc1abe044abc257`
+    matches the hardcoded SDK constant at
+    `issuer/src/index.ts:60`.
+  - Account-ordering cross-check: SDK
+    `verifier/src/index.ts:389-402` ↔ on-chain
+    `programs/zk-verifier/src/lib.rs:1123-1187` (`VerifyBatchProofV2`)
+    -- all 12 slots match. SDK `issuer/src/index.ts:178-189` ↔
+    on-chain `programs/issuer-registry/src/lib.rs:2761-2823`
+    (`IssueCredential`) -- all 8 slots match.
+
+  **What's next:** execute item 0.1 (provision deployer keypair +
+  ~15 SOL) so 1.x (devnet deploy) can run. In parallel, fix
+  channel package bugs (2.A.1 / 2.A.2 / 2.A.3) so `@solid-protocol/sdk`
+  can be published cleanly. See `plan/DEVNET_READINESS_CHECKLIST.md`
+  critical-path summary.
+
+- **Previous update (preserved for history):** 2026-05-02 (SEC-048
+  Phase E close).  This
   session shipped Phase E.1..E.4 + the SOLID-SEC-083 hardening
   (auth-race on `init_subgroup_verifier`) + three workflow learnings
   (pipe-tail buffering / clean-slate-before-e2e / snarkjs hangs).

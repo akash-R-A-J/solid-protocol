@@ -691,7 +691,9 @@ export async function generateBatchProof(
 
   // 4. Run SnarkJS
   console.log('Generating Batch Groth16 proof (N=4)...');
-  if (process.env.SOLID_DEBUG_CIRCUIT_INPUT) {
+  const debugCircuitInput =
+    typeof process !== 'undefined' && process.env?.SOLID_DEBUG_CIRCUIT_INPUT;
+  if (debugCircuitInput) {
     // SOLID-SEC-066 / H8: pre-CRIT-3, this dumped the FULL circuitInput
     // (including masterIdentityKey, holderBJJPrivKey, revocationNonce,
     // salts, issuer signature scalars, attestation data) to a
@@ -707,7 +709,7 @@ export async function generateBatchProof(
     const path = await import('path');
     const os = await import('os');
     const includeSecrets =
-      process.env.SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS === 'DANGER_I_UNDERSTAND';
+      process.env?.SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS === 'DANGER_I_UNDERSTAND';
     const REDACTED = '<redacted by SOLID-SEC-066 -- set ' +
       'SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS=DANGER_I_UNDERSTAND to dump>';
     const SECRET_FIELDS = [

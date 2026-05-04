@@ -1,6 +1,6 @@
 # SolID Devnet Status
 
-Last updated: 2026-05-02 (post-Phase-E close-out).
+Last updated: 2026-05-04 (SDK + wallet implementation pass).
 
 This page is the public, machine-friendly source of truth for the
 SolID devnet deployment. If a value here disagrees with code in the
@@ -128,24 +128,35 @@ on the issuer-tree operator) do **not** apply to devnet.
 
 Product-side, in rollout order:
 
-1. `@solid-protocol/verifier` high-level wrapper -- one call
-   `verifyRequirement({ wallet, schema, predicates, action })` that
-   hides accounts, proof buffers, Merkle reconstruction, nullifiers,
-   and artifact pins.
-2. Hosted devnet defaults -- artifact CDN with SHA-256 pins,
-   schema/issuer registry API, Merkle proof / indexer API, status
-   ping endpoint.
-3. Holder credential storage + claim/prove web app (today there is
-   no canonical holder UI; see `docs/HOLDER_FLOW.md` once it is
-   written).
-4. Issuer CLI or minimal dashboard so issuers do not need to run
+1. First sanctioned devnet deploy -- executable program accounts,
+   initialized verifier config, frozen VKs, and regenerated
+   `deployments/devnet.json`.
+2. Registered launch schema set -- at minimum `basic_identity_v1`
+   with canonical schema hash, field indices, schema PDA, and tree
+   address.
+3. Hosted devnet defaults -- artifact CDN with SHA-256 pins,
+   schema/issuer registry API, Merkle proof / indexer API, current
+   issuer-tree root, and status ping endpoint.
+4. `@solid-protocol/verifier` package publish -- high-level wrapper
+   code now exists locally, but public devnet needs installable
+   `@solid-protocol/verifier@0.2.0` and `@solid-protocol/sdk@0.3.0`
+   plus devnet defaults.
+5. `solid-wallet` devnet configuration -- wallet code now imports
+   real holder credentials, stores them encrypted, handles proof
+   envelopes, and calls `@solid-protocol/holder`; it still needs live
+   indexer/artifact/tree config and a real issuer-issued credential
+   package for E2E acceptance.
+6. `solid-console` real control plane -- replace demo/simulation
+   issuer, issuance, verifier, schema, and DAO/status flows with real
+   devnet calls.
+7. Issuer CLI or minimal dashboard so issuers do not need to run
    `bootstrap_issuer.ts` directly.
-5. `examples/private-launchpad-gate` Next.js demo deployed to a
+8. `examples/private-launchpad-gate` Next.js demo deployed to a
    public URL.
-6. `docs/DEVNET_QUICKSTART.md`, `docs/VERIFIER_INTEGRATION.md`,
+9. `docs/DEVNET_QUICKSTART.md`, `docs/VERIFIER_INTEGRATION.md`,
    `docs/ISSUER_GUIDE.md`, `docs/HOLDER_FLOW.md`,
    `docs/ERROR_CODES.md`.
-7. 90-second product video + 5-minute developer quickstart video.
+10. 90-second product video + 5-minute developer quickstart video.
 
 ## Sample issuer / schema (placeholders)
 
@@ -169,11 +180,15 @@ include:
 - The issuer-tree operator (`IssuerTreeBinding.operator`) is a
   single signer (SOLID-SEC-043). Acceptable for devnet; replaced by
   Squads 3-of-5 before mainnet.
-- The high-level verifier SDK does not exist yet -- integrators
-  consume the chunked-upload `verifyOnChainV2` orchestration in
-  `ts-sdk/packages/verifier/src/index.ts` directly. This is the
-  single biggest source of integration friction and is the next
-  product priority.
+- Public npm packages are not published yet. The high-level verifier
+  SDK exists locally, but outside integrators still need either npm
+  publication or an explicit local-package install path for devnet
+  pilots.
+- The wallet proof path is real code, not a mock, but runtime proof
+  generation depends on a live Merkle proof indexer, hosted artifacts,
+  current tree roots, and a real holder credential package.
+- `solid-console` still needs its demo/simulation flows replaced with
+  real devnet calls before it can serve as the public control plane.
 
 ## Reporting an issue
 
