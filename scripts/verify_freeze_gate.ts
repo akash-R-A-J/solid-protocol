@@ -26,21 +26,15 @@
  * after `finalize_verification_key`); this script is the
  * post-deploy verification a human operator runs on the live cluster.
  */
-import { Connection, PublicKey, Keypair, SystemProgram } from '@solana/web3.js';
+import { Connection, PublicKey, SystemProgram } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet } from '@coral-xyz/anchor';
 import * as fs from 'fs';
-import * as os from 'os';
+import { loadKeypair } from './lib/keypair';
 
 async function main() {
   const rpcUrl = process.env.SOLANA_RPC_URL ?? 'http://127.0.0.1:8899';
   const conn = new Connection(rpcUrl, 'confirmed');
-  const keyPath =
-    process.env.SOLANA_KEYPAIR_PATH ?? `${os.homedir()}/.config/solana/id.json`;
-  const wallet = new Wallet(
-    Keypair.fromSecretKey(
-      Buffer.from(JSON.parse(fs.readFileSync(keyPath, 'utf-8'))),
-    ),
-  );
+  const wallet = new Wallet(loadKeypair());
   const provider = new AnchorProvider(conn, wallet, { commitment: 'confirmed' });
   const idl = JSON.parse(fs.readFileSync('target/idl/zk_verifier.json', 'utf-8'));
   const program = new Program(idl, provider);

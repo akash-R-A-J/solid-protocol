@@ -257,6 +257,8 @@ await issueCredential({
 | `basic_identity_v1` | age, country, region, id_type, verification_level, issued_date, nationality | Hospitality, age-gating |
 | `vaccination_v1` | vaccine_type, dose, date, authority, batch, expiry, country, age | Healthcare verification |
 | `product_cert_v1` | category, cert_level, audit_date, auditor, score, region, organic, validity | Supply chain |
+| `dao_membership_v1` | dao_id, membership_tier, joined_at, voting_power_band, contribution_score, role_code, valid_until | DAO and community access |
+| `accredited_investor_v1` | jurisdiction, accreditation_level, income_band, net_worth_band, professional_status, verification_date, valid_until | Private finance and gated investment flows |
 
 See [Schema Reference](schemas.md) for field details.
 

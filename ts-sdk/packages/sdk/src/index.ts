@@ -335,6 +335,8 @@ export type {
   VerificationResult,
 } from '@solid-protocol/verifier';
 export { SOLID_CONFIG } from './config';
+export * from './manifest';
+export * from './indexer';
 
 // SOLID-SEC-058 / CRIT-3: artifact integrity helpers re-exported so
 // downstream callers (scripts/prove.ts, third-party integrators) can

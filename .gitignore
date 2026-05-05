@@ -1,3 +1,4 @@
+credentials.txt
 /target
 **/*.rs.bk
 node_modules/

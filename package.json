@@ -12,7 +12,10 @@
     "issue": "tsx scripts/issue.ts",
     "prove": "tsx scripts/prove.ts",
     "e2e": "npm run build:idl && npm run init-onchain && npm run backfill-issuer-tree && npm run bootstrap-schema-tree && npm run bootstrap-issuer && npm run issue && npm run prove",
-    "check-vectors": "tsx tests/vectors/check_vectors.ts"
+    "check-vectors": "tsx tests/vectors/check_vectors.ts",
+    "validate:devnet": "node scripts/validate_devnet_manifest.mjs",
+    "verify:artifacts": "node scripts/verify_artifact_hashes.mjs",
+    "smoke:devnet-config": "node scripts/smoke_devnet_config.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

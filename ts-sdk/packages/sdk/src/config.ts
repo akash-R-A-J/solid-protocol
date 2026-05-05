@@ -10,16 +10,21 @@
  *     `deployments/devnet.json`.
  */
 
+import { DEFAULT_DEVNET_MANIFEST, artifactPinsFromManifest, artifactUrl, programIdsFromManifest } from './manifest';
+
+const defaultProgramIds = programIdsFromManifest(DEFAULT_DEVNET_MANIFEST);
+const defaultArtifactPins = artifactPinsFromManifest(DEFAULT_DEVNET_MANIFEST);
+
 export const SOLID_CONFIG = {
   // Primary Solana RPC + hot standbys (priority failover).  Override per-env
   // from your dApp's runtime config.
   SOLANA_RPC_URLS: [
-    'https://api.devnet.solana.com',
+    DEFAULT_DEVNET_MANIFEST.cluster,
     // Add Helius / Triton / QuickNode endpoints here for production resilience.
   ],
 
   /** Back-compat alias — single URL, used by callers that don't want failover. */
-  SOLANA_RPC_URL: 'https://api.devnet.solana.com',
+  SOLANA_RPC_URL: DEFAULT_DEVNET_MANIFEST.cluster,
 
   // Optional Merkle-proof indexer endpoint.  The holder SDK accepts any
   // `MerkleProofAdapter` implementation; `undefined` means "use the local
@@ -29,7 +34,7 @@ export const SOLID_CONFIG = {
   MERKLE_PROOF_ENDPOINT: undefined as string | undefined,
 
   // Circuit artifacts (wasm + zkey) — CDN/IPFS in production.
-  ARTIFACT_BASE_URL: 'https://cdn.solid-protocol.com/artifacts/v1',
+  ARTIFACT_BASE_URL: DEFAULT_DEVNET_MANIFEST.artifacts.base_url ?? '',
 
   /**
    * SOLID-SEC-058 (CRIT-3): SHA-256 pins for the off-chain prover artifacts.
@@ -47,18 +52,18 @@ export const SOLID_CONFIG = {
    * with eyes wide open -- see `artifact_integrity.ts`.
    */
   ARTIFACT_SHA256: {
-    BATCH_QUERY_WASM: '' as string,
-    BATCH_QUERY_ZKEY: '' as string,
-    BATCH_QUERY_VK: '' as string,
+    BATCH_QUERY_WASM: defaultArtifactPins.batchWasm,
+    BATCH_QUERY_ZKEY: defaultArtifactPins.batchZkey,
+    BATCH_QUERY_VK: defaultArtifactPins.batchVerificationKey,
     // SEC-048 Phase E.4 (2026-05-XX): subgroup-circuit artifacts.
     // Empty by default -- local dev gets pins from the in-tree sidecar
     // files at `circuits/build/bjj_subgroup_proof.{wasm,zkey}.sha256`
     // and `circuits/build/bjj_subgroup_verification_key.sha256`.
     // Tagged releases populate these constants from the canonical
     // ceremony output.
-    SUBGROUP_WASM: '' as string,
-    SUBGROUP_ZKEY: '' as string,
-    SUBGROUP_VK: '' as string,
+    SUBGROUP_WASM: defaultArtifactPins.subgroupWasm,
+    SUBGROUP_ZKEY: defaultArtifactPins.subgroupZkey,
+    SUBGROUP_VK: defaultArtifactPins.subgroupVerificationKey,
   },
 
   // Registry & Governance (Placeholder)
@@ -68,9 +73,9 @@ export const SOLID_CONFIG = {
   // Canonical program IDs (MUST match Anchor.toml).  `scripts/check_program_ids.py`
   // fails CI on drift.
   PROGRAM_IDS: {
-    ZK_VERIFIER: 'DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb',
-    ISSUER_REGISTRY: '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
-    SCHEMA_REGISTRY: '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
+    ZK_VERIFIER: defaultProgramIds.zkVerifier,
+    ISSUER_REGISTRY: defaultProgramIds.issuerRegistry,
+    SCHEMA_REGISTRY: defaultProgramIds.schemaRegistry,
   },
 
   // Circuit Settings
@@ -84,8 +89,14 @@ export const SOLID_CONFIG = {
   // instead.
   CIRCUIT_METADATA: {
     BATCH_QUERY: {
-      WASM_PATH: '/batch_credential_query.wasm',
-      ZKEY_PATH: '/batch_credential_query.zkey',
+      WASM_PATH: `/${DEFAULT_DEVNET_MANIFEST.artifacts.items.batchCredentialQueryWasm.filename}`,
+      ZKEY_PATH: `/${DEFAULT_DEVNET_MANIFEST.artifacts.items.batchCredentialQueryZkey.filename}`,
     },
   },
 };
+
+export function resolveDefaultArtifactUrl(
+  key: Parameters<typeof artifactUrl>[1],
+): string | null {
+  return artifactUrl(DEFAULT_DEVNET_MANIFEST, key);
+}

@@ -57,9 +57,9 @@ import {
 } from '@solana/spl-account-compression';
 import { initWasm, PROGRAM_IDS, computeIssuerLeaf } from '@solid-protocol/core';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const ISSUER_REGISTRY = new PublicKey(PROGRAM_IDS.issuerRegistry);
 const ISSUER_TREE_DEPTH = Number(process.env.SOLID_ISSUER_TREE_DEPTH ?? '16');
@@ -79,10 +79,7 @@ if (!RPC_IS_LOCAL && !ALLOW_NON_LOCALNET) {
   process.exit(2);
 }
 
-const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-const wallet = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, 'utf-8'))),
-);
+const wallet = loadKeypair();
 const connection = new Connection(RPC_URL, 'confirmed');
 const provider = new anchor.AnchorProvider(
   connection,

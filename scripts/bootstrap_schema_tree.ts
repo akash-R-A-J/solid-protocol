@@ -87,9 +87,9 @@ import {
 } from '@solana/spl-account-compression';
 import { initWasm, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const SCHEMA_REGISTRY = new PublicKey(PROGRAM_IDS.schemaRegistry);
 
@@ -100,7 +100,7 @@ const SCHEMA_REGISTRY = new PublicKey(PROGRAM_IDS.schemaRegistry);
 // here MUST match the `LEAF_DEPTH` constant in
 // circuits/batch_credential_query.circom -- otherwise generated proofs
 // will fail Merkle-path verification.
-const SCHEMA_TREE_DEPTH = Number(process.env.SOLID_SCHEMA_TREE_DEPTH ?? '16');
+const SCHEMA_TREE_DEPTH = Number(process.env.SOLID_SCHEMA_TREE_DEPTH ?? '20');
 const SCHEMA_TREE_BUFFER = Number(process.env.SOLID_SCHEMA_TREE_BUFFER ?? '64');
 const SCHEMA_TREE_CANOPY = Number(process.env.SOLID_SCHEMA_TREE_CANOPY ?? '0');
 
@@ -117,10 +117,7 @@ if (!RPC_IS_LOCAL && !ALLOW_NON_LOCALNET) {
   process.exit(2);
 }
 
-const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-const wallet = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, 'utf-8'))),
-);
+const wallet = loadKeypair();
 const connection = new Connection(RPC_URL, 'confirmed');
 const provider = new anchor.AnchorProvider(
   connection,

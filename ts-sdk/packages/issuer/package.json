@@ -5,20 +5,41 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry.d.ts",
+      "import": "./dist/registry.js",
+      "default": "./dist/registry.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
-    "test": "jest",
-    "clean": "rm -rf dist"
+    "test": "vitest run --passWithNoTests",
+    "clean": "rm -rf dist",
+    "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
     "@solid-protocol/core": "0.1.0",
     "@solid-protocol/light": "0.2.0",
     "@solana/web3.js": "^1.95.0",
+    "buffer": "^6.0.3",
     "bn.js": "^5.2.1",
     "snarkjs": "^0.7.0"
   },
   "devDependencies": {
     "@types/bn.js": "^5.1.5",
     "typescript": "^5.3.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

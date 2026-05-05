@@ -30,9 +30,9 @@ import {
 } from '@solid-protocol/core';
 import { issueCredential } from '@solid-protocol/issuer';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -46,9 +46,7 @@ async function main() {
   await initWasm();
   const connection = new Connection(RPC_URL, 'confirmed');
 
-  const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-  const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
-  const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
+  const wallet = loadKeypair();
 
   console.log('SolID Protocol -- credential issuance');
   console.log('=====================================');

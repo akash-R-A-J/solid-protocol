@@ -1,0 +1,16 @@
+{
+  "name": "accredited_investor_v1",
+  "version": 1,
+  "category": "Finance",
+  "description": "Private investor eligibility verification for gated financial products",
+  "fields": [
+    { "index": 0, "name": "jurisdiction", "type": "uint64", "range_queryable": false, "description": "Jurisdiction or regulatory region code" },
+    { "index": 1, "name": "accreditation_level", "type": "uint64", "range_queryable": true, "description": "1=Self-certified, 2=Verified, 3=Institutional" },
+    { "index": 2, "name": "income_band", "type": "uint64", "range_queryable": true, "description": "Bucketed income band" },
+    { "index": 3, "name": "net_worth_band", "type": "uint64", "range_queryable": true, "description": "Bucketed net worth band" },
+    { "index": 4, "name": "professional_status", "type": "uint64", "range_queryable": false, "description": "Regulated professional or entity status code" },
+    { "index": 5, "name": "verification_date", "type": "timestamp", "range_queryable": true, "description": "Verification timestamp" },
+    { "index": 6, "name": "valid_until", "type": "timestamp", "range_queryable": true, "description": "Accreditation validity expiry" },
+    { "index": 7, "name": "_reserved", "type": "uint64", "range_queryable": false, "description": "Reserved for future use" }
+  ]
+}

@@ -131,9 +131,10 @@ Product-side, in rollout order:
 1. First sanctioned devnet deploy -- executable program accounts,
    initialized verifier config, frozen VKs, and regenerated
    `deployments/devnet.json`.
-2. Registered launch schema set -- at minimum `basic_identity_v1`
-   with canonical schema hash, field indices, schema PDA, and tree
-   address.
+2. Registered launch schema set -- `basic_identity_v1`,
+   `vaccination_v1`, `product_cert_v1`, `dao_membership_v1`, and
+   `accredited_investor_v1` with canonical schema hashes, field
+   indices, schema PDAs, and tree addresses.
 3. Hosted devnet defaults -- artifact CDN with SHA-256 pins,
    schema/issuer registry API, Merkle proof / indexer API, current
    issuer-tree root, and status ping endpoint.

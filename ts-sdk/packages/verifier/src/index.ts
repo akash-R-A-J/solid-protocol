@@ -1125,8 +1125,8 @@ export interface VerifyRequirementArgs {
   lookupTable?: AddressLookupTableAccount;
 }
 
-const DEFAULT_ARTIFACT_HOST = 'https://artifacts.solid.example/v0.6.1/';
-const DEFAULT_INDEXER_URL = 'https://indexer.solid.example';
+const DEFAULT_ARTIFACT_HOST = '';
+const DEFAULT_INDEXER_URL = undefined;
 
 const DEFAULT_ARTIFACT_PINS: ResolvedArtifactPins = {
   batchVk: '8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146',
@@ -1206,7 +1206,9 @@ export class SolidVerifier {
       issuerRegistry: config.programIds?.issuerRegistry ?? new PublicKey(PROGRAM_IDS.issuerRegistry),
       schemaRegistry: config.programIds?.schemaRegistry ?? new PublicKey(PROGRAM_IDS.schemaRegistry),
     };
-    this.artifactHostUrl = normalizeBaseUrl(config.artifactHostUrl ?? DEFAULT_ARTIFACT_HOST);
+    this.artifactHostUrl = config.artifactHostUrl
+      ? normalizeBaseUrl(config.artifactHostUrl)
+      : DEFAULT_ARTIFACT_HOST;
     this.indexerUrl = config.indexerUrl ?? DEFAULT_INDEXER_URL;
     this.artifactPins = resolveArtifactPins(config.artifactPins);
     this.schemaCatalog = [...DEFAULT_SCHEMA_CATALOG, ...(config.schemaCatalog ?? [])];

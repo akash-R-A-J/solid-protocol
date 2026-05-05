@@ -1,0 +1,16 @@
+{
+  "name": "dao_membership_v1",
+  "version": 1,
+  "category": "DAO",
+  "description": "DAO membership, contribution, and governance eligibility verification",
+  "fields": [
+    { "index": 0, "name": "dao_id", "type": "uint64", "range_queryable": false, "description": "DAO or community identifier" },
+    { "index": 1, "name": "membership_tier", "type": "uint64", "range_queryable": true, "description": "1=Member, 2=Contributor, 3=Core, 4=Admin" },
+    { "index": 2, "name": "joined_at", "type": "timestamp", "range_queryable": true, "description": "Membership start timestamp" },
+    { "index": 3, "name": "voting_power_band", "type": "uint64", "range_queryable": true, "description": "Bucketed voting power without revealing exact balance" },
+    { "index": 4, "name": "contribution_score", "type": "uint64", "range_queryable": true, "description": "0-100 contribution or reputation score" },
+    { "index": 5, "name": "role_code", "type": "uint64", "range_queryable": false, "description": "Project-defined role code" },
+    { "index": 6, "name": "valid_until", "type": "timestamp", "range_queryable": true, "description": "Membership validity expiry" },
+    { "index": 7, "name": "_reserved", "type": "uint64", "range_queryable": false, "description": "Reserved for future use" }
+  ]
+}

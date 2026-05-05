@@ -1,0 +1,50 @@
+name: SolID Devnet Feedback
+description: Report a devnet tester issue across protocol, SDK, wallet, console, or indexer.
+title: "[devnet]: "
+labels: ["devnet-feedback"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - protocol
+        - sdk
+        - wallet
+        - console
+        - indexer
+        - docs
+    validations:
+      required: true
+  - type: input
+    id: network
+    attributes:
+      label: Network
+      placeholder: devnet
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Add transaction signatures, console errors, wallet error codes, manifest URL, or screenshots.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open...
+        2. Click...
+        3. Observe...

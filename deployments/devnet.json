@@ -1,8 +1,11 @@
 {
+  "schema_version": 1,
   "network": "devnet",
   "cluster": "https://api.devnet.solana.com",
+  "websocket_cluster": "wss://api.devnet.solana.com",
   "deployed_at": null,
-  "note": "Program IDs mirror Anchor.toml exactly. deployed_at is null until a fresh anchor deploy regenerates this file via scripts/regen_devnet_manifest.py. The toolchain section records the exact pinned versions consumed by CI.",
+  "git_commit": null,
+  "note": "Staged devnet manifest. Deployment fields remain null until the first sanctioned devnet deploy regenerates this file via scripts/regen_devnet_manifest.py.",
   "deployer": {
     "address": null,
     "keypair_path": "~/.config/solana/id.json"
@@ -15,20 +18,84 @@
       "binary": "target/deploy/schema_registry.so",
       "description": "On-chain credential schema registry plus SchemaTreeBinding and GlobalStateBinding PDAs"
     },
+    "issuer_registry": {
+      "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
+      "upgrade_authority": null,
+      "idl_metadata": null,
+      "binary": "target/deploy/issuer_registry.so",
+      "description": "DAO-governed issuer registry with staking, voting, and credential issuance"
+    },
     "zk_verifier": {
       "program_id": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
       "upgrade_authority": null,
       "idl_metadata": null,
       "binary": "target/deploy/zk_verifier.so",
       "description": "Groth16 batch verifier with PDA-per-nullifier replay protection"
-    },
-    "issuer_registry": {
-      "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
-      "upgrade_authority": null,
-      "idl_metadata": null,
-      "binary": "target/deploy/issuer_registry.so",
-      "description": "DAO-governed issuer registry with staking, slashing, and SPL AC credential issuance"
     }
+  },
+  "artifacts": {
+    "base_url": null,
+    "manifest_url": null,
+    "items": {
+      "batchCredentialQueryWasm": {
+        "filename": "batch_credential_query.wasm",
+        "local_path": "circuits/build/batch_credential_query_js/batch_credential_query.wasm",
+        "sha256": "add8cb0390511405faf2ffb1213d3792b858c7b2082d5b4b92a84dcd627e61b4",
+        "content_type": "application/wasm"
+      },
+      "batchCredentialQueryZkey": {
+        "filename": "batch_credential_query.zkey",
+        "local_path": "circuits/build/batch_credential_query_final.zkey",
+        "sha256": "7f43bbac249e8c913ac384ff4b007138d1ffb5bc489a16be42737598d96395e8",
+        "content_type": "application/octet-stream"
+      },
+      "batchCredentialQueryVerificationKey": {
+        "filename": "batch_credential_query_verification_key.json",
+        "local_path": "circuits/build/verification_key.json",
+        "sha256": "8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146",
+        "content_type": "application/json"
+      },
+      "subgroupWasm": {
+        "filename": "bjj_subgroup_proof.wasm",
+        "local_path": "circuits/build/bjj_subgroup_proof_js/bjj_subgroup_proof.wasm",
+        "sha256": "2c00e5a455a3b6fe1dc2a8761737acf2911baf396aab70165de3abd2673608b0",
+        "content_type": "application/wasm"
+      },
+      "subgroupZkey": {
+        "filename": "bjj_subgroup_proof.zkey",
+        "local_path": "circuits/build/bjj_subgroup_proof_final.zkey",
+        "sha256": "ea401ea9cbeb9ef829be30e0080b83a3c82544af53367b95a17f24a75845bd4a",
+        "content_type": "application/octet-stream"
+      },
+      "subgroupVerificationKey": {
+        "filename": "bjj_subgroup_verification_key.json",
+        "local_path": "circuits/build/bjj_subgroup_verification_key.json",
+        "sha256": "938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9",
+        "content_type": "application/json"
+      }
+    }
+  },
+  "indexer": {
+    "url": null,
+    "health_path": "/v1/health",
+    "api_version": "v1"
+  },
+  "console": {
+    "url": null
+  },
+  "wallet": {
+    "release_url": null
+  },
+  "schemas": [],
+  "trees": {
+    "global_state_tree": null,
+    "issuer_tree": {
+      "tree_address": null,
+      "binding_pda": null,
+      "current_root": null,
+      "current_root_slot": null
+    },
+    "schema_trees": []
   },
   "pdas": {
     "verifier_config": {
@@ -39,10 +106,9 @@
       "seeds": ["vk-storage", "<verifier_config_pubkey>"],
       "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
     },
-    "nullifier_record_example": {
+    "nullifier_record": {
       "seeds": ["null", "<nullifier_bytes>"],
-      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
-      "note": "One PDA per proof, created atomically by verify_batch_proof; replaces the v0.1 nullifier_bloom design"
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
     },
     "registry_config": {
       "seeds": ["registry-config"],
@@ -56,7 +122,7 @@
       "seeds": ["global-binding"],
       "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
     },
-    "schema_tree_binding_example": {
+    "schema_tree_binding": {
       "seeds": ["schema-tree-binding", "<schema_hash>"],
       "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
     }

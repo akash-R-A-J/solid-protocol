@@ -42,6 +42,74 @@ Out of scope for devnet (handled separately by the owner):
 - Issuer UX: finish the issuer-side of `solid-console`. No separate
   CLI for v0.
 
+## Code-first update 2026-05-05
+
+The latest audit is
+`sec/audits/2026-05-05_full_system_devnet_user_testing_audit.md`.
+It read implementation code across the Anchor programs, Rust crates,
+TS SDK packages, `solid-console`, and `solid-wallet`; docs were treated
+as claims to verify, not as ground truth.
+
+Fast gates verified 2026-05-05:
+
+| Gate | Result |
+| --- | --- |
+| `python3 scripts/check_program_ids.py` | pass |
+| `npm run validate:devnet` | pass |
+| `npm run verify:artifacts` | pass |
+| `npm run smoke:devnet-config` | pass structurally; still shows null deployment fields |
+| `cd ts-sdk && npm run build && npm test --workspaces --if-present` | pass |
+| `cd ../solid-console && npm run test && npm run build` | pass; large chunk warning |
+| `cd ../solid-wallet && npm run test && npm run build` | pass; browser externalization warnings for holder debug imports |
+| `cargo fmt --all -- --check` | pass |
+| `cargo test -p solid-core -p solid-light --no-fail-fast` | pass |
+| `cargo test -p zk-verifier --lib --no-fail-fast` | pass |
+| `cargo clippy -p solid-core -p solid-light -- -D warnings` | pass |
+| `npm audit --audit-level=moderate` in SDK / console / wallet | fails; see P1-6 below |
+
+Code reality changed several older checklist rows:
+
+- `solid-console` now has real issuer registration, DAO vote/finalize,
+  verifier proof-buffer submission, manifest loading, and wallet-provider
+  integration paths.
+- `solid-wallet` now imports encrypted envelopes, stores validated
+  credentials, opens proof request popups, pin-checks hosted artifacts,
+  calls `@solid-protocol/holder`, and returns serialized proof data.
+- Public user testing is still blocked by external deployment state:
+  populated manifest, artifact host, indexer/API, governance mint/staker
+  setup, and a live four-role smoke.
+
+### Current role-readiness matrix
+
+| Role | Current code path | Required infrastructure | Status |
+| --- | --- | --- | --- |
+| DAO | `solid-console` reads issuer accounts and builds vote/finalize txs | Governance mint, staked DAO voter, live registry config, pending issuer application | blocked by governance mint/staker setup |
+| Issuer | `solid-console` derives BJJ identity, loads subgroup artifacts, builds `register_issuer`, signs credential envelope | Live programs, hosted subgroup artifacts, registered schema, approved issuer flow, holder wallet provider | blocked until devnet deploy and artifacts exist |
+| Holder | `solid-wallet` imports encrypted envelopes, derives holder keys, uses indexer/artifacts to generate proof after approval | Hosted batch artifacts, live Merkle proof indexer, current tree roots, real issued credential | blocked until indexer/artifacts/credential exist |
+| Verifier | `solid-console` locally verifies Groth16 proof or submits proof-buffer tx sequence | Finalized VK, active schema/issuer/global bindings, funded payer, live nullifier PDA path | blocked until live proof inputs and devnet state exist |
+
+### Current P0 blockers
+
+| ID | Blocker | Done when |
+| --- | --- | --- |
+| P0-1 | Publish populated `deployments/devnet.json` | Deployed timestamp, deployer, upgrade authorities, artifact/indexer/console/wallet URLs, schemas, trees, roots, sample issuer, sample credential, and known-good verify tx are populated and validation gates pass. |
+| P0-2 | Host pinned artifacts | All batch/subgroup `.wasm`, `.zkey`, verification key JSON, and `.sha256` sidecars are served over HTTPS and match manifest pins. |
+| P0-3 | Deploy Merkle proof indexer/API | `/v1/health`, `/v1/merkle-proof/:tree/:leaf`, issuer/schema reads, and status JSON are live. |
+| P0-4 | Configure DAO governance mint/stake | Real devnet mint exists, DAO tester has stake, and vote/finalize can run. |
+| P0-5 | Harden wallet origin policy | Extension is restricted to tester origins or holder/channel key reads require approval/allowlist. |
+| P0-6 | Run live four-role smoke | DAO, issuer, holder, and verifier evidence is recorded with tx signatures and replay rejection. |
+
+### Current P1 blockers
+
+| ID | Blocker |
+| --- | --- |
+| P1-1 | Bind verifier requirement/query to public inputs before transaction build or verification logging. |
+| P1-2 | Enforce or hard-gate batch VK finalization before proof verification. |
+| P1-3 | Add indexer freshness/root reconciliation and lag rejection. |
+| P1-4 | Resolve holder package browser externalization warnings or add a browser-like proof smoke proving they are unreachable. |
+| P1-5 | Add meaningful SDK tests for packages that currently pass with no tests. |
+| P1-6 | Triage npm audit advisories (`esbuild`/`vite`/`vitest`, `underscore` via `bfj/jsonpath`, `uuid` via `rpc-websockets`). |
+
 ## Critical-path summary (revised after pass-2 audit)
 
 ```

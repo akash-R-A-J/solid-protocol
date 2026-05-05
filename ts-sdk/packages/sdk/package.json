@@ -5,9 +5,30 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js",
+      "default": "./dist/manifest.js"
+    },
+    "./indexer": {
+      "types": "./dist/indexer.d.ts",
+      "import": "./dist/indexer.js",
+      "default": "./dist/indexer.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "vitest run --passWithNoTests",
+    "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
     "@solid-protocol/core": "0.1.0",
@@ -24,5 +45,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "license": "MIT"
 }

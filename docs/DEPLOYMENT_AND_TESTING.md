@@ -806,7 +806,245 @@ from the fresh validator, and downstream steps pick up from it.
 
 ---
 
-## 12. Mainnet checklist
+## 12. Public devnet user-testing deployment
+
+This section is the operator runbook for exposing the whole system to
+real devnet testers. It extends the localnet loop above; it does not
+replace the mainnet checklist below.
+
+### 12.1 Release gate
+
+Do not invite external testers until all of these are true:
+
+- Three programs are deployed to devnet at the canonical IDs in
+  `deployments/devnet.json`.
+- Verifier config is initialized.
+- Batch VK and subgroup VK are uploaded, finalized, and frozen or
+  otherwise verified by a freeze-gate runbook.
+- `basic_identity_v1` or the launch schema set is registered on-chain.
+- Issuer tree, schema tree, and global binding accounts are initialized.
+- At least one demo issuer is approved and enrolled in the issuer tree.
+- At least one real credential has been issued into the schema tree.
+- Artifact host serves all six circuit artifacts and `.sha256` sidecars
+  over HTTPS.
+- Indexer/API serves health, registry views, and Merkle proofs.
+- Published manifest has non-null program, artifact, indexer, console,
+  wallet, schema, tree, and root fields.
+- `solid-console` is deployed with `VITE_SOLID_*` values pointing to the
+  published manifest.
+- `solid-wallet` is distributed to testers and restricted to tester
+  origins or the risk is explicitly accepted.
+
+### 12.2 Required operator inputs
+
+These are the only values that cannot be invented locally without
+turning the deploy into a workaround.
+
+| Input | Why it is needed | How to provide it safely |
+| --- | --- | --- |
+| Devnet deployer keypair path | Pays for program deploy, program data accounts, VK uploads, tree creation, and smoke txs. | Create a dedicated devnet-only keypair. Share the local path, not the secret contents, if the agent is running on the same machine. |
+| Funded devnet SOL balance | Anchor deploy and init transactions need rent and fees. | Airdrop or transfer devnet SOL, then confirm `solana balance --keypair <path> --url devnet`. |
+| RPC URL and optional WebSocket URL | Public RPC may rate-limit VK upload, tree bootstrap, and E2E proof txs. | Provide a devnet RPC such as Helius/Triton/QuickNode if available; otherwise explicitly approve public devnet RPC. |
+| Artifact host destination | Wallet and verifier need HTTPS URLs for pinned `.wasm`, `.zkey`, and VK JSON files. | Provide a storage target such as Vercel static output, Cloudflare R2, S3, GitHub Pages, or another HTTPS host. |
+| Indexer/API deploy target | Holder proof generation needs live Merkle paths and registry reads. | Choose where the API should run: Vercel/Cloudflare Worker/Fly/Render/Railway/custom VPS. Provide deployment credentials or run the commands locally when prompted. |
+| Console deployment target | Public testers need a stable `solid-console` URL. | Provide Vercel/Netlify/etc. project access, or ask the agent to prepare a local build and exact env var list for you to deploy. |
+| Wallet distribution method | Testers need the extension build and origin policy. | Choose controlled unpacked extension ZIP, Chrome Web Store private listing, or internal file share. For first devnet test, unpacked ZIP is fastest. |
+| Tester origins | Wallet content script should not inject on all sites for public testing. | Provide the console/demo domains that should be allowed, for example `https://console.example.com/*`. |
+| DAO governance mint and test staker | DAO approval flow needs an actual mint/stake setup. | Provide the mint if one exists, or approve creating a devnet-only governance mint and funded DAO tester. |
+| Launch schema set | Issuer/holder/verifier must agree on schemas. | Approve starting with `schemas/basic_identity_v1.json` or provide additional schema JSON files. |
+| Public feedback channel | Testers need one place to report bugs. | Provide GitHub Issues, Linear, Discord channel, or a form URL. |
+
+If any input is missing, stop at the corresponding gate. Do not replace
+it with placeholder URLs, fake roots, local-only artifacts, or simulated
+proofs.
+
+### 12.3 Devnet preflight
+
+```bash
+bash scripts/bootstrap.sh
+export PATH="$PWD/.toolchain/bin:$PATH"
+
+python3 scripts/check_program_ids.py
+npm run validate:devnet
+npm run verify:artifacts
+npm run smoke:devnet-config
+```
+
+Expected:
+
+- Program IDs are consistent across Anchor.toml, `declare_id!`, TS
+  literals, and deployments.
+- Manifest schema validates.
+- Local artifact hashes match manifest pins.
+- Smoke output shows null fields until the first sanctioned deploy.
+
+### 12.4 Build deployable artifacts
+
+```bash
+cd circuits
+npm install
+node scripts/setup.js
+cd ..
+
+wasm-pack build wasm/ --target nodejs \
+  --out-dir ts-sdk/packages/core/wasm --release
+
+anchor build
+(cd ts-sdk && npm ci && npm run build && npm test --workspaces --if-present)
+npm install
+```
+
+Archive the program `.so` files from `target/deploy/` and all six
+circuit artifacts from `circuits/build/` with their `.sha256` files.
+
+### 12.5 Deploy and initialize devnet
+
+Use a dedicated devnet deployer. Do not reuse mainnet or personal
+wallets.
+
+```bash
+solana config set --url devnet
+solana balance
+anchor deploy --provider.cluster devnet
+python3 scripts/check_program_ids.py
+```
+
+Then initialize and seed the live state:
+
+```bash
+export SOLID_RPC_URL="https://api.devnet.solana.com"
+export SOLID_VOTING_PERIOD_SECONDS=120
+
+npm run build:idl
+npm run init-onchain
+npm run backfill-issuer-tree
+npm run bootstrap-schema-tree
+npm run bootstrap-issuer
+npm run issue
+npm run prove
+```
+
+The final `prove` step must generate a real Groth16 proof, submit the
+proof-buffer transaction sequence, create the nullifier PDA, and reject
+replay of the same proof. If public devnet latency makes the combined
+pipeline brittle, run each command individually and record every tx
+signature.
+
+### 12.6 Host artifacts
+
+Upload these files to a stable HTTPS host:
+
+- `batch_credential_query.wasm`
+- `batch_credential_query.zkey`
+- `batch_credential_query_verification_key.json`
+- `bjj_subgroup_proof.wasm`
+- `bjj_subgroup_proof.zkey`
+- `bjj_subgroup_verification_key.json`
+- `.sha256` sidecars for each file
+
+Use immutable caching for versioned artifact paths and verify every
+downloaded hash against `deployments/devnet.json`.
+
+### 12.7 Deploy indexer/API
+
+Minimum endpoints for user testing:
+
+```text
+GET /v1/health
+GET /v1/merkle-proof/:tree/:leaf
+GET /v1/issuers
+GET /v1/schemas
+GET /.well-known/solid-protocol.json
+```
+
+`/v1/merkle-proof/:tree/:leaf` should return:
+
+```json
+{
+  "root": "32-byte hex",
+  "siblings": ["32-byte hex"],
+  "pathIndices": [0],
+  "leafIndex": 0,
+  "slot": 0
+}
+```
+
+`/v1/health` should include `lastProcessedSlot`, `rpcSlot`,
+`lagSlots`, and a manifest hash. For public testing, set an operational
+lag threshold and alert if the indexer falls behind.
+
+### 12.8 Publish manifest and apps
+
+After deployment and infrastructure setup:
+
+```bash
+python3 scripts/regen_devnet_manifest.py > deployments/devnet.json
+npm run validate:devnet
+npm run verify:artifacts
+npm run smoke:devnet-config
+```
+
+The published manifest must include deployed timestamp, git commit,
+deployer, upgrade authorities, artifact URL/pins, indexer URL, console
+URL, wallet release URL, schemas, tree addresses, roots, a sample
+issuer, a sample credential commitment, and a known-good verification tx.
+
+Deploy `solid-console` with:
+
+```bash
+VITE_SOLID_CLUSTER=devnet
+VITE_SOLID_RPC_URL=https://api.devnet.solana.com
+VITE_SOLID_WS_URL=wss://api.devnet.solana.com
+VITE_SOLID_MANIFEST_URL=https://<host>/solid/devnet.json
+VITE_SOLID_ARTIFACT_BASE_URL=https://<host>/artifacts
+VITE_SOLID_INDEXER_URL=https://<indexer-host>
+VITE_SOLID_CONSOLE_URL=https://<console-host>
+VITE_SOLID_EXPLORER_CLUSTER=devnet
+```
+
+Build `solid-wallet` with the same manifest/artifact/indexer defaults,
+then distribute `solid-wallet/dist` as an unpacked Chrome/Brave extension
+for controlled testing.
+
+### 12.9 Four-role live smoke
+
+DAO evidence:
+
+- DAO voter public key, governance mint, staker account, issuer
+  application PDA, vote tx, finalize tx, final issuer status, issuer-tree
+  root.
+
+Issuer evidence:
+
+- Issuer wallet, derived BJJ public key, subgroup proof artifact pins,
+  `register_issuer` tx, issuer status after approval, credential
+  commitment, encrypted envelope hash.
+
+Holder evidence:
+
+- Wallet extension version, manifest URL, imported credential metadata,
+  proof request origin, artifact URLs/pins used, indexer proof root/slot,
+  returned proof/public signals/nullifier.
+
+Verifier evidence:
+
+- Requirement spec, local verification result, proof-buffer transaction
+  signatures, nullifier PDA, replay rejection evidence.
+
+### 12.10 Rollback and feedback
+
+If deployment fails before testers, stop publishing the manifest URL or
+mark status `ok: false`, keep old manifests accessible for debugging,
+record affected tx signatures, and invalidate wallet instructions that
+reference stale roots.
+
+Tester bug reports must include role, browser/OS, Solana wallet, SolID
+Wallet version, console URL, manifest URL, tx signatures, error message,
+screenshots/logs, and whether refresh or unlock fixed it.
+
+---
+
+## 13. Mainnet checklist
 
 Do not deploy to mainnet-beta until every item below is satisfied.
 Each bullet maps to a registry finding or the v0.6.1 audit's

@@ -71,7 +71,7 @@ CPI_HELPERS_PATH: pathlib.Path = ROOT / "crates/solid-light/src/cpi_helpers.rs"
 # program-ID gate validated only Rust + JSON; TS literals were silent.
 TS_PROGRAM_ID_OWNERS: Dict[str, Tuple[str, ...]] = {
     "ts-sdk/packages/core/src/index.ts": ("zk_verifier", "issuer_registry", "schema_registry"),
-    "ts-sdk/packages/sdk/src/config.ts": ("zk_verifier", "issuer_registry", "schema_registry"),
+    "ts-sdk/packages/sdk/src/manifest.ts": ("zk_verifier", "issuer_registry", "schema_registry"),
     "ts-sdk/packages/light/src/index.ts": ("issuer_registry", "schema_registry"),
     "tests/integration/01_registry_init.test.ts": ("issuer_registry",),
 }

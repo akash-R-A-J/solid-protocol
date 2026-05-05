@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import os
 from typing import Dict
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -30,6 +31,45 @@ DESCRIPTIONS = {
     "zk_verifier":     "Groth16 ZK proof verifier with PDA-per-nullifier registry",
     "issuer_registry": "DAO-governed issuer registry with staking and slashing",
     "schema_registry": "On-chain credential schema registry with tree bindings",
+}
+
+ARTIFACTS = {
+    "batchCredentialQueryWasm": {
+        "filename": "batch_credential_query.wasm",
+        "local_path": "circuits/build/batch_credential_query_js/batch_credential_query.wasm",
+        "sha256": "add8cb0390511405faf2ffb1213d3792b858c7b2082d5b4b92a84dcd627e61b4",
+        "content_type": "application/wasm",
+    },
+    "batchCredentialQueryZkey": {
+        "filename": "batch_credential_query.zkey",
+        "local_path": "circuits/build/batch_credential_query_final.zkey",
+        "sha256": "7f43bbac249e8c913ac384ff4b007138d1ffb5bc489a16be42737598d96395e8",
+        "content_type": "application/octet-stream",
+    },
+    "batchCredentialQueryVerificationKey": {
+        "filename": "batch_credential_query_verification_key.json",
+        "local_path": "circuits/build/verification_key.json",
+        "sha256": "8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146",
+        "content_type": "application/json",
+    },
+    "subgroupWasm": {
+        "filename": "bjj_subgroup_proof.wasm",
+        "local_path": "circuits/build/bjj_subgroup_proof_js/bjj_subgroup_proof.wasm",
+        "sha256": "2c00e5a455a3b6fe1dc2a8761737acf2911baf396aab70165de3abd2673608b0",
+        "content_type": "application/wasm",
+    },
+    "subgroupZkey": {
+        "filename": "bjj_subgroup_proof.zkey",
+        "local_path": "circuits/build/bjj_subgroup_proof_final.zkey",
+        "sha256": "ea401ea9cbeb9ef829be30e0080b83a3c82544af53367b95a17f24a75845bd4a",
+        "content_type": "application/octet-stream",
+    },
+    "subgroupVerificationKey": {
+        "filename": "bjj_subgroup_verification_key.json",
+        "local_path": "circuits/build/bjj_subgroup_verification_key.json",
+        "sha256": "938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9",
+        "content_type": "application/json",
+    },
 }
 
 
@@ -108,16 +148,56 @@ def main(argv: list[str]) -> int:
         }
 
     manifest = {
+        "schema_version": 1,
         "network": cluster,
         "cluster": rpc_url_for_cluster(cluster),
+        "websocket_cluster": (
+            rpc_url_for_cluster(cluster)
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        ),
         "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "git_commit": os.environ.get("SOLID_GIT_COMMIT"),
+        "note": "Generated from Anchor.toml and devnet program accounts.",
+        "deployer": {
+            "address": os.environ.get("SOLID_DEPLOYER_ADDRESS"),
+            "keypair_path": os.environ.get("ANCHOR_WALLET", "~/.config/solana/id.json"),
+        },
         "programs": entries,
+        "artifacts": {
+            "base_url": os.environ.get("SOLID_ARTIFACT_BASE_URL") or None,
+            "manifest_url": os.environ.get("SOLID_ARTIFACT_MANIFEST_URL") or None,
+            "items": ARTIFACTS,
+        },
+        "indexer": {
+            "url": os.environ.get("SOLID_INDEXER_URL") or None,
+            "health_path": "/v1/health",
+            "api_version": "v1",
+        },
+        "console": {
+            "url": os.environ.get("SOLID_CONSOLE_URL") or None,
+        },
+        "wallet": {
+            "release_url": os.environ.get("SOLID_WALLET_RELEASE_URL") or None,
+        },
+        "schemas": [],
+        "trees": {
+            "global_state_tree": os.environ.get("SOLID_GLOBAL_STATE_TREE") or None,
+            "issuer_tree": {
+                "tree_address": os.environ.get("SOLID_ISSUER_TREE") or None,
+                "binding_pda": os.environ.get("SOLID_ISSUER_TREE_BINDING") or None,
+                "current_root": os.environ.get("SOLID_ISSUER_TREE_ROOT") or None,
+                "current_root_slot": None,
+            },
+            "schema_trees": [],
+        },
         "pdas": {
             "verifier_config":  {"seeds": ["verifier-config"],                          "program": programs.get("zk_verifier", "")},
             "vk_storage":       {"seeds": ["vk-storage", "<verifier_config_pubkey>"],   "program": programs.get("zk_verifier", "")},
             "nullifier_record": {"seeds": ["null", "<nullifier32>"],                    "program": programs.get("zk_verifier", "")},
             "registry_config":  {"seeds": ["registry-config"],                          "program": programs.get("issuer_registry", "")},
-            "schema_tree":      {"seeds": ["schema-tree", "<schema_hash32>"],           "program": programs.get("schema_registry", "")},
+            "dao_treasury":     {"seeds": ["dao-treasury"],                             "program": programs.get("issuer_registry", "")},
+            "schema_tree_binding": {"seeds": ["schema-tree-binding", "<schema_hash>"],  "program": programs.get("schema_registry", "")},
             "global_binding":   {"seeds": ["global-binding"],                           "program": programs.get("schema_registry", "")},
         },
         "toolchain": {
@@ -125,6 +205,10 @@ def main(argv: list[str]) -> int:
             "anchor_lang":   "0.30.1",
             "solana_cli":    "1.18.22",
             "rust":          "1.79.0",
+            "node":          "18",
+            "circom":        "2.1.9",
+            "snarkjs":       "0.7.5",
+            "wasm_pack":     "0.13.1",
         },
     }
     print(json.dumps(manifest, indent=2))

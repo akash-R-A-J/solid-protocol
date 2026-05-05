@@ -23,6 +23,7 @@ import {
   PROGRAM_IDS,
   computeCommitment,
   computeIssuerLeaf,
+  computeIdentityState,
   deriveCredentialKey,
 } from '@solid-protocol/core';
 import { generateBatchProof, type StoredCredential } from '@solid-protocol/holder';
@@ -43,9 +44,9 @@ import {
 } from '@solid-protocol/sdk';
 import { LocalReplicaAdapter, poseidonHashPair } from '@solid-protocol/light';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const PROGRAM_PUBKEYS = {
   zkVerifier: new PublicKey(PROGRAM_IDS.zkVerifier),
@@ -54,7 +55,7 @@ const PROGRAM_PUBKEYS = {
 
 const RPC_URL = process.env.SOLID_RPC_URL ?? 'http://127.0.0.1:8899';
 const GLOBAL_TREE_DEPTH = 20;
-const CREDENTIAL_TREE_DEPTH = 20;
+const CREDENTIAL_TREE_DEPTH = Number(process.env.SOLID_SCHEMA_TREE_DEPTH ?? '20');
 /// ADR-0014: fixed issuer-tree depth; matches the circuit's main-component
 /// ISSUER_TREE_DEPTH parameter.
 const ISSUER_TREE_DEPTH = 16;
@@ -63,9 +64,7 @@ async function main() {
   await initWasm();
   const connection = new Connection(RPC_URL, 'confirmed');
 
-  const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-  const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
-  const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
+  const wallet = loadKeypair();
 
   // Anchor provider for the schema-registry update_*_root ixs (SOLID-SEC-059
   // sibling closures).
@@ -130,7 +129,8 @@ async function main() {
   //    in the E2E so the flow works against `solana-test-validator` without
   //    an indexer.
   console.log('[2/4] Seeding local Merkle replica...');
-  const credReplica = new LocalReplicaAdapter(CREDENTIAL_TREE_DEPTH, poseidonHashPair);
+  const credentialTreeDepth = Number(state.schemaTreeDepth ?? CREDENTIAL_TREE_DEPTH);
+  const credReplica = new LocalReplicaAdapter(credentialTreeDepth, poseidonHashPair);
   credReplica.appendLeaf(credential.commitment);
 
   // SOLID-SEC-059 sibling closure (2026-04-30): the schema-tree
@@ -144,8 +144,8 @@ async function main() {
       new PublicKey(state.schemaTreeAddress ?? state.schemaTreeBindingPda),
       credential.commitment,
     );
-    const credPath = new Uint8Array(CREDENTIAL_TREE_DEPTH * 32);
-    for (let i = 0; i < CREDENTIAL_TREE_DEPTH; i++) {
+    const credPath = new Uint8Array(credentialTreeDepth * 32);
+    for (let i = 0; i < credentialTreeDepth; i++) {
       credPath.set(credProof.siblings[i], i * 32);
     }
     const schemaIdl = JSON.parse(
@@ -199,7 +199,6 @@ async function main() {
   const globalReplica = new LocalReplicaAdapter(GLOBAL_TREE_DEPTH, poseidonHashPair);
   // identity leaf = Poseidon(credPubX, credPubY, revocationNonce). At this
   // bootstrapping stage revocationNonce is 0.
-  const { computeIdentityState } = await import('@solid-protocol/core');
   const identityLeaf = computeIdentityState(kp.public_key_x, kp.public_key_y, 0n);
   globalReplica.appendLeaf(identityLeaf);
 

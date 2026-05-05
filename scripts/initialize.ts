@@ -37,9 +37,9 @@ import * as crypto from 'crypto';
 import { createMint, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { initWasm, computeSchemaHash, PROGRAM_IDS } from '@solid-protocol/core';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { invalidateState, readStateOrNull, stateFilePath, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -48,16 +48,17 @@ const PROGRAM_PUBKEYS = {
 };
 
 const RPC_URL = process.env.SOLID_RPC_URL ?? 'http://127.0.0.1:8899';
-const SCHEMA_NAME = 'basic_identity_v1';
-const SCHEMA_VERSION = 1;
-const SCHEMA_FIELDS = [
-  'age', 'country_code', 'region', 'id_type',
-  'verification_level', 'issued_date', 'nationality', '_reserved',
-];
+const SCHEMA_NAME = process.env.SOLID_SCHEMA_NAME ?? 'basic_identity_v1';
+const SCHEMA_VERSION = Number(process.env.SOLID_SCHEMA_VERSION ?? '1');
+const SCHEMA_CATEGORY = process.env.SOLID_SCHEMA_CATEGORY ?? 'Identity';
+const SCHEMA_FIELDS = (process.env.SOLID_SCHEMA_FIELDS
+  ? process.env.SOLID_SCHEMA_FIELDS.split(',').map(field => field.trim()).filter(Boolean)
+  : [
+      'age', 'country_code', 'region', 'id_type',
+      'verification_level', 'issued_date', 'nationality', '_reserved',
+    ]);
 
-const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-const secretKey = JSON.parse(fs.readFileSync(keypairPath, 'utf-8'));
-const wallet = Keypair.fromSecretKey(Uint8Array.from(secretKey));
+const wallet = loadKeypair();
 const connection = new Connection(RPC_URL, 'confirmed');
 
 const provider = new anchor.AnchorProvider(
@@ -274,7 +275,7 @@ async function main() {
     SCHEMA_NAME,
     SCHEMA_VERSION,
     SCHEMA_FIELDS,
-    'Identity',
+    SCHEMA_CATEGORY,
   );
   console.log(`   schema_hash: ${Buffer.from(schemaHash).toString('hex')}`);
   const [schemaPda] = PublicKey.findProgramAddressSync(
@@ -294,7 +295,7 @@ async function main() {
     await schemaProgram.methods.registerSchema(
       SCHEMA_NAME,
       SCHEMA_VERSION,
-      'Identity',
+      SCHEMA_CATEGORY,
       SCHEMA_FIELDS,
       Array.from(schemaHash),
     ).accounts({

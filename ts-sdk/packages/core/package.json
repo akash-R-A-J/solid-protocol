@@ -5,6 +5,13 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "files": [
     "dist",
     "wasm",
@@ -12,9 +19,14 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "jest"
+    "test": "vitest run --passWithNoTests",
+    "pack:check": "npm pack --dry-run"
   },
   "devDependencies": {
     "typescript": "^5.3.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -53,9 +53,9 @@ import {
   SUBGROUP_ZKEY_PIN,
 } from '@solid-protocol/sdk';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
+import { loadKeypair } from './lib/keypair';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -99,10 +99,7 @@ if (!RPC_IS_LOCAL && !ALLOW_NON_LOCALNET) {
   process.exit(2);
 }
 
-const keypairPath = path.join(os.homedir(), '.config/solana/id.json');
-const wallet = Keypair.fromSecretKey(
-  Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, 'utf-8'))),
-);
+const wallet = loadKeypair();
 const connection = new Connection(RPC_URL, 'confirmed');
 const provider = new anchor.AnchorProvider(
   connection, new anchor.Wallet(wallet), { commitment: 'confirmed' },
@@ -280,6 +277,14 @@ async function main() {
   const issuerAuthority = state.issuerAuthoritySecret
     ? Keypair.fromSecretKey(Uint8Array.from(state.issuerAuthoritySecret))
     : Keypair.generate();
+  state.issuerBjj = {
+    private_key: Array.from(issuerBjj.private_key),
+    public_key_x: Array.from(issuerBjj.public_key_x),
+    public_key_y: Array.from(issuerBjj.public_key_y),
+  };
+  state.issuerAuthoritySecret = Array.from(issuerAuthority.secretKey);
+  state.issuerAuthorityPubkey = issuerAuthority.publicKey.toBase58();
+  writeState(state);
 
   // SOLID-SEC-007 / SEC-048 Phase E (closed 2026-05-XX).
   //
