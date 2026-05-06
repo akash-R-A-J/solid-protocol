@@ -77,8 +77,28 @@ would overwrite `Anchor.toml` and silently change the canonical ID.
 ### 4. Redeploy
 
 ```bash
-anchor build
-anchor deploy --provider.cluster devnet
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
+
+solana program deploy target/deploy/schema_registry.so \
+  --program-id target/deploy/schema_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/zk_verifier.so \
+  --program-id target/deploy/zk_verifier-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/issuer_registry.so \
+  --program-id target/deploy/issuer_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
 ```
 
 ### 5. Regenerate the manifest

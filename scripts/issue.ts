@@ -26,6 +26,7 @@ import {
   initWasm,
   generateKeypair,
   deriveCredentialKey,
+  computeIdentityState,
   PROGRAM_IDS,
 } from '@solid-protocol/core';
 import { issueCredential } from '@solid-protocol/issuer';
@@ -33,6 +34,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
 import { loadKeypair } from './lib/keypair';
+import { appendTrackedLeafHex, bytesToHex } from './lib/root_update_plan';
 
 const PROGRAM_PUBKEYS = {
   schemaRegistry: new PublicKey(PROGRAM_IDS.schemaRegistry),
@@ -88,6 +90,11 @@ async function main() {
   // to the credential so the holder can prove knowledge later without needing
   // to re-derive at proof time.
   const holderSchemaKp = deriveCredentialKey(holderMaster.private_key, schemaHash);
+  const identityLeaf = computeIdentityState(
+    holderSchemaKp.public_key_x,
+    holderSchemaKp.public_key_y,
+    0n,
+  );
 
   // 2. Define attestation payload (8 u64 fields).
   const attestationData: bigint[] = [
@@ -171,6 +178,25 @@ async function main() {
     public_key_x: Array.from(holderSchemaKp.public_key_x),
     public_key_y: Array.from(holderSchemaKp.public_key_y),
   };
+  const previousCredential = state.credential;
+  const seededSchemaLeaves = previousCredential?.commitment
+    ? appendTrackedLeafHex(state.schemaCredentialLeaves, Uint8Array.from(previousCredential.commitment))
+    : state.schemaCredentialLeaves;
+  const previousIdentityLeaf = previousCredential?.holderPubKeyX && previousCredential?.holderPubKeyY
+    ? computeIdentityState(
+      Uint8Array.from(previousCredential.holderPubKeyX),
+      Uint8Array.from(previousCredential.holderPubKeyY),
+      0n,
+    )
+    : null;
+  const seededGlobalLeaves = previousIdentityLeaf
+    ? appendTrackedLeafHex(state.globalIdentityLeaves, previousIdentityLeaf)
+    : state.globalIdentityLeaves;
+  const nextSchemaCredentialLeaves = appendTrackedLeafHex(seededSchemaLeaves, credential.commitment);
+  const nextGlobalIdentityLeaves = appendTrackedLeafHex(seededGlobalLeaves, identityLeaf);
+  const schemaLeafIndex = nextSchemaCredentialLeaves.indexOf(bytesToHex(credential.commitment));
+  const globalLeafIndex = nextGlobalIdentityLeaves.indexOf(bytesToHex(identityLeaf));
+
   state.credential = {
     ...credential,
     schemaHash: Array.from(credential.schemaHash),
@@ -192,7 +218,11 @@ async function main() {
     issuerRevocationNonce: issuerAccount.revocationNonce.toString(),
     issuerTreeLeafIndex: issuerAccount.issuerTreeLeafIndex.toString(),
     isTreeEnrolled: Boolean(issuerAccount.isTreeEnrolled),
+    schemaLeafIndex,
+    globalLeafIndex,
   };
+  state.schemaCredentialLeaves = nextSchemaCredentialLeaves;
+  state.globalIdentityLeaves = nextGlobalIdentityLeaves;
   state.attestationData = attestationData.map(n => n.toString());
   writeState(state);
   console.log('Done.');

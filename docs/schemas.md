@@ -4,6 +4,30 @@
 
 ## Pre-Built Schemas
 
+### `basic_identity_v2`
+
+**Category:** Identity
+
+This is the current public-devnet smoke schema. It uses the same eight
+numeric field slots as `basic_identity_v1`, but is registered with a
+depth-20 credential tree so it matches the current batch circuit.
+
+| Index | Field | Type | Range Queryable | Example Values |
+|---|---|---|---|---|
+| 0 | `age` | Uint64 | yes | 21, 35, 65 |
+| 1 | `country_code` | Uint64 | no | 840 (US), 826 (UK), 356 (IN) |
+| 2 | `region` | Uint64 | no | Region code |
+| 3 | `id_type` | Uint64 | no | 0=Passport, 1=DL, 2=NationalID |
+| 4 | `verification_level` | Uint64 | yes | 1=Self, 2=KYC, 3=InPerson |
+| 5 | `issued_date` | Timestamp | yes | Unix timestamp |
+| 6 | `nationality` | Uint64 | no | ISO 3166-1 numeric |
+| 7 | `_reserved` | Uint64 | no | 0 |
+
+Current devnet hash:
+`6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823`.
+
+---
+
 ### `basic_identity_v1`
 
 **Category:** Hospitality

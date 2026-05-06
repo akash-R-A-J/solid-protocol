@@ -4,94 +4,132 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-04 (SDK audit pass-2 + devnet checklist).
-  No code changes this session; documentation-only pass. Two main
-  findings:
-  1. **Pre-flight items 0.2 / 0.3 / 0.4 in a draft devnet checklist
-     were stale.** Verified directly: `cargo clippy -p solid-core
-     -p solid-light -- -D warnings` exits 0 (`crates/solid-core/src/sas.rs:48`
-     already has `#[allow(dead_code)]` on `attester`); `cargo fmt
-     --all -- --check` exits 0; `README.md:47`,
-     `docs/CURRENT_STATE.md:4`, and `CLAUDE.md:65` already reference
-     v0.6.1 post-Phase-E and the subgroup VK pin. Lesson: future
-     status claims must cite a file:line and date of verification
-     before trusting the audit.
-  2. **`verifyRequirement` wrapper is shipped, not "10-14 days of
-     work" as a pass-1 audit claimed.** Pass-2 audit verified
-     `SolidVerifier` class at
-     `ts-sdk/packages/verifier/src/index.ts:1186-1450` -- includes
-     `defineRequirement` (:1217), `requestProof` (:1255),
-     `verifyProof` (:1286), `verifyRequirement` (:1336),
-     `health` (:1356), `loadArtifact` (:1408),
-     `walletAdapterTransport` (:1452), `httpTransport` (:1479),
-     `explainVerificationError` (:1499), 16-variant typed
-     `VerificationError` (:973-989), `SolidVerificationError`
-     (:1009). Pass-1 audit's Explore agent stopped reading at
-     line 575 of a 1894-line file. **This collapses the devnet
-     critical path from 23-30 days to 8-14 days.**
+- **Last updated:** 2026-05-07 (fresh devnet issue/prove/replay green).
 
-  Real SDK bugs surfaced by pass-2 (none on-chain; all in the
-  TS SDK):
-  - **`@solid-protocol/channel` cannot be installed.** No
-    `tsconfig.json` (every other package has one); `npm run build`
-    exits 0 silently with no `dist/`. `package.json:13` declares
-    `@noble/ed25519` + `@noble/hashes` but source imports
-    `tweetnacl` + `tweetnacl-util` -- neither stack is installed
-    at `ts-sdk/node_modules/`. Docstrings reference the import
-    name `@solid-protocol/credential-channel`; published name is
-    `@solid-protocol/channel`.
-  - **`holder.generateProof` (single-credential path,
-    `holder/src/index.ts:107-282`) uses singular `merkleRoot` /
-    `schemaHash` arg shape**; current circuit
-    `batch_credential_query.circom` expects plural arrays. Either
-    delete the function or rewrite for the batch circuit.
-  - **`@solana/web3.js` should be `peerDependencies` not
-    `dependencies`** across all 7 packages -- duplicate copies
-    cause `instanceof PublicKey` failures across package
-    boundaries.
-  - **Polish items (B1-B10 in the checklist):** missing exports/
-    engines/LICENSE fields, two different artifact-host placeholder
-    URLs (`verifier/src/index.ts:1128` vs `sdk/src/config.ts:32`),
-    `validatePublicSignals` doesn't check verifierAddress / nonce
-    slots, etc.
+  **Current truth:** the protocol is partially live on public devnet, but
+  the system is **not public-test-ready yet**. Programs, registry config,
+  verifier config/VKs, issuer tree, `basic_identity_v2` schema tree,
+  sample issuer, and fresh credential issuance exist on devnet. `zk_verifier`
+  and `issuer_registry` are upgraded from current source. The smoke
+  issuer/schema permission PDA is initialized. `scripts/prove.ts` is
+  live-root-aware for repeated devnet runs, and fresh issue -> root sync ->
+  Groth16 proof -> on-chain verify -> replay rejection is green:
+  `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE`.
+  Public tester onboarding is now blocked by hosted artifacts, indexer/API,
+  solid-sim deployment, and a four-role solid-sim smoke.
 
-  What landed (docs only):
-  - **NEW:** `plan/DEVNET_READINESS_CHECKLIST.md` (full rewrite,
-    9 sections, bug list folded in, critical path revised to
-    8-14 days, "no workarounds" rule).
-  - **EDITED:** `plan/VERIFIER_SDK_SHAPE.md` header (Status:
-    Shipped + citations).
-  - **EDITED:** `docs/CURRENT_STATE.md:110` (verifier row [~] -> [X]).
-  - **EDITED:** `docs/SDK_INTEGRATOR_MATRIX.md` (verifier row
-    + per-method table + implementation order).
-  - **EDITED:** `plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md:1230`
-    (Immediate Next 10 Tasks: item 7 marked done with citations).
-  - **VERIFIED ALREADY CURRENT (no edit needed):**
-    `docs/DEVNET_STATUS.md` (lines 140-148, 183-186 already say
-    wrapper exists locally + needs npm publish);
-    `plan/DEVNET_ROLLOUT_PUNCHLIST.md` A3 (already `[~]` with
-    accurate "1-2 days for publish/release polish" remaining work).
+  **Admin/deployer state:**
+  - Deployer pubkey: `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`.
+  - Local deployer path: `~/.config/solana/solid-devnet-admin.json`.
+  - Balance after ProgramData extension / deploy / buffer cleanup:
+    approximately `18.19 SOL`.
+  - `NO_DNA=1 anchor build --no-idl` completed and
+    `solana program deploy target/deploy/zk_verifier.so ...` completed for
+    `DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb`.
+  - `issuer_registry` ProgramData was extended by `262144` bytes, then
+    deployed successfully. Live slot moved to `460541773`.
+  - Failed deploy buffers from public-RPC retries were closed and rent was
+    recovered. Do not paste or preserve any ephemeral buffer seed phrase
+    printed by failed deploy commands.
 
-  Verification artifacts:
-  - `npm run build` from `ts-sdk/` -- exits 0; six of seven
-    packages emit working `dist/` (channel emits nothing per the
-    bug above).
-  - Discriminator cross-check: `python3
-    sha256('global:issue_credential')[:16] = ffc1abe044abc257`
-    matches the hardcoded SDK constant at
-    `issuer/src/index.ts:60`.
-  - Account-ordering cross-check: SDK
-    `verifier/src/index.ts:389-402` ↔ on-chain
-    `programs/zk-verifier/src/lib.rs:1123-1187` (`VerifyBatchProofV2`)
-    -- all 12 slots match. SDK `issuer/src/index.ts:178-189` ↔
-    on-chain `programs/issuer-registry/src/lib.rs:2761-2823`
-    (`IssueCredential`) -- all 8 slots match.
+  **Live devnet smoke values now recorded in `deployments/devnet.json` and
+  `docs/DEVNET_STATUS.md`:**
+  - Programs:
+    - `schema_registry`: `4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1`
+    - `issuer_registry`: `5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx`
+    - `zk_verifier`: `DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb`
+  - Governance mint: `5PrqMfDCWqMWnX1WdqHUuaa3kx29NeGLJFazB2hXGDzu`
+  - Registry config PDA: `7CVeXUKeiWBhkGUuvte89GVCkXJHnR5D2YNCLWvVgSmH`
+  - Verifier config PDA: `G4jFquTUyeRqzvsnNwRdDRE3TeiGyzKSGZ9q4PbwJPmW`
+  - VK storage PDA: `8qjhn8Ze3Mhj9xdgAajMVxKbnXxHhmY6nTQf5N5yG4Rf`
+  - Global binding PDA: `68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o`
+  - Global root:
+    `692c7934333b0be0fcac73a111406be96d5be50b6b0ce7eb6424a08fa601e21f`
+  - Issuer tree binding PDA: `ExJ2PLDf8qrDxYsYRJbuKNTJ38xPxt1USJpe7cdfgL6h`
+  - Issuer tree: `FajCWko9tc6dhdPtwrS5kfkehPoEV8pn5LdL4kLL7k7f`
+  - Issuer tree root:
+    `bfc02634df26b227601eabeccb97d6d79f39fb23ec19d7b62ec1565f669f5b27`
+  - Smoke schema: `basic_identity_v2`, version `2`, depth `20`.
+  - Smoke schema hash:
+    `6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823`
+  - Smoke schema PDA: `EmdhTJt5VcQ4FiTy9xitTBBNa3XaBvwXsAB34FJWkx4`
+  - Smoke schema tree binding: `FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb`
+  - Smoke schema tree: `4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc`
+  - Smoke schema tree root:
+    `2c9ac3430dccf2c66f2128c5ea8b7c4ad83efdce6fa29b57b29b5e044773fb1e`
+  - Sample issuer authority: `GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi`
+  - Sample issuer account: `FEdBRzX1junyhKf5Co15XKtHeAezT8i49zXSK6cGCEwL`
+  - Sample credential commitment:
+    `69cf17f65415a057480ab7b9a84bba23ddae3d5764dafc5c3a9db8a97c476425`
+  - Sample credential tx:
+    `gUFgazuUQnMu89rGMVSvS2ZfmBhUxWd2Ki9aCsECDaGDCe7GE5YB1tEEV2nz1NgCNCtp8KSsTRbWt5SNcXjbS3g`
+  - Sample verify tx:
+    `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE`
+  - Issuer/schema permission PDA:
+    `4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H`
+  - Issuer/schema permission tx:
+    `2x9CefTUgwfthgqob9NpLYMhL3prGsd88c1wrbLsrb6w4r2yxykeveFnpK4Sw2Rzm4XZhynJJ4XuCppJbVzFyX81`
+  - Smoke schema tree root:
+    `5304536b69350abe799a36ed8104efbfa66a5198f8ab6cef6bc3e6c48357b919`
+  - Global root:
+    `610b2e31e33bc10e3e7e0cf0e6fbeaae0c23b42c24266f1bc3a80685e805ce01`
 
-  **What's next:** execute item 0.1 (provision deployer keypair +
-  ~15 SOL) so 1.x (devnet deploy) can run. In parallel, fix
-  channel package bugs (2.A.1 / 2.A.2 / 2.A.3) so `@solid-protocol/sdk`
-  can be published cleanly. See `plan/DEVNET_READINESS_CHECKLIST.md`
-  critical-path summary.
+  **Important caveat:** an early `basic_identity_v1` binding used a
+  depth-16 credential tree. Do not use that binding for current batch
+  circuit proofs. Use `basic_identity_v2` / depth 20 for smoke testing,
+  and register all launch schemas with depth-20 trees.
+
+  **Docs refreshed in this pass:**
+  - `deployments/devnet.json`
+  - `docs/DEVNET_STATUS.md`
+  - `docs/DEVNET_QUICKSTART.md`
+  - `docs/DEPLOYMENT_AND_TESTING.md`
+  - `docs/integration-guide.md`
+  - `docs/VERIFIER_INTEGRATION.md`
+  - `docs/ISSUER_GUIDE.md`
+  - `docs/WALLET_PROVIDER_FLOW.md`
+  - `docs/SCHEMA_AUTHORING.md`
+  - `docs/schemas.md`
+  - `plan/DEVNET_READINESS_CHECKLIST.md`
+  - this `plan/RESUME.md`
+  - `config/devnet.env.example`
+  - `config/localnet.env.example`
+  - sibling `solid-console/.env.devnet.example`,
+    `solid-console/.env.localnet.example`, `solid-wallet/.env.devnet.example`,
+    and `solid-wallet/.env.localnet.example`
+
+  **Verification run after the docs/manifest update:**
+  - `npm run validate:devnet` -> pass.
+  - `npm run smoke:devnet-config` -> pass; shows live program/schema/tree
+    fields and null artifact/indexer/console/wallet URLs.
+  - IDE lints on edited docs/manifest -> no linter errors.
+  - Current session reran `python3 scripts/check_program_ids.py`,
+    `npm run validate:devnet`, `npm run test:prove-root-plan`, devnet
+    `npm run prove`, and live Solana account checks. The devnet prove run
+    produced the verify tx above and replay rejection. Fresh `npm run issue`
+    also succeeded after the upgraded `issuer_registry` deployment and
+    issuer/schema permission initialization.
+
+  **Manual terminal E2E command block is now in
+  `docs/DEVNET_QUICKSTART.md`.** The current expected result is green
+  through issuer/credential/root-sync/local-proof/on-chain verifier/replay
+  rejection.
+
+  **solid-sim state:** `solid-console` is now the `solid-sim` package and
+  app surface. It has DAO, Issuer, Wallet, and Verifier role sections. The
+  Wallet section creates/imports a simulator seed, derives real channel and
+  schema-bound holder BJJ public keys, imports encrypted credential envelopes,
+  validates holder binding/commitment/subgroup/signature integrity, and only
+  generates proofs when real artifacts plus a Merkle proof indexer are
+  configured. `npm run build` and `npm run test` pass in `solid-console`.
+
+  Public solid-sim/integrator testing still requires hosted circuit artifacts,
+  a Merkle proof indexer/API, public manifest URLs, and a four-role browser
+  smoke in the deployed solid-sim.
+
+  **Immediate next action:** deploy the artifact host, deploy the indexer/API,
+  update `deployments/devnet.json` with public URLs, deploy solid-sim, then
+  run the full four-role smoke through solid-sim instead of terminal scripts.
 
 - **Previous update (preserved for history):** 2026-05-02 (SEC-048
   Phase E close).  This

@@ -92,6 +92,7 @@ export interface SolidDevnetManifest {
 }
 
 export interface SolidManifestOverrides {
+  network?: SolidNetwork;
   cluster?: string;
   websocketCluster?: string | null;
   artifactBaseUrl?: string | null;
@@ -220,6 +221,11 @@ export const DEFAULT_DEVNET_MANIFEST: SolidDevnetManifest = {
       seeds: ['dao-treasury'],
       program: '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
     },
+    issuer_schema_permission: {
+      seeds: ['issuer-schema', '<issuer_account_pubkey>', '<schema_hash>'],
+      program: '5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx',
+      note: 'DAO-granted authorization for one issuer/schema pair.',
+    },
     global_binding: {
       seeds: ['global-binding'],
       program: '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
@@ -251,6 +257,9 @@ export function validateSolidManifest(input: unknown): SolidDevnetManifest {
   }
   if (!manifest.network || !manifest.cluster) {
     throw new Error('SolID manifest requires network and cluster');
+  }
+  if (!['localnet', 'devnet', 'testnet', 'mainnet-beta'].includes(manifest.network)) {
+    throw new Error(`Unsupported SolID manifest network: ${String(manifest.network)}`);
   }
   for (const program of ['schema_registry', 'issuer_registry', 'zk_verifier'] as const) {
     const entry = manifest.programs?.[program];
@@ -301,6 +310,7 @@ export function withManifestOverrides(
 ): SolidDevnetManifest {
   return validateSolidManifest({
     ...manifest,
+    network: overrides.network ?? manifest.network,
     cluster: overrides.cluster ?? manifest.cluster,
     websocket_cluster: overrides.websocketCluster === undefined
       ? manifest.websocket_cluster

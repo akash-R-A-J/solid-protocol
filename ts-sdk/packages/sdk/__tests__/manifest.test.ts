@@ -32,6 +32,21 @@ describe('devnet manifest', () => {
     );
   });
 
+  it('keeps localnet and devnet runtime profiles explicit', () => {
+    const manifest = withManifestOverrides(DEFAULT_DEVNET_MANIFEST, {
+      network: 'localnet',
+      cluster: 'http://127.0.0.1:8899',
+      websocketCluster: 'ws://127.0.0.1:8900',
+      artifactBaseUrl: 'http://127.0.0.1:5173/artifacts',
+      indexerUrl: 'http://127.0.0.1:8787',
+    });
+
+    expect(manifest.network).toBe('localnet');
+    expect(manifest.cluster).toBe('http://127.0.0.1:8899');
+    expect(manifest.websocket_cluster).toBe('ws://127.0.0.1:8900');
+    expect(manifest.indexer.url).toBe('http://127.0.0.1:8787');
+  });
+
   it('rejects non-local plaintext network endpoints', () => {
     expect(() =>
       withManifestOverrides(DEFAULT_DEVNET_MANIFEST, {

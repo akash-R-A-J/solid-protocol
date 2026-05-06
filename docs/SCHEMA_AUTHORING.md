@@ -18,6 +18,8 @@ Each schema needs:
 - canonical schema hash
 - schema PDA
 - credential tree address
+- credential tree depth matching the batch circuit (`20` for the current
+  devnet smoke path)
 
 ## Current Circuit Shape
 
@@ -31,6 +33,7 @@ The current batch circuit supports:
 
 ## Recommended Devnet Schemas
 
+- `basic_identity_v2` (current live smoke schema; depth-20 tree)
 - `basic_identity_v1`
 - `vaccination_v1`
 - `product_cert_v1`
@@ -63,7 +66,7 @@ A schema is public-devnet ready only when:
 - schema JSON is committed
 - hash is reproducible
 - schema is registered on-chain
-- tree is created/bound
+- tree is created/bound with depth 20
 - manifest includes schema metadata
 - indexer serves it
 - wallet preview renders field names

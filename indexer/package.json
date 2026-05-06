@@ -1,0 +1,17 @@
+{
+  "name": "@solid-protocol/indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SolID devnet indexer/API for Merkle proofs, registry reads, and credential request workflow.",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@solid-protocol/core": "file:../ts-sdk/packages/core",
+    "@solid-protocol/issuer": "file:../ts-sdk/packages/issuer",
+    "@solid-protocol/sdk": "file:../ts-sdk/packages/sdk",
+    "@solana/web3.js": "^1.95.0"
+  }
+}

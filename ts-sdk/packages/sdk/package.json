@@ -23,6 +23,16 @@
       "types": "./dist/indexer.d.ts",
       "import": "./dist/indexer.js",
       "default": "./dist/indexer.js"
+    },
+    "./credential-requests": {
+      "types": "./dist/credential-requests.d.ts",
+      "import": "./dist/credential-requests.js",
+      "default": "./dist/credential-requests.js"
+    },
+    "./credential-integrity": {
+      "types": "./dist/credential-integrity.d.ts",
+      "import": "./dist/credential-integrity.js",
+      "default": "./dist/credential-integrity.js"
     }
   },
   "scripts": {

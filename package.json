@@ -15,7 +15,10 @@
     "check-vectors": "tsx tests/vectors/check_vectors.ts",
     "validate:devnet": "node scripts/validate_devnet_manifest.mjs",
     "verify:artifacts": "node scripts/verify_artifact_hashes.mjs",
-    "smoke:devnet-config": "node scripts/smoke_devnet_config.mjs"
+    "smoke:devnet-config": "node scripts/smoke_devnet_config.mjs",
+    "test:prove-root-plan": "node --import tsx tests/scripts/root_update_plan.test.ts",
+    "indexer:test": "npm test --prefix indexer",
+    "indexer:start": "npm start --prefix indexer"
   },
   "dependencies": {
     "@solana/web3.js": "^1.95.0",

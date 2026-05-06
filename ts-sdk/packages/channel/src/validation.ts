@@ -1,5 +1,4 @@
-import { decodeBase64 } from 'tweetnacl-util';
-
+import { decodeBase64 } from './base64.js';
 import type { CredentialBundle, EncryptedEnvelope } from './types.js';
 
 export const ENVELOPE_VERSION = 1;

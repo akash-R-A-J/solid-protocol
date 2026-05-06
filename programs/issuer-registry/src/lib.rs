@@ -926,6 +926,92 @@ pub mod issuer_registry {
         Ok(())
     }
 
+    /// Grant an approved issuer permission to issue exactly one registered
+    /// schema. DAO approval remains the issuer-level admission gate; this PDA
+    /// is the schema-level authorization gate consumed by `issue_credential`.
+    pub fn grant_schema_permission(
+        ctx: Context<GrantSchemaPermission>,
+        schema_hash: [u8; 32],
+    ) -> Result<()> {
+        let issuer = &ctx.accounts.issuer_account;
+        require!(
+            issuer.status == IssuerStatus::Approved,
+            ErrorCode::IssuerNotApproved
+        );
+
+        let schema = &ctx.accounts.schema_account;
+        require!(!schema.deprecated, ErrorCode::SchemaDeprecated);
+        require!(
+            schema.schema_hash == schema_hash,
+            ErrorCode::SchemaHashMismatch
+        );
+
+        let permission = &mut ctx.accounts.issuer_schema_permission;
+        permission.issuer = issuer.key();
+        permission.issuer_authority = issuer.authority;
+        permission.schema_hash = schema_hash;
+        permission.schema_account = schema.key();
+        permission.granted_by = ctx.accounts.registry_authority.key();
+        permission.granted_at = Clock::get()?.unix_timestamp;
+        permission.revoked_at = 0;
+        permission.active = true;
+        permission.bump = ctx.bumps.issuer_schema_permission;
+
+        emit!(IssuerSchemaPermissionGranted {
+            issuer: issuer.authority,
+            issuer_account: issuer.key(),
+            schema_hash,
+            schema_account: schema.key(),
+            granted_by: ctx.accounts.registry_authority.key(),
+            timestamp: permission.granted_at,
+        });
+
+        msg!(
+            "IssuerSchemaPermission granted: issuer={} schema_hash[..4]={:?}",
+            issuer.authority,
+            &schema_hash[..4]
+        );
+        Ok(())
+    }
+
+    /// Revoke a schema-specific issuance permission. Existing credentials stay
+    /// verifiable through their historical commitments; new issuance for this
+    /// issuer/schema pair is blocked immediately.
+    pub fn revoke_schema_permission(
+        ctx: Context<RevokeSchemaPermission>,
+        schema_hash: [u8; 32],
+    ) -> Result<()> {
+        let permission = &mut ctx.accounts.issuer_schema_permission;
+        require!(permission.active, ErrorCode::IssuerSchemaPermissionInactive);
+        require!(
+            permission.schema_hash == schema_hash,
+            ErrorCode::IssuerSchemaPermissionMismatch
+        );
+        require!(
+            permission.issuer == ctx.accounts.issuer_account.key(),
+            ErrorCode::IssuerSchemaPermissionMismatch
+        );
+
+        permission.active = false;
+        permission.revoked_at = Clock::get()?.unix_timestamp;
+
+        emit!(IssuerSchemaPermissionRevoked {
+            issuer: ctx.accounts.issuer_account.authority,
+            issuer_account: ctx.accounts.issuer_account.key(),
+            schema_hash,
+            schema_account: permission.schema_account,
+            revoked_by: ctx.accounts.registry_authority.key(),
+            timestamp: permission.revoked_at,
+        });
+
+        msg!(
+            "IssuerSchemaPermission revoked: issuer={} schema_hash[..4]={:?}",
+            ctx.accounts.issuer_account.authority,
+            &schema_hash[..4]
+        );
+        Ok(())
+    }
+
     /// Slash an issuer for malicious behavior.
     /// Can only be called by DAO authority after governance vote or internal decision.
     ///
@@ -2075,6 +2161,22 @@ pub mod issuer_registry {
             ErrorCode::Unauthorized
         );
 
+        let permission = &ctx.accounts.issuer_schema_permission;
+        require!(permission.active, ErrorCode::IssuerSchemaPermissionInactive);
+        require!(
+            permission.issuer == issuer.key(),
+            ErrorCode::IssuerSchemaPermissionMismatch
+        );
+        require_keys_eq!(
+            permission.issuer_authority,
+            issuer.authority,
+            ErrorCode::IssuerSchemaPermissionMismatch
+        );
+        require!(
+            permission.schema_hash == schema_hash,
+            ErrorCode::IssuerSchemaPermissionMismatch
+        );
+
         // Reject the trivial (all-zero / all-one) commitments that can only
         // be produced by mis-use of the SDK — every honest commitment is a
         // Poseidon output and effectively collision-free with these patterns.
@@ -2106,6 +2208,11 @@ pub mod issuer_registry {
         require!(
             schema_acct.schema_hash == schema_hash,
             ErrorCode::SchemaHashMismatch
+        );
+        require_keys_eq!(
+            permission.schema_account,
+            ctx.accounts.schema_account.key(),
+            ErrorCode::IssuerSchemaPermissionMismatch
         );
         require_keys_eq!(
             *ctx.accounts.schema_tree_binding.owner,
@@ -2547,6 +2654,75 @@ pub struct FinalizeVoting<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(schema_hash: [u8; 32])]
+pub struct GrantSchemaPermission<'info> {
+    #[account(
+        seeds = [b"registry-config"],
+        bump,
+        constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
+    )]
+    pub registry_config: Account<'info, RegistryConfig>,
+
+    #[account(seeds = [b"issuer", issuer_account.authority.as_ref()], bump)]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    #[account(
+        seeds = [
+            b"schema",
+            schema_account.name.as_bytes(),
+            core::slice::from_ref(&schema_account.version),
+        ],
+        bump,
+        seeds::program = SCHEMA_REGISTRY_ID,
+    )]
+    pub schema_account: Account<'info, SchemaAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = registry_authority,
+        space = 8 + IssuerSchemaPermission::SPACE,
+        seeds = [
+            b"issuer-schema",
+            issuer_account.key().as_ref(),
+            schema_hash.as_ref(),
+        ],
+        bump,
+    )]
+    pub issuer_schema_permission: Account<'info, IssuerSchemaPermission>,
+
+    #[account(mut)]
+    pub registry_authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(schema_hash: [u8; 32])]
+pub struct RevokeSchemaPermission<'info> {
+    #[account(
+        seeds = [b"registry-config"],
+        bump,
+        constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
+    )]
+    pub registry_config: Account<'info, RegistryConfig>,
+
+    #[account(seeds = [b"issuer", issuer_account.authority.as_ref()], bump)]
+    pub issuer_account: Account<'info, IssuerAccount>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"issuer-schema",
+            issuer_account.key().as_ref(),
+            schema_hash.as_ref(),
+        ],
+        bump = issuer_schema_permission.bump,
+    )]
+    pub issuer_schema_permission: Account<'info, IssuerSchemaPermission>,
+
+    pub registry_authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
 #[instruction(target_authority: Pubkey)]
 pub struct ApproveViaTrustAnchor<'info> {
     #[account(mut, seeds = [b"registry-config"], bump)]
@@ -2767,6 +2943,19 @@ pub struct IssueCredential<'info> {
     pub issuer_account: Account<'info, IssuerAccount>,
 
     pub issuer_authority: Signer<'info>,
+
+    /// Schema-scoped issuance permission. DAO grants this after issuer
+    /// approval; `issue_credential` rejects any issuer/schema pair without an
+    /// active permission PDA.
+    #[account(
+        seeds = [
+            b"issuer-schema",
+            issuer_account.key().as_ref(),
+            schema_hash.as_ref(),
+        ],
+        bump = issuer_schema_permission.bump,
+    )]
+    pub issuer_schema_permission: Account<'info, IssuerSchemaPermission>,
 
     /// SOLID-SEC-003.  Typed `SchemaAccount` PDA from schema-registry.
     /// Seed-constrained + `seeds::program` so Anchor:
@@ -3195,6 +3384,26 @@ impl IssuerAccount {
 }
 
 #[account]
+pub struct IssuerSchemaPermission {
+    pub issuer: Pubkey,
+    pub issuer_authority: Pubkey,
+    pub schema_hash: [u8; 32],
+    pub schema_account: Pubkey,
+    pub granted_by: Pubkey,
+    pub granted_at: i64,
+    pub revoked_at: i64,
+    pub active: bool,
+    pub bump: u8,
+}
+
+impl IssuerSchemaPermission {
+    /// 32 issuer PDA + 32 issuer authority + 32 schema hash + 32 schema PDA
+    /// + 32 grant authority + 8 grant timestamp + 8 revoke timestamp
+    /// + 1 active + 1 bump.
+    pub const SPACE: usize = 32 + 32 + 32 + 32 + 32 + 8 + 8 + 1 + 1;
+}
+
+#[account]
 pub struct VoteRecord {
     pub voter: Pubkey,
     pub issuer: Pubkey,
@@ -3372,6 +3581,10 @@ pub enum ErrorCode {
     TreeBindingMismatch,
     #[msg("SchemaTreeBinding is frozen; cannot issue into this tree (SOLID-SEC-003)")]
     SchemaTreeBindingFrozen,
+    #[msg("Issuer lacks an active DAO-granted permission for this schema")]
+    IssuerSchemaPermissionInactive,
+    #[msg("Issuer schema permission account does not match the requested issuer/schema")]
+    IssuerSchemaPermissionMismatch,
     #[msg("IssuerTreeBinding account is not owned by issuer-registry (ADR-0014)")]
     InvalidIssuerTreeBindingOwner,
     #[msg("IssuerTreeBinding discriminator or layout is invalid (ADR-0014)")]
@@ -3504,6 +3717,26 @@ pub struct CredentialIssued {
     pub commitment: [u8; 32],
     pub merkle_tree: Pubkey,
     pub slot: u64,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct IssuerSchemaPermissionGranted {
+    pub issuer: Pubkey,
+    pub issuer_account: Pubkey,
+    pub schema_hash: [u8; 32],
+    pub schema_account: Pubkey,
+    pub granted_by: Pubkey,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct IssuerSchemaPermissionRevoked {
+    pub issuer: Pubkey,
+    pub issuer_account: Pubkey,
+    pub schema_hash: [u8; 32],
+    pub schema_account: Pubkey,
+    pub revoked_by: Pubkey,
     pub timestamp: i64,
 }
 

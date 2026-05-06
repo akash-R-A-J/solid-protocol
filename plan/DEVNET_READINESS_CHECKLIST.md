@@ -1,9 +1,9 @@
 # Devnet Readiness Checklist
 
-Last updated: 2026-05-04 (after SDK pass-2 audit).
+Last updated: 2026-05-06 (after partial public devnet protocol deploy).
 
 Single source of truth for what blocks the SolID system (`solid-protocol`
-+ `solid-console` + `solid-wallet`) from a public devnet launch. Built
++ `solid-sim` from the `solid-console` repo + `solid-wallet`) from a public devnet launch. Built
 from the 2026-05-04 deep audit, then **revised the same day after a
 second-pass audit found that the high-level `@solid-protocol/verifier`
 wrapper is already shipped (not "10-14 days of work" as the first audit
@@ -21,9 +21,8 @@ Tracks the protocol repo and the two product repos at sibling paths
   on three pre-flight items and on the entire `verifyRequirement`
   status. Future status claims in this file MUST cite a file:line and
   date of verification.
-- **All four components must be functional:** `@solid-protocol/sdk`
-  (and the six packages it depends on), `solid-protocol` programs +
-  scripts, `solid-wallet` extension, `solid-console` web app.
+- **All four roles must be functional:** DAO, Issuer, Wallet, and Verifier
+  through `solid-sim`, plus the external `solid-wallet` extension path.
 
 ## Scope filter
 
@@ -37,10 +36,9 @@ Out of scope for devnet (handled separately by the owner):
 
 ## Decisions taken 2026-05-04
 
-- Holder UX: ship the real browser extension (`solid-wallet`).
-  No "credentials in console" fallback.
-- Issuer UX: finish the issuer-side of `solid-console`. No separate
-  CLI for v0.
+- Holder UX: use `solid-sim` Wallet for public devnet simulation and keep
+  `solid-wallet` as the external-wallet integration path.
+- Issuer UX: finish the issuer-side of `solid-sim`. No separate CLI for v0.
 
 ## Code-first update 2026-05-05
 
@@ -79,23 +77,41 @@ Code reality changed several older checklist rows:
   populated manifest, artifact host, indexer/API, governance mint/staker
   setup, and a live four-role smoke.
 
+### Devnet deploy update 2026-05-06
+
+The protocol layer is now partially live on public devnet:
+
+| Area | Status |
+| --- | --- |
+| Program deployment | `schema_registry`, `issuer_registry`, and `zk_verifier` deployed at canonical IDs |
+| Verifier setup | registry/config PDAs initialized; batch and subgroup VKs uploaded/finalized |
+| Schema smoke | `basic_identity_v2` registered with depth-20 schema tree |
+| Issuer/DAO smoke | issuer registration, stake, vote, finalize, and issuer-tree enrollment completed |
+| Credential smoke | one `basic_identity_v2` credential issued on devnet |
+| Proof smoke | existing sample local witness, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, and replay rejection pass |
+| Remaining protocol blocker | fresh issuance with current SDK/source awaits `issuer_registry` upgrade and issuer/schema permission grant |
+
+`basic_identity_v1` was created earlier with a depth-16 schema tree and
+must not be used with the current batch circuit. Public launch schemas
+must use depth-20 trees.
+
 ### Current role-readiness matrix
 
 | Role | Current code path | Required infrastructure | Status |
 | --- | --- | --- | --- |
-| DAO | `solid-console` reads issuer accounts and builds vote/finalize txs | Governance mint, staked DAO voter, live registry config, pending issuer application | blocked by governance mint/staker setup |
-| Issuer | `solid-console` derives BJJ identity, loads subgroup artifacts, builds `register_issuer`, signs credential envelope | Live programs, hosted subgroup artifacts, registered schema, approved issuer flow, holder wallet provider | blocked until devnet deploy and artifacts exist |
-| Holder | `solid-wallet` imports encrypted envelopes, derives holder keys, uses indexer/artifacts to generate proof after approval | Hosted batch artifacts, live Merkle proof indexer, current tree roots, real issued credential | blocked until indexer/artifacts/credential exist |
-| Verifier | `solid-console` locally verifies Groth16 proof or submits proof-buffer tx sequence | Finalized VK, active schema/issuer/global bindings, funded payer, live nullifier PDA path | blocked until live proof inputs and devnet state exist |
+| DAO | `solid-sim` reads issuer accounts and builds vote/finalize txs | Governance mint, staked DAO voter, live registry config, pending issuer application | protocol smoke green via scripts; public UX still needs smoke |
+| Issuer | `solid-sim` derives BJJ identity, loads subgroup artifacts, builds `register_issuer`, signs encrypted credential envelopes | Live programs, hosted subgroup artifacts, registered schema, approved issuer flow, Wallet material | protocol smoke green via scripts; public artifact URLs still missing |
+| Wallet | `solid-sim` Wallet creates/imports simulator identity, derives holder keys, imports encrypted envelopes, validates integrity, and proves with artifacts/indexer | Hosted batch artifacts, live Merkle proof indexer, current tree roots, real issued credential | build/test green; public proof UX blocked by hosted artifacts/indexer and fresh issuance |
+| Verifier | `solid-sim` locally verifies Groth16 proof or submits proof-buffer tx sequence | Finalized VK, active schema/issuer/global bindings, funded payer, live nullifier PDA path | existing devnet sample verify green; public four-role smoke pending |
 
 ### Current P0 blockers
 
 | ID | Blocker | Done when |
 | --- | --- | --- |
-| P0-1 | Publish populated `deployments/devnet.json` | Deployed timestamp, deployer, upgrade authorities, artifact/indexer/console/wallet URLs, schemas, trees, roots, sample issuer, sample credential, and known-good verify tx are populated and validation gates pass. |
+| P0-1 | Publish populated `deployments/devnet.json` | Deployed timestamp, deployer, upgrade authorities, schemas, trees, roots, sample issuer, sample credential, and existing-sample verify tx are populated. Artifact/indexer/console/wallet URLs and fresh issue/prove evidence remain pending. |
 | P0-2 | Host pinned artifacts | All batch/subgroup `.wasm`, `.zkey`, verification key JSON, and `.sha256` sidecars are served over HTTPS and match manifest pins. |
 | P0-3 | Deploy Merkle proof indexer/API | `/v1/health`, `/v1/merkle-proof/:tree/:leaf`, issuer/schema reads, and status JSON are live. |
-| P0-4 | Configure DAO governance mint/stake | Real devnet mint exists, DAO tester has stake, and vote/finalize can run. |
+| P0-4 | Configure DAO governance mint/stake | Real devnet mint exists and script smoke vote/finalize can run; public DAO console smoke remains pending. |
 | P0-5 | Harden wallet origin policy | Extension is restricted to tester origins or holder/channel key reads require approval/allowlist. |
 | P0-6 | Run live four-role smoke | DAO, issuer, holder, and verifier evidence is recorded with tx signatures and replay rejection. |
 
@@ -145,7 +161,7 @@ might unmask other channel-package issues).
 
 | #   | Item                                                                                  | Why                                                                                                                                                                                       | Status |
 | --- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 0.1 | Provision a devnet deployer keypair and fund it (~15 SOL).                            | Nothing in `deployments/devnet.json` populates without a real deploy. `deployer.address` and `deployed_at` stay null until you run `scripts/initialize.ts` against devnet.                | open   |
+| 0.1 | Provision a devnet deployer keypair and fund it (~15 SOL).                            | Current deployer is `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`; balance checked 2026-05-06 at `10.03288796 SOL`. More may be needed for public-RPC retries or full launch-schema setup. | partial |
 | 0.2 | ~~`cargo clippy` failure on `crates/solid-core/src/sas.rs`~~                          | Verified 2026-05-04: `crates/solid-core/src/sas.rs:48` already has `#[allow(dead_code)]`. `cargo clippy -p solid-core -p solid-light -- -D warnings` exits 0. Audit finding was stale.    | done   |
 | 0.3 | ~~`cargo fmt` failure on `crates/solid-light/src/cpi_helpers.rs`~~                    | Verified 2026-05-04: `cargo fmt --all -- --check` exits 0. Workspace is clean. Audit finding was stale.                                                                                   | done   |
 | 0.4 | ~~Doc drift in README / CURRENT_STATE / CLAUDE.md~~                                   | Verified 2026-05-04: `README.md:47`, `docs/CURRENT_STATE.md:4`, `CLAUDE.md:65` already reference v0.6.1 post-Phase-E and the subgroup VK pin `938ab390...e9`. Audit finding was stale.    | done   |
@@ -157,12 +173,12 @@ deploy; they do not block it.
 
 | #   | Item                                                                                                                                                | Why                                                                                                                                                                                                          | Status |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
-| 1.1 | Run `scripts/initialize.ts` against `--provider.cluster devnet`.                                                                                    | Deploys all three programs at the canonical IDs. The moment the system goes from "localnet green" to "live on devnet."                                                                                       | open   |
-| 1.2 | Run main VK chunked upload + finalize + freeze, and subgroup VK chunked upload + finalize + freeze.                                                  | The verifier programs are useless without VKs loaded. Freeze locks them under the 48-hour ADR-0015 timelock so rotation requires a real ceremony, not a `--force`.                                            | open   |
-| 1.3 | Run `scripts/regen_devnet_manifest.py` after deploy.                                                                                                | Populates `deployer.address`, `deployed_at`, and per-program signatures into `deployments/devnet.json`. Without this, integrators have no machine-readable manifest of what is deployed.                      | open   |
-| 1.4 | Run `backfill-issuer-tree` and `bootstrap-schema-tree` against devnet.                                                                              | Verifier owner-checks `issuer_tree_binding` and `schema_tree_N` accounts (ADR-0014). If those accounts do not exist on devnet, every `verify_batch_proof_v2` call reverts even with a valid proof.            | open   |
-| 1.5 | Sample-data seed: bootstrap one demo issuer (with on-chain BJJ subgroup proof) and one demo schema (matching `verifier`'s `DEFAULT_SCHEMA_CATALOG` or one supplied via `schemaCatalog`). | Without a sample issuer + schema, integrators have nothing to point `verifyRequirement` at. The "Sample issuer / schema" section in `docs/DEVNET_STATUS.md:150-159` is currently placeholders. | open   |
-| 1.6 | Capture and pin a reference green `verify_batch_proof_v2` signature on devnet.                                                                      | Same role as the localnet reference tx (`5hckZo1xs...M5k4WiHJ`): proves end-to-end works on the live cluster, gives integrators a known-good tx to inspect.                                                  | open   |
+| 1.1 | Run `scripts/initialize.ts` against `--provider.cluster devnet`.                                                                                    | Registry/verifier config, VKs, issuer tree, global binding, smoke schema tree, and sample state exist on devnet.                                                                                              | done    |
+| 1.2 | Run main VK chunked upload + finalize + freeze, and subgroup VK chunked upload + finalize + freeze.                                                  | The verifier programs are useless without VKs loaded. Freeze locks them under the 48-hour ADR-0015 timelock so rotation requires a real ceremony, not a `--force`.                                            | done    |
+| 1.3 | Run `scripts/regen_devnet_manifest.py` after deploy.                                                                                                | Populates `deployer.address`, `deployed_at`, and per-program signatures into `deployments/devnet.json`. Current manifest has live smoke values; hosted URLs remain null.                                      | partial |
+| 1.4 | Run `backfill-issuer-tree` and `bootstrap-schema-tree` against devnet.                                                                              | Verifier owner-checks `issuer_tree_binding` and `schema_tree_N` accounts (ADR-0014). Both bindings exist for the current smoke state.                                                                         | done    |
+| 1.5 | Sample-data seed: bootstrap one demo issuer (with on-chain BJJ subgroup proof) and one demo schema (matching `verifier`'s `DEFAULT_SCHEMA_CATALOG` or one supplied via `schemaCatalog`). | `basic_identity_v2`, one sample issuer, and one sample credential exist on devnet. Fresh sample issuance awaits `issuer_registry` upgrade + issuer/schema permission. | partial |
+| 1.6 | Capture and pin a reference green `verify_batch_proof_v2` signature on devnet.                                                                      | Existing sample proof tx is `56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`; fresh issue/prove evidence remains pending. | partial |
 
 ## 2. SDK — bugs and gaps surfaced by the pass-2 audit
 

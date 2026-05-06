@@ -3,6 +3,11 @@
 Issuers publish credentials by targeting holder keys derived inside the SolID
 wallet. Do not issue to guessed, pasted, or random BabyJubJub keys.
 
+Current devnet smoke schema: `basic_identity_v2`
+(`6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823`).
+Use it only for operator smoke tests until the full launch schema set is
+registered and published in `deployments/devnet.json`.
+
 ## Required Inputs
 
 - approved issuer authority on devnet
@@ -49,8 +54,8 @@ const issued = await issueCredential(
     connection,
     issuerAuthority,
     merkleTree,
-    schemaName: "basic_identity_v1",
-    schemaVersion: 1,
+    schemaName: "basic_identity_v2",
+    schemaVersion: 2,
   },
 );
 ```

@@ -3,31 +3,31 @@
   "network": "devnet",
   "cluster": "https://api.devnet.solana.com",
   "websocket_cluster": "wss://api.devnet.solana.com",
-  "deployed_at": null,
-  "git_commit": null,
-  "note": "Staged devnet manifest. Deployment fields remain null until the first sanctioned devnet deploy regenerates this file via scripts/regen_devnet_manifest.py.",
+  "deployed_at": "2026-05-05T19:17:13Z",
+  "git_commit": "f698db6c591eb6f25f47cb895ab96e98c7c1cc61",
+  "note": "Public devnet protocol smoke is green for basic_identity_v2. issuer_registry and zk_verifier are upgraded from current source; issuer/schema permission is granted; fresh issue -> root sync -> Groth16 proof -> on-chain verify_batch_proof_v2 succeeds; replay is rejected. Hosted artifacts/indexer/solid-sim/wallet URLs remain null.",
   "deployer": {
-    "address": null,
-    "keypair_path": "~/.config/solana/id.json"
+    "address": "Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm",
+    "keypair_path": "~/.config/solana/solid-devnet-admin.json"
   },
   "programs": {
     "schema_registry": {
       "program_id": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1",
-      "upgrade_authority": null,
+      "upgrade_authority": "Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm",
       "idl_metadata": null,
       "binary": "target/deploy/schema_registry.so",
       "description": "On-chain credential schema registry plus SchemaTreeBinding and GlobalStateBinding PDAs"
     },
     "issuer_registry": {
       "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
-      "upgrade_authority": null,
+      "upgrade_authority": "Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm",
       "idl_metadata": null,
       "binary": "target/deploy/issuer_registry.so",
       "description": "DAO-governed issuer registry with staking, voting, and credential issuance"
     },
     "zk_verifier": {
       "program_id": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
-      "upgrade_authority": null,
+      "upgrade_authority": "Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm",
       "idl_metadata": null,
       "binary": "target/deploy/zk_verifier.so",
       "description": "Groth16 batch verifier with PDA-per-nullifier replay protection"
@@ -86,16 +86,66 @@
   "wallet": {
     "release_url": null
   },
-  "schemas": [],
+  "schemas": [
+    {
+      "name": "basic_identity_v2",
+      "version": 2,
+      "category": "Identity",
+      "status": "devnet-smoke",
+      "schema_hash": "6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823",
+      "schema_pda": "EmdhTJt5VcQ4FiTy9xitTBBNa3XaBvwXsAB34FJWkx4",
+      "fields": [
+        "age",
+        "country_code",
+        "region",
+        "id_type",
+        "verification_level",
+        "issued_date",
+        "nationality",
+        "_reserved"
+      ],
+      "tree_depth": 20,
+      "tree_address": "4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc",
+      "tree_authority_pda": "CHc3kWDEiSGx9gHFaqj3whe4yo33ocbLVHKjYi6D3im1",
+      "tree_binding_pda": "FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb",
+      "current_root": "5304536b69350abe799a36ed8104efbfa66a5198f8ab6cef6bc3e6c48357b919",
+      "current_root_slot": 460542858
+    }
+  ],
   "trees": {
-    "global_state_tree": null,
-    "issuer_tree": {
-      "tree_address": null,
-      "binding_pda": null,
-      "current_root": null,
-      "current_root_slot": null
+    "global_state_tree": {
+      "binding_pda": "68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o",
+      "current_root": "610b2e31e33bc10e3e7e0cf0e6fbeaae0c23b42c24266f1bc3a80685e805ce01",
+      "current_root_slot": 460542860
     },
-    "schema_trees": []
+    "issuer_tree": {
+      "tree_address": "FajCWko9tc6dhdPtwrS5kfkehPoEV8pn5LdL4kLL7k7f",
+      "binding_pda": "ExJ2PLDf8qrDxYsYRJbuKNTJ38xPxt1USJpe7cdfgL6h",
+      "tree_authority_pda": "Dr8gCiXud8iab1qDnjDDhuKXLYVA7btkNoPWZH4MbTt9",
+      "current_root": "bfc02634df26b227601eabeccb97d6d79f39fb23ec19d7b62ec1565f669f5b27",
+      "current_root_slot": 460327011
+    },
+    "schema_trees": [
+      {
+        "schema_hash": "6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823",
+        "tree_address": "4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc",
+        "binding_pda": "FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb",
+        "current_root": "5304536b69350abe799a36ed8104efbfa66a5198f8ab6cef6bc3e6c48357b919",
+        "current_root_slot": 460542858
+      }
+    ]
+  },
+  "sample": {
+    "issuer_account": "FEdBRzX1junyhKf5Co15XKtHeAezT8i49zXSK6cGCEwL",
+    "issuer_authority": "GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi",
+    "credential_commitment": "69cf17f65415a057480ab7b9a84bba23ddae3d5764dafc5c3a9db8a97c476425",
+    "credential_tx": "gUFgazuUQnMu89rGMVSvS2ZfmBhUxWd2Ki9aCsECDaGDCe7GE5YB1tEEV2nz1NgCNCtp8KSsTRbWt5SNcXjbS3g",
+    "verify_tx": "4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE",
+    "schema_permission_tx": "2x9CefTUgwfthgqob9NpLYMhL3prGsd88c1wrbLsrb6w4r2yxykeveFnpK4Sw2Rzm4XZhynJJ4XuCppJbVzFyX81",
+    "schema_permission_pda": "4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H",
+    "verify_status": "fresh-issue-green; on-chain-verify-green; replay-rejected",
+    "replay_status": "rejected by nullifier PDA init constraint",
+    "fresh_issue_status": "green"
   },
   "pdas": {
     "verifier_config": {

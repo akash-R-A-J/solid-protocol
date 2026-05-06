@@ -1,8 +1,16 @@
 # SolID Devnet Quickstart
 
-This guide is for public devnet testers and integrators. It assumes the
-protocol has already been deployed and `deployments/devnet.json` has been
-published as the canonical manifest.
+This guide is for public devnet testers and integrators. Current status
+as of 2026-05-06: the three programs are deployed and initialized on
+devnet, the deployer is funded, `zk_verifier` has been upgraded from the
+current source, and the existing `basic_identity_v2` sample verifies
+on-chain. Reference verify tx:
+`56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`.
+
+Public solid-sim testing still waits on fresh issuance against the current
+program source, hosted artifacts, and an indexer. The fresh issue path is
+blocked until `issuer_registry` is upgraded from current source and the
+issuer/schema permission PDA is granted.
 
 ## 1. Read The Manifest
 
@@ -14,7 +22,7 @@ The manifest is the source of truth for:
 - schema catalog
 - tree addresses
 - indexer URL
-- console and wallet release URLs
+- solid-sim and wallet release URLs
 
 Local file:
 
@@ -22,11 +30,13 @@ Local file:
 cat deployments/devnet.json
 ```
 
-Hosted file:
+Hosted file, once published:
 
 ```bash
 curl https://your-domain.example/solid/devnet.json
 ```
+
+Current live smoke values are listed in `docs/DEVNET_STATUS.md`.
 
 ## 2. Install SDK Packages
 
@@ -36,6 +46,80 @@ npm install @solid-protocol/sdk @solid-protocol/verifier @solid-protocol/channel
 
 Use published npm versions for external apps. Local `file:` dependencies are
 only for monorepo development.
+
+Until npm packages are published, integrators testing from this monorepo
+should build the SDK workspace first:
+
+```bash
+cd solid-protocol/ts-sdk
+npm install
+npm run build
+```
+
+## 2a. Manual Terminal E2E
+
+Operators can reproduce the current devnet terminal flow from the
+`solid-protocol` repo root:
+
+```bash
+export PATH="$PWD/.toolchain/bin:$PATH"
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+export SOLID_RPC_URL="https://api.devnet.solana.com"
+export SOLID_ALLOW_NON_LOCALNET=1
+export SOLID_VOTING_PERIOD_SECONDS=120
+export SOLID_SCHEMA_NAME="basic_identity_v2"
+export SOLID_SCHEMA_VERSION=2
+export SOLID_SCHEMA_CATEGORY="Identity"
+export SOLID_SCHEMA_FIELDS="age,country_code,region,id_type,verification_level,issued_date,nationality,_reserved"
+export SOLID_SCHEMA_TREE_DEPTH=20
+
+bash scripts/sync_program_keypairs.sh --reset-state
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
+npm install
+
+npm run init-onchain
+npm run backfill-issuer-tree
+npm run bootstrap-schema-tree
+npm run bootstrap-issuer
+npm run issue
+npm run prove
+```
+
+Expected current result:
+
+- Existing sample: `npm run prove` builds a witness, passes local
+  `snarkjs.groth16.verify`, submits `verify_batch_proof_v2`, and confirms
+  replay rejection.
+- Fresh issue: `npm run issue` currently fails on devnet because the live
+  `issuer_registry` deployment still expects the older account layout. The
+  current SDK/program source passes `issuer_schema_permission`, and the live
+  permission PDA
+  `4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H` is not initialized.
+- Treat public testing as blocked until the operator upgrades
+  `issuer_registry`, grants schema permission, and records a fresh
+  issue/prove/replay sequence.
+
+The repo now ships explicit runtime profiles:
+
+```bash
+# Protocol scripts
+source config/devnet.env.example
+source config/localnet.env.example
+
+# solid-sim
+cp ../solid-console/.env.devnet.example ../solid-console/.env
+cp ../solid-console/.env.localnet.example ../solid-console/.env
+
+# extension wallet
+cp ../solid-wallet/.env.devnet.example ../solid-wallet/.env
+cp ../solid-wallet/.env.localnet.example ../solid-wallet/.env
+```
+
+Use only one profile at a time. `VITE_SOLID_NETWORK` controls whether the
+client identifies itself as `devnet` or `localnet`; `VITE_SOLID_RPC_URL`
+controls the actual RPC endpoint.
 
 ## 3. Install The Wallet
 
@@ -51,9 +135,26 @@ Then configure it with:
 The wallet must not generate proofs until artifacts and indexer settings are
 present.
 
-## 4. Open The Console
+For a local operator build:
 
-Open the console URL from the manifest. Connect a devnet Solana wallet and
+```bash
+cd solid-wallet
+npm install
+VITE_SOLID_CLUSTER=devnet \
+VITE_SOLID_NETWORK=devnet \
+VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
+VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
+VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+npm run build
+```
+
+Then open `chrome://extensions`, enable Developer Mode, and load
+`solid-wallet/dist` as an unpacked extension.
+
+## 4. Open SolID Sim
+
+Open the solid-sim URL from the manifest. Connect a devnet Solana wallet and
 check the status page before issuing credentials or verifying proofs.
 
 Required live checks:
@@ -66,21 +167,44 @@ Required live checks:
 - indexer reachable
 - schema catalog loaded
 
+For a local operator run:
+
+```bash
+cd solid-console
+npm install
+VITE_SOLID_CLUSTER=devnet \
+VITE_SOLID_NETWORK=devnet \
+VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
+VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
+VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
+VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+npm run dev
+```
+
+The current app is now the `solid-sim` four-role simulator. It has DAO,
+Issuer, Wallet, and Verifier sections. The Wallet section can derive holder
+material, import encrypted credential envelopes, validate credential integrity,
+and generate proofs only when real artifacts and an indexer are configured.
+
 ## 5. Real End-To-End Flow
 
 1. DAO/operator registers launch schemas.
-2. Issuer registers from console.
+2. Issuer registers from solid-sim.
 3. DAO approves issuer.
-4. Holder installs wallet.
-5. Issuer asks wallet for `window.solid.getHolderPublicKey(schemaHash)`.
+4. Holder creates/imports an identity in the Wallet section, or installs the
+   external wallet extension.
+5. Issuer asks Wallet for holder material.
 6. Issuer issues a credential to that holder key.
 7. Holder imports the encrypted credential package.
 8. Verifier dApp builds a requirement.
-9. Wallet receives `window.solid.requestProof(envelope)`.
-10. Holder approves.
-11. Wallet generates proof using hosted pinned artifacts and live Merkle proofs.
-12. Verifier submits proof on-chain.
-13. Replay/nullifier reuse fails.
+9. Wallet generates proof using hosted pinned artifacts and live Merkle proofs.
+10. Verifier receives the proof and public signals.
+11. Verifier submits proof on-chain.
+12. Replay/nullifier reuse fails.
+
+The current public-devnet milestone is reached only when steps 9-12 work
+through Wallet and Verifier using public URLs, not local files.
 
 For the exact injected-provider path behind step 5, see
 `docs/WALLET_PROVIDER_FLOW.md`.

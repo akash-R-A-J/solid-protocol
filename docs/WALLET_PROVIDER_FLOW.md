@@ -1,7 +1,9 @@
 # Wallet Provider Flow
 
 This document explains exactly where `window.solid.getHolderPublicKey(schemaHash)`
-lives and how an issuer app uses it without guessing holder keys.
+lives and how an issuer app uses it without guessing holder keys. For local
+devnet testing, `solid-sim` also provides an integrated Wallet section that
+derives the same public holder material without requiring the browser extension.
 
 ## Runtime Path
 
@@ -45,7 +47,7 @@ Issuers need two wallet-derived holder values:
 - `window.solid.getHolderPublicKey(schemaHash)` for the schema-specific
   BabyJubJub holder key used inside the credential commitment.
 
-In the console this is wrapped by:
+In solid-sim this is wrapped by:
 
 ```ts
 const material = await requestHolderMaterial(schemaHash);
@@ -64,7 +66,9 @@ That helper returns:
 ```
 
 `IssueCredential` then signs the credential commitment and encrypts the
-credential envelope for the holder wallet.
+credential envelope for the holder wallet. If `window.solid` is not present,
+the same helper falls back to `solid-console/src/lib/sim-wallet.ts`, which
+uses the integrated Wallet simulator seed.
 
 ## Security Rules
 
@@ -73,20 +77,29 @@ credential envelope for the holder wallet.
 - The holder private key never leaves the wallet.
 - The issuer receives only public coordinates.
 - The encrypted channel public key is separate from the BabyJubJub holder key.
-- If the wallet is locked, missing, or cannot derive the key, the issuer UI must
-  fail visibly and let the issuer paste material only as an explicit manual path.
+- If the external wallet is locked, missing, or cannot derive the key, the issuer
+  UI may use the integrated Wallet simulator. Manual paste remains explicit.
 
 ## Devnet Test
 
-1. Build and load `solid-wallet/dist` as an unpacked browser extension.
-2. Open `solid-console` in the same browser.
-3. Go to Issuer -> Issue Credential.
-4. Select a schema from the devnet manifest catalog.
-5. Click "Pull from SolID Wallet".
-6. The console should fill:
+1. Open `solid-sim` locally or through the hosted URL once published.
+2. Go to Wallet and create or import a simulator identity.
+3. Derive material for the active schema, or load `solid-wallet/dist` as an
+   unpacked browser extension to test the injected provider path.
+4. Go to Issuer -> Issue Credential.
+5. Select a schema from the devnet manifest catalog.
+6. Click "Pull from Wallet".
+7. solid-sim should fill:
    - channel public key
    - holder BJJ public key X
    - holder BJJ public key Y
+
+Local operator build commands are in `docs/DEVNET_QUICKSTART.md`.
+
+Public tester builds must use public HTTPS manifest/artifact/indexer URLs.
+The current protocol deploy is live, but Wallet proof generation is not
+public-ready until hosted artifacts, a Merkle proof indexer, and a green
+devnet verifier transaction are available.
 
 If those fields do not populate, inspect the wallet service worker logs and the
 browser console for `SOLID_GET_HOLDER_PUBLIC_KEY` or `GET_HOLDER_PUBLIC_KEY`.

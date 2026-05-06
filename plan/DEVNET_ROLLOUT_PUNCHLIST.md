@@ -1,7 +1,7 @@
 # SolID Devnet Rollout Punchlist
 
 Status: Active. Tactical task list.
-Last updated: 2026-05-04.
+Last updated: 2026-05-06.
 
 ## Commitment
 
@@ -44,11 +44,12 @@ Status legend (mirrors `docs/CURRENT_STATE.md`):
 
 ---
 
-## Current ordered devnet blockers -- 2026-05-04
+## Current ordered devnet blockers -- 2026-05-06
 
 This section is the current "what is left, in order" list. It supersedes
 older product-side wording that assumed the verifier SDK and holder wallet
-did not exist yet.
+did not exist yet, and it reflects the partial public devnet protocol
+deploy completed on 2026-05-06.
 
 ### 0. Freeze the devnet source of truth
 
@@ -62,28 +63,40 @@ did not exist yet.
   bugs but are actually configuration drift.
 - **Acceptance:** One config manifest can be consumed by protocol
   scripts, `@solid-protocol/verifier`, `solid-wallet`, and
-  `solid-console` without manual copy/paste.
+  `solid-console` without manual copy/paste. Current state:
+  `deployments/devnet.json` has live program/schema/tree fields, explicit
+  existing-sample verify evidence, and null artifact/indexer/console/wallet
+  URLs. Separate localnet/devnet env examples now exist for protocol
+  scripts, solid-sim, and the extension wallet.
 
-### 1. First sanctioned devnet deploy
+### 1. Upgrade issuer registry and complete fresh devnet proof smoke
 
-- **What:** Deploy `schema-registry`, `issuer-registry`, and
-  `zk-verifier`; initialize verifier config and verification keys;
-  regenerate `deployments/devnet.json`.
-- **Why:** Localnet green proves the system works in a controlled
-  validator. Public devnet requires executable program accounts and a
-  canonical manifest that external apps can trust.
-- **Acceptance:** The three program IDs resolve to executable accounts on
-  devnet and `scripts/check_program_ids.py` passes against the manifest.
+- **What:** `schema-registry`, `issuer-registry`, and `zk-verifier` are
+  deployed; registry/verifier/VK state is initialized; `basic_identity_v2`
+  issuer/credential/local-proof smoke is green; existing-sample on-chain
+  verify is green. Finish by upgrading `issuer_registry` from the current
+  source, granting the issuer/schema permission, rerunning
+  `npm run issue && npm run prove`, and recording a fresh devnet
+  `verify_batch_proof_v2` transaction plus replay rejection.
+- **Why:** Program deployment alone is not enough for public testers. The
+  public claim needs fresh issuance and verification through the current
+  deployed program/source contract.
+- **Acceptance:** `deployments/devnet.json` and `docs/DEVNET_STATUS.md`
+  contain a fresh issue tx, verify tx, and failed replay evidence. Existing
+  sample verify tx already recorded:
+  `56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`.
 
 ### 2. Register the launch schema set
 
-- **What:** Register at least `schemas/basic_identity_v1.json` on devnet
-  and record its schema PDA, schema hash, field list, and credential tree.
+- **What:** Register launch schemas on devnet with credential tree depth
+  20 and record each schema PDA, schema hash, field list, and tree.
 - **Why:** Issuers and verifiers need a shared schema contract. Wallet
   proof previews and verifier requirement encoding are only meaningful if
   field names, indices, and hashes are canonical.
-- **Acceptance:** `basic_identity_v1` is queryable from the schema
-  registry / indexer API and matches the repo schema byte-for-byte.
+- **Acceptance:** the launch schemas are queryable from the schema
+  registry / indexer API and match the repo schema JSON byte-for-byte.
+  Current smoke schema is `basic_identity_v2`; do not reuse the early
+  depth-16 `basic_identity_v1` binding for batch-circuit proofs.
 
 ### 3. Initialize and expose the compressed-state trees
 
@@ -209,14 +222,15 @@ did not exist yet.
 
 ### A1. First sanctioned devnet deploy
 
-- **Status:** [ ]
+- **Status:** [~]
 - **Effort:** 1 day (assuming no surprises).
 - **Dependency:** none.
 - **Acceptance:** `deployments/devnet.json` has non-null `deployed_at`,
   non-null `deployer.address`, non-null `upgrade_authority`; the three
   program IDs resolve to executable account data on
   `https://api.devnet.solana.com`; `scripts/check_program_ids.py` green
-  against the deployed manifest.
+  against the deployed manifest. Remaining acceptance gap: known-good
+  on-chain verify tx and replay-rejection evidence.
 - **Substeps:**
   1. Provision a deployer keypair (or Squads address) with sufficient
      SOL on devnet.
@@ -376,10 +390,12 @@ did not exist yet.
 - **Dependency:** A1 (real devnet to index).
 - **Acceptance:** A standalone service, deployed at
   `https://indexer.solid.example`, exposes:
-  - `GET /v1/merkle-proof/issuer/<authority>` -> Merkle inclusion path
-    against the current `IssuerTreeBinding.current_root`.
-  - `GET /v1/merkle-proof/credential/<schema_hash>/<commitment>` ->
-    inclusion path against the schema tree.
+  - `GET /v1/merkle-proof/:tree/:leaf` -> Merkle inclusion path for an
+    indexed credential commitment.
+  - `GET /v1/issuers/:issuer/proof` -> Merkle inclusion path against the
+    current issuer tree when an issuer leaf has been indexed.
+  - `GET /v1/credential-requests` plus `POST`/`PATCH` request lifecycle
+    endpoints for holder-to-issuer credential requests.
   - `GET /v1/issuers` -> paginated list with status/stake/metadata.
   - `GET /v1/schemas` -> paginated list with hash/fields/version.
   - `GET /v1/health` -> commitment lag, last indexed slot, error

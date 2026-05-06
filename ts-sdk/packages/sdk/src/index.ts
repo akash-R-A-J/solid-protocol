@@ -36,6 +36,8 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js';
 import { Buffer } from 'buffer';
 import * as fs from 'fs';
 import * as path from 'path';
+export * from './credential-requests.js';
+export * from './credential-integrity.js';
 
 /**
  * Read an `<artifact>.sha256` sidecar file if present.  Returns the

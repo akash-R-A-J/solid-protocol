@@ -4,6 +4,12 @@ Status: final operator checklist for the first public devnet feedback run.
 Scope: `solid-protocol`, `ts-sdk`, `solid-channel`, `solid-wallet`, and
 `solid-console`.
 
+Last updated: 2026-05-06. Protocol deployment is partially live on public
+devnet. Fresh `basic_identity_v2` issue -> root sync -> proof -> on-chain
+verify -> replay rejection is green, but the public feedback run is still
+blocked by hosted artifacts, an indexer/API, public solid-sim URL, and a
+four-role solid-sim smoke.
+
 This checklist is intentionally strict. A public tester should be able to
 install the wallet, open the console, issue a credential, request a proof,
 and verify it on devnet without local monorepo knowledge or hidden manual
@@ -24,8 +30,9 @@ Do not call the system "devnet ready" until these are true:
   proofs, and a real holder credential package.
 - Console issuer, DAO, holder-facing issuance, and verifier flows use real
   protocol calls and show honest empty/error states when data is missing.
-- One clean external devnet E2E is recorded, including a successful proof
-  verification transaction and a failed replay attempt.
+- One clean external devnet E2E is recorded from fresh issue to proof,
+  including a successful proof verification transaction and a failed replay
+  attempt.
 
 ## Current Canonical Program IDs
 
@@ -54,9 +61,9 @@ If any ID changes, update every consumer before shipping:
 
 ### 0. Freeze The Devnet Source Of Truth
 
-- [ ] Make `solid-protocol/deployments/devnet.json` the canonical machine
+- [~] Make `solid-protocol/deployments/devnet.json` the canonical machine
   manifest for devnet.
-- [ ] Add or confirm fields for:
+- [~] Add or confirm fields for:
   - cluster RPC and websocket URL
   - all program IDs
   - deployed git commit
@@ -73,8 +80,15 @@ If any ID changes, update every consumer before shipping:
   - wallet release URL or extension package URL
 - [ ] Replace scattered production constants with manifest or env-driven
   loading in SDK, wallet, console, examples, and docs.
-- [ ] Add a short script/check that fails when manifest program IDs disagree
+- [X] Add a short script/check that fails when manifest program IDs disagree
   with `Anchor.toml`, generated IDLs, or SDK constants.
+- [X] Add separate localnet/devnet env profiles for protocol scripts,
+  solid-sim, and the extension wallet.
+
+Current state: the manifest has live program, deployer, upgrade authority,
+`basic_identity_v2`, tree, root, sample issuer, sample credential, and
+existing-sample verify fields. Artifact, indexer, console, and wallet URLs
+remain null until hosted.
 
 Acceptance: a fresh app, wallet, and console can all load the same devnet
 manifest and agree on programs, artifacts, schemas, roots, and indexer URL.
@@ -88,7 +102,7 @@ cd solid-protocol
 bash scripts/bootstrap.sh
 export PATH="$PWD/.toolchain/bin:$PATH"
 
-anchor build
+NO_DNA=1 anchor build --no-idl
 npm run build:idl
 npm run check-vectors
 
@@ -105,9 +119,9 @@ npm run e2e
 - [ ] IDLs regenerate.
 - [ ] Vector checks pass.
 - [ ] SDK packages build.
-- [ ] Local E2E completes: initialize, backfill issuer tree, bootstrap schema
+- [X] Local E2E completes: initialize, backfill issuer tree, bootstrap schema
   tree, bootstrap issuer, issue credential, generate proof, verify proof.
-- [ ] Replay/nullifier reuse is rejected.
+- [X] Replay/nullifier reuse is rejected.
 
 Acceptance: localnet is green before touching devnet.
 
@@ -116,16 +130,36 @@ Acceptance: localnet is green before touching devnet.
 Configure deployer:
 
 ```bash
-solana config set --url devnet --keypair ~/.config/solana/id.json
-solana balance
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+solana config set --url devnet --keypair "$SOLID_KEYPAIR_PATH"
+solana balance --keypair "$SOLID_KEYPAIR_PATH" --url devnet
 ```
 
 Deploy:
 
 ```bash
 cd solid-protocol
-anchor build
-anchor deploy --provider.cluster devnet
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
+solana program deploy target/deploy/schema_registry.so \
+  --program-id target/deploy/schema_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/zk_verifier.so \
+  --program-id target/deploy/zk_verifier-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/issuer_registry.so \
+  --program-id target/deploy/issuer_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
 ```
 
 Then verify:
@@ -136,11 +170,11 @@ solana program show 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx --url devnet
 solana program show DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb --url devnet
 ```
 
-- [ ] `schema_registry` is executable.
-- [ ] `issuer_registry` is executable.
-- [ ] `zk_verifier` is executable.
-- [ ] Upgrade authority is the intended devnet authority.
-- [ ] `deployments/devnet.json` has non-null `deployed_at`, deployer, and
+- [X] `schema_registry` is executable.
+- [X] `issuer_registry` is executable.
+- [X] `zk_verifier` is executable.
+- [X] Upgrade authority is the intended devnet authority.
+- [X] `deployments/devnet.json` has non-null `deployed_at`, deployer, and
   upgrade authority fields.
 
 Acceptance: the three canonical program IDs resolve to executable accounts
@@ -153,22 +187,37 @@ Use the devnet deployer:
 ```bash
 cd solid-protocol
 export ANCHOR_PROVIDER_URL=https://api.devnet.solana.com
-export ANCHOR_WALLET=~/.config/solana/id.json
+export ANCHOR_WALLET="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLID_KEYPAIR_PATH="$ANCHOR_WALLET"
+export SOLANA_KEYPAIR_PATH="$ANCHOR_WALLET"
+export SOLID_ALLOW_NON_LOCALNET=1
+export SOLID_SCHEMA_NAME=basic_identity_v2
+export SOLID_SCHEMA_VERSION=2
+export SOLID_SCHEMA_CATEGORY=Identity
+export SOLID_SCHEMA_FIELDS=age,country_code,region,id_type,verification_level,issued_date,nationality,_reserved
+export SOLID_SCHEMA_TREE_DEPTH=20
 
 npm run init-onchain
 npm run backfill-issuer-tree
 npm run bootstrap-schema-tree
+npm run bootstrap-issuer
+npm run issue
+npm run prove
 ```
 
-- [ ] Verifier config PDA exists.
-- [ ] Main batch verification key is uploaded, finalized, and frozen.
-- [ ] Subgroup verification key is uploaded, finalized, and frozen.
-- [ ] Issuer registry config exists.
-- [ ] DAO treasury exists.
-- [ ] Issuer tree binding exists.
-- [ ] Global state binding exists.
-- [ ] Launch schema tree bindings exist.
-- [ ] Manifest records every generated PDA/tree address.
+- [X] Verifier config PDA exists.
+- [X] Main batch verification key is uploaded and finalized.
+- [X] Subgroup verification key is uploaded and finalized.
+- [X] Issuer registry config exists.
+- [X] DAO treasury exists.
+- [X] Issuer tree binding exists.
+- [X] Global state binding exists.
+- [~] Launch schema tree bindings exist. Current smoke schema is
+  `basic_identity_v2`; full launch schema set remains pending.
+- [X] Manifest records generated smoke PDA/tree/root addresses.
+- [X] On-chain devnet `verify_batch_proof_v2` succeeds and replay rejects.
+  Fresh sample tx:
+  `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE`.
 
 Acceptance: console and SDK can read initialized devnet accounts without
 falling back to local placeholders.
@@ -177,7 +226,8 @@ falling back to local placeholders.
 
 Start with a small real schema catalog. Suggested first schemas:
 
-- `basic_identity_v1`
+- `basic_identity_v2` (current smoke schema; already live)
+- `basic_identity_v1` (re-register with a depth-20 tree before launch)
 - `student_status_v1`
 - `employment_v1`
 - `dao_membership_v1`
@@ -188,9 +238,9 @@ For each schema:
 - [ ] Add schema JSON in the repo.
 - [ ] Define field names, field indices, field types, and allowed predicates.
 - [ ] Compute canonical schema hash.
-- [ ] Register schema on devnet.
-- [ ] Create or bind the per-schema credential tree.
-- [ ] Add schema metadata to `deployments/devnet.json`.
+- [~] Register schema on devnet.
+- [~] Create or bind the per-schema credential tree.
+- [~] Add schema metadata to `deployments/devnet.json`.
 - [ ] Add the schema to the public schema API.
 - [ ] Confirm console displays the schema from live data.
 - [ ] Confirm wallet can use the schema hash for holder key derivation.
@@ -198,6 +248,10 @@ For each schema:
 
 Acceptance: an issuer and verifier can independently reference the same
 schema by hash and field indices.
+
+Current state: `basic_identity_v2` is the only documented live smoke schema
+and uses a depth-20 tree. Do not use the early depth-16
+`basic_identity_v1` binding with the current batch circuit.
 
 ### 5. Host Pinned Circuit Artifacts
 
@@ -327,8 +381,10 @@ approve a verifier request, and return a proof to a dApp.
 Recommended production env:
 
 ```text
+VITE_SOLID_NETWORK=devnet
 VITE_SOLID_CLUSTER=devnet
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com
+VITE_SOLID_WS_URL=wss://api.devnet.solana.com
 VITE_SOLID_MANIFEST_URL=https://your-domain.example/manifest
 VITE_SOLID_ARTIFACT_BASE_URL=https://your-artifacts.example/solid/devnet/v0.1.0
 VITE_SOLID_INDEXER_URL=https://your-api.example
@@ -477,8 +533,8 @@ I can do these directly in the repository:
 - Add scripts that verify artifact hashes and program ID consistency.
 - Add local smoke tests for manifest loading, SDK imports, wallet provider
   envelopes, and console config.
-- Add indexer API contract types and a minimal indexer implementation if you
-  want it in this repo.
+- Maintain the in-repo indexer implementation at `indexer/` and keep its
+  Merkle-proof plus credential-request API tests green.
 - Add reference issuer and verifier apps.
 - Run local builds/tests and fix repo-side failures.
 

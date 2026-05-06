@@ -34,10 +34,13 @@ import {
   ISSUER_REGISTRY_PROGRAM_ID,
   SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
   SPL_NOOP_PROGRAM_ID,
-  deriveSchemaAccount,
-  deriveSchemaTreeBinding,
-  deriveTreeAuthority,
-} from '@solid-protocol/light';
+  deriveIssuerAccountPda,
+  deriveIssuerSchemaPermissionPda,
+  deriveSchemaAccountPda,
+  deriveSchemaTreeBindingPda,
+  deriveTreeAuthorityPda,
+  type IssuerRegistryProgramIdOverrides,
+} from './registry.js';
 import {
   Connection,
   Keypair,
@@ -116,17 +119,46 @@ export interface IssueOptions {
   extraSigners?: Keypair[];
   /** Override to avoid sending (returns the assembled tx for inspection). */
   dryRun?: boolean;
+  /** Program IDs sourced from a deployment manifest. Defaults to canonical SolID devnet IDs. */
+  programIds?: IssuerRegistryProgramIdOverrides;
 }
 
 // ─── Instruction construction ─────────────────────────────────────────────
 
 /** `(b"issuer", authority)` under `issuer-registry`. */
-export function deriveIssuerAccount(authority: PublicKey): { pda: PublicKey; bump: number } {
-  const [pda, bump] = PublicKey.findProgramAddressSync(
+export function deriveIssuerAccount(
+  authority: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): { pda: PublicKey; bump: number } {
+  const programId = programIds?.issuerRegistry ?? ISSUER_REGISTRY_PROGRAM_ID;
+  const [, bump] = PublicKey.findProgramAddressSync(
     [Buffer.from('issuer'), authority.toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
+    programId,
   );
-  return { pda, bump };
+  return {
+    pda: deriveIssuerAccountPda(authority, programIds),
+    bump,
+  };
+}
+
+/** `(b"issuer-schema", issuer_account, schemaHash)` under `issuer-registry`. */
+export function deriveIssuerSchemaPermission(
+  issuerAccount: PublicKey,
+  schemaHash: Uint8Array,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): { pda: PublicKey; bump: number } {
+  if (schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${schemaHash.length}`);
+  }
+  const programId = programIds?.issuerRegistry ?? ISSUER_REGISTRY_PROGRAM_ID;
+  const [, bump] = PublicKey.findProgramAddressSync(
+    [Buffer.from('issuer-schema'), issuerAccount.toBuffer(), Buffer.from(schemaHash)],
+    programId,
+  );
+  return {
+    pda: deriveIssuerSchemaPermissionPda(issuerAccount, schemaHash, programIds),
+    bump,
+  };
 }
 
 /**
@@ -134,14 +166,15 @@ export function deriveIssuerAccount(authority: PublicKey): { pda: PublicKey; bum
  *
  * Account order (MUST match the on-chain `IssueCredential` context in
  * `programs/issuer-registry/src/lib.rs`, post-SOLID-SEC-003):
- *   0. issuer_account          (writable, PDA)
- *   1. issuer_authority        (signer)
- *   2. schema_account          (read-only, PDA under schema-registry)
- *   3. schema_tree_binding     (read-only, PDA under schema-registry)
- *   4. tree_authority          (PDA; SPL AC sees it as signer via CPI)
- *   5. merkle_tree             (writable)
- *   6. log_wrapper             (spl-noop)
- *   7. compression_program     (SPL AC)
+ *   0. issuer_account             (writable, PDA)
+ *   1. issuer_authority           (signer)
+ *   2. issuer_schema_permission   (read-only, PDA)
+ *   3. schema_account             (read-only, PDA under schema-registry)
+ *   4. schema_tree_binding        (read-only, PDA under schema-registry)
+ *   5. tree_authority             (PDA; SPL AC sees it as signer via CPI)
+ *   6. merkle_tree                (writable)
+ *   7. log_wrapper                (spl-noop)
+ *   8. compression_program        (SPL AC)
  *
  * `schemaName` + `schemaVersion` are required to derive the
  * `SchemaAccount` PDA.  These should match exactly what was passed to
@@ -155,6 +188,7 @@ export function buildIssueCredentialIx(
   schemaHash: Uint8Array,
   commitment: Uint8Array,
   merkleTree: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
 ): TransactionInstruction {
   if (schemaHash.length !== 32) {
     throw new Error(`schemaHash must be 32 bytes, got ${schemaHash.length}`);
@@ -163,10 +197,11 @@ export function buildIssueCredentialIx(
     throw new Error(`commitment must be 32 bytes, got ${commitment.length}`);
   }
 
-  const { pda: issuerAccount } = deriveIssuerAccount(issuerAuthority);
-  const { pda: schemaAccount } = deriveSchemaAccount(schemaName, schemaVersion);
-  const { pda: schemaTreeBinding } = deriveSchemaTreeBinding(schemaHash);
-  const { pda: treeAuthority } = deriveTreeAuthority(schemaHash);
+  const issuerAccount = deriveIssuerAccountPda(issuerAuthority, programIds);
+  const issuerSchemaPermission = deriveIssuerSchemaPermissionPda(issuerAccount, schemaHash, programIds);
+  const schemaAccount = deriveSchemaAccountPda(schemaName, schemaVersion, programIds);
+  const schemaTreeBinding = deriveSchemaTreeBindingPda(schemaHash, programIds);
+  const treeAuthority = deriveTreeAuthorityPda(schemaHash, programIds);
 
   const data = Buffer.concat([
     Buffer.from(ISSUE_CREDENTIAL_DISCRIMINATOR),
@@ -175,10 +210,11 @@ export function buildIssueCredentialIx(
   ]);
 
   return new TransactionInstruction({
-    programId: ISSUER_REGISTRY_PROGRAM_ID,
+    programId: programIds?.issuerRegistry ?? ISSUER_REGISTRY_PROGRAM_ID,
     keys: [
       { pubkey: issuerAccount, isSigner: false, isWritable: true },
       { pubkey: issuerAuthority, isSigner: true, isWritable: false },
+      { pubkey: issuerSchemaPermission, isSigner: false, isWritable: false },
       { pubkey: schemaAccount, isSigner: false, isWritable: false },
       { pubkey: schemaTreeBinding, isSigner: false, isWritable: false },
       { pubkey: treeAuthority, isSigner: false, isWritable: false },
@@ -232,6 +268,7 @@ export async function issueCredential(
     request.schemaHash,
     commitment,
     options.merkleTree,
+    options.programIds,
   );
 
   const tx = new Transaction().add(ix);

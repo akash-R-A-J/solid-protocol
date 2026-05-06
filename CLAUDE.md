@@ -18,6 +18,32 @@ history; the 2026-04-24 v0.6 audit and the older
 docs/POST_REMEDIATION_AUDIT.md are flagged historical at the top
 of those files.
 
+## Current devnet handoff
+
+Read `plan/RESUME.md` first when resuming deployment work. As of
+2026-05-06, public devnet is partially live:
+
+- Deployer: `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`
+  (`~/.config/solana/solid-devnet-admin.json` locally).
+- Programs are deployed at the canonical IDs below.
+- Registry config, verifier config/VKs, issuer tree, global binding,
+  `basic_identity_v2` depth-20 schema tree, one sample issuer, and one
+  sample credential exist on devnet.
+- Local proof generation and local `snarkjs.groth16.verify` were green
+  before the verifier retest.
+- The deployer is funded (`10.0370586 SOL`) and `zk_verifier` was upgraded
+  from current source on 2026-05-06.
+- On-chain devnet `verify_batch_proof_v2` retest is now blocked earlier by
+  schema `BindingRootStale` during `scripts/prove.ts`; refresh the live
+  schema-tree path or use a fresh depth-20 launch schema/tree before rerun.
+- `solid-console` is now being used as `solid-sim`: DAO, Issuer, Wallet,
+  and Verifier in one tester app. Wallet derives real holder material,
+  imports encrypted envelopes, validates integrity, and only proves with
+  real artifacts plus an indexer.
+- Artifact, indexer, solid-sim, and wallet release URLs are intentionally
+  still null in `deployments/devnet.json`; public tester onboarding waits
+  on those hosted services.
+
 ## Hard invariants
 
 The following are load-bearing. Breaking any of them will silently compromise
@@ -108,7 +134,8 @@ wasm-pack build wasm/ --target nodejs \
 # keypairs and the canonical program IDs drift). The script is
 # idempotent.
 bash scripts/sync_program_keypairs.sh
-anchor build
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
 
 # TS SDK workspace
 cd ts-sdk && npm ci && npm run build && cd ..

@@ -13,23 +13,62 @@ export const ISSUER_REGISTRY_PROGRAM_ID = new PublicKey(CORE_PROGRAM_IDS.issuerR
 export const SCHEMA_REGISTRY_PROGRAM_ID = new PublicKey(CORE_PROGRAM_IDS.schemaRegistry);
 export const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 export const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+export const SPL_ACCOUNT_COMPRESSION_PROGRAM_ID = new PublicKey('cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK');
+export const SPL_NOOP_PROGRAM_ID = new PublicKey('noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV');
 
 export const REGISTER_ISSUER_DISCRIMINATOR = Uint8Array.from([145, 117, 52, 59, 189, 27, 127, 18]);
 export const STAKE_TOKENS_DISCRIMINATOR = Uint8Array.from([136, 126, 91, 162, 40, 131, 13, 127]);
 export const VOTE_ON_ISSUER_DISCRIMINATOR = Uint8Array.from([153, 66, 52, 109, 141, 13, 129, 61]);
 export const FINALIZE_VOTING_DISCRIMINATOR = Uint8Array.from([195, 61, 27, 72, 252, 138, 175, 13]);
+export const GRANT_SCHEMA_PERMISSION_DISCRIMINATOR = Uint8Array.from([225, 219, 158, 116, 212, 110, 206, 108]);
+export const REVOKE_SCHEMA_PERMISSION_DISCRIMINATOR = Uint8Array.from([127, 210, 35, 147, 68, 83, 2, 217]);
 
 export const ISSUER_ACCOUNT_DISCRIMINATOR = Uint8Array.from([126, 234, 14, 239, 71, 204, 88, 61]);
+export const ISSUER_SCHEMA_PERMISSION_DISCRIMINATOR = Uint8Array.from([132, 162, 241, 163, 114, 123, 177, 183]);
 export const REGISTRY_CONFIG_DISCRIMINATOR = Uint8Array.from([23, 118, 10, 246, 173, 231, 243, 156]);
 export const STAKER_ACCOUNT_DISCRIMINATOR = Uint8Array.from([12, 152, 43, 218, 164, 11, 150, 174]);
 export const SUBGROUP_VERIFIER_CONFIG_DISCRIMINATOR = Uint8Array.from([136, 192, 171, 162, 185, 137, 180, 109]);
 export const SCHEMA_ACCOUNT_DISCRIMINATOR = Uint8Array.from([216, 80, 253, 155, 77, 255, 31, 57]);
 
 export const ISSUER_ACCOUNT_DISCRIMINATOR_BASE58 = base58Encode(ISSUER_ACCOUNT_DISCRIMINATOR);
+export const ISSUER_SCHEMA_PERMISSION_DISCRIMINATOR_BASE58 = base58Encode(ISSUER_SCHEMA_PERMISSION_DISCRIMINATOR);
 export const SCHEMA_ACCOUNT_DISCRIMINATOR_BASE58 = base58Encode(SCHEMA_ACCOUNT_DISCRIMINATOR);
 
 export const ISSUER_TREE_BINDING_DISCRIMINATOR = new TextEncoder().encode('issrtree');
 export const ISSUER_TREE_BINDING_SIZE = 113;
+
+export interface IssuerRegistryProgramIdOverrides {
+  issuerRegistry?: PublicKey;
+  schemaRegistry?: PublicKey;
+  tokenProgram?: PublicKey;
+  associatedTokenProgram?: PublicKey;
+}
+
+interface ResolvedIssuerRegistryProgramIds {
+  issuerRegistry: PublicKey;
+  schemaRegistry: PublicKey;
+  tokenProgram: PublicKey;
+  associatedTokenProgram: PublicKey;
+}
+
+const pdaCache = new Map<string, PublicKey>();
+
+function resolveProgramIds(overrides?: IssuerRegistryProgramIdOverrides): ResolvedIssuerRegistryProgramIds {
+  return {
+    issuerRegistry: overrides?.issuerRegistry ?? ISSUER_REGISTRY_PROGRAM_ID,
+    schemaRegistry: overrides?.schemaRegistry ?? SCHEMA_REGISTRY_PROGRAM_ID,
+    tokenProgram: overrides?.tokenProgram ?? TOKEN_PROGRAM_ID,
+    associatedTokenProgram: overrides?.associatedTokenProgram ?? ASSOCIATED_TOKEN_PROGRAM_ID,
+  };
+}
+
+function memoPda(key: string, derive: () => PublicKey): PublicKey {
+  const cached = pdaCache.get(key);
+  if (cached) return cached;
+  const pda = derive();
+  pdaCache.set(key, pda);
+  return pda;
+}
 
 export type IssuerTierName = 'community' | 'enterprise' | 'regulated' | 'government';
 
@@ -101,6 +140,20 @@ export interface IssuerAccountSummary {
   dataSize: number;
 }
 
+export interface IssuerSchemaPermissionSummary {
+  pda: string;
+  issuer: string;
+  issuerAuthority: string;
+  schemaHash: string;
+  schemaAccount: string;
+  grantedBy: string;
+  grantedAt: bigint;
+  revokedAt: bigint;
+  active: boolean;
+  bump: number;
+  dataSize: number;
+}
+
 export interface SchemaAccountSummary {
   pda: string;
   authority: string;
@@ -141,74 +194,212 @@ export interface IssuerTreeBindingSummary {
   status: 'active' | 'frozen' | 'unknown';
 }
 
-export function deriveIssuerAccountPda(authority: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('issuer'), authority.toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveIssuerAccountPda(
+  authority: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`issuer:${ids.issuerRegistry.toBase58()}:${authority.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer'), authority.toBuffer()],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveStakerAccountPda(voter: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('staker'), voter.toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveSchemaAccountPda(
+  name: string,
+  version: number,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  if (!Number.isInteger(version) || version < 0 || version > 0xff) {
+    throw new Error(`schema version must be a u8 in [0, 255], got ${version}`);
+  }
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`schema:${ids.schemaRegistry.toBase58()}:${name}:${version}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('schema'), Buffer.from(name, 'utf8'), Uint8Array.from([version])],
+      ids.schemaRegistry,
+    )[0],
+  );
 }
 
-export function deriveRegistryConfigPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('registry-config')],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveIssuerSchemaPermissionPda(
+  issuerAccount: PublicKey,
+  schemaHash: Uint8Array,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  if (schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${schemaHash.length}`);
+  }
+  const ids = resolveProgramIds(programIds);
+  const schemaHashHex = Buffer.from(schemaHash).toString('hex');
+  return memoPda(`issuer-schema:${ids.issuerRegistry.toBase58()}:${issuerAccount.toBase58()}:${schemaHashHex}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer-schema'), issuerAccount.toBuffer(), Buffer.from(schemaHash)],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveStakeVaultPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('stake-vault')],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveStakerAccountPda(
+  voter: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`staker:${ids.issuerRegistry.toBase58()}:${voter.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('staker'), voter.toBuffer()],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveSubgroupVerifierConfigPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('subgroup-verifier-config')],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveRegistryConfigPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`registry-config:${ids.issuerRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('registry-config')],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveSubgroupVkStoragePda(configPda = deriveSubgroupVerifierConfigPda()): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('subgroup-vk-storage'), configPda.toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveStakeVaultPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`stake-vault:${ids.issuerRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('stake-vault')],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveIssuerTreeBindingPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('issuer-tree-binding')],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveSubgroupVerifierConfigPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`subgroup-verifier-config:${ids.issuerRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('subgroup-verifier-config')],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveGovernanceVaultPda(): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('governance-vault'), deriveRegistryConfigPda().toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveSubgroupVkStoragePda(
+  configPda?: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  const config = configPda ?? deriveSubgroupVerifierConfigPda(programIds);
+  return memoPda(`subgroup-vk-storage:${ids.issuerRegistry.toBase58()}:${config.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('subgroup-vk-storage'), config.toBuffer()],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveVoteRecordPda(issuerAccount: PublicKey, voter: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [Buffer.from('vote'), issuerAccount.toBuffer(), voter.toBuffer()],
-    ISSUER_REGISTRY_PROGRAM_ID,
-  )[0];
+export function deriveIssuerTreeBindingPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`issuer-tree-binding:${ids.issuerRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer-tree-binding')],
+      ids.issuerRegistry,
+    )[0],
+  );
 }
 
-export function deriveAssociatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-  )[0];
+export function deriveIssuerTreeAuthorityPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`issuer-tree-authority:${ids.issuerRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('issuer-tree-authority')],
+      ids.issuerRegistry,
+    )[0],
+  );
+}
+
+export function deriveTreeAuthorityPda(
+  schemaHash: Uint8Array,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  if (schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${schemaHash.length}`);
+  }
+  const ids = resolveProgramIds(programIds);
+  const schemaHashHex = Buffer.from(schemaHash).toString('hex');
+  return memoPda(`tree-authority:${ids.issuerRegistry.toBase58()}:${schemaHashHex}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('tree-authority'), Buffer.from(schemaHash)],
+      ids.issuerRegistry,
+    )[0],
+  );
+}
+
+export function deriveSchemaTreeBindingPda(
+  schemaHash: Uint8Array,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  if (schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${schemaHash.length}`);
+  }
+  const ids = resolveProgramIds(programIds);
+  const schemaHashHex = Buffer.from(schemaHash).toString('hex');
+  return memoPda(`schema-tree-binding:${ids.schemaRegistry.toBase58()}:${schemaHashHex}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('schema-tree-binding'), Buffer.from(schemaHash)],
+      ids.schemaRegistry,
+    )[0],
+  );
+}
+
+export function deriveGlobalBindingPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`global-binding:${ids.schemaRegistry.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('global-binding')],
+      ids.schemaRegistry,
+    )[0],
+  );
+}
+
+export function deriveGovernanceVaultPda(programIds?: IssuerRegistryProgramIdOverrides): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  const registryConfig = deriveRegistryConfigPda(programIds);
+  return memoPda(`governance-vault:${ids.issuerRegistry.toBase58()}:${registryConfig.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('governance-vault'), registryConfig.toBuffer()],
+      ids.issuerRegistry,
+    )[0],
+  );
+}
+
+export function deriveVoteRecordPda(
+  issuerAccount: PublicKey,
+  voter: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`vote:${ids.issuerRegistry.toBase58()}:${issuerAccount.toBase58()}:${voter.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from('vote'), issuerAccount.toBuffer(), voter.toBuffer()],
+      ids.issuerRegistry,
+    )[0],
+  );
+}
+
+export function deriveAssociatedTokenAddress(
+  owner: PublicKey,
+  mint: PublicKey,
+  programIds?: IssuerRegistryProgramIdOverrides,
+): PublicKey {
+  const ids = resolveProgramIds(programIds);
+  return memoPda(`ata:${ids.associatedTokenProgram.toBase58()}:${ids.tokenProgram.toBase58()}:${owner.toBase58()}:${mint.toBase58()}`, () =>
+    PublicKey.findProgramAddressSync(
+      [owner.toBuffer(), ids.tokenProgram.toBuffer(), mint.toBuffer()],
+      ids.associatedTokenProgram,
+    )[0],
+  );
 }
 
 export function estimateIssuerStakeLamports(
@@ -228,7 +419,9 @@ export function buildRegisterIssuerTransaction(params: {
   bjjPubKeyY: Uint8Array;
   tier: IssuerTierName;
   subgroupProof: Uint8Array;
+  programIds?: IssuerRegistryProgramIdOverrides;
 }): Transaction {
+  const ids = resolveProgramIds(params.programIds);
   const name = params.name.trim();
   const metadataUri = params.metadataUri.trim();
   if (!name) throw new Error('Issuer name is required.');
@@ -253,13 +446,13 @@ export function buildRegisterIssuerTransaction(params: {
   return new Transaction().add(
     ComputeBudgetProgram.setComputeUnitLimit({ units: 650_000 }),
     new TransactionInstruction({
-      programId: ISSUER_REGISTRY_PROGRAM_ID,
+      programId: ids.issuerRegistry,
       keys: [
-        { pubkey: deriveRegistryConfigPda(), isSigner: false, isWritable: true },
-        { pubkey: deriveIssuerAccountPda(params.authority), isSigner: false, isWritable: true },
-        { pubkey: deriveStakeVaultPda(), isSigner: false, isWritable: true },
-        { pubkey: deriveSubgroupVerifierConfigPda(), isSigner: false, isWritable: false },
-        { pubkey: deriveSubgroupVkStoragePda(), isSigner: false, isWritable: false },
+        { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: true },
+        { pubkey: deriveIssuerAccountPda(params.authority, params.programIds), isSigner: false, isWritable: true },
+        { pubkey: deriveStakeVaultPda(params.programIds), isSigner: false, isWritable: true },
+        { pubkey: deriveSubgroupVerifierConfigPda(params.programIds), isSigner: false, isWritable: false },
+        { pubkey: deriveSubgroupVkStoragePda(undefined, params.programIds), isSigner: false, isWritable: false },
         { pubkey: params.authority, isSigner: true, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
@@ -272,26 +465,29 @@ export function buildStakeTokensTransaction(params: {
   voter: PublicKey;
   governanceMint: PublicKey;
   amount: bigint;
+  programIds?: IssuerRegistryProgramIdOverrides;
 }): Transaction {
+  const ids = resolveProgramIds(params.programIds);
   if (params.amount <= 0n) throw new Error('Stake amount must be positive.');
-  const voterTokenAccount = deriveAssociatedTokenAddress(params.voter, params.governanceMint);
+  const voterTokenAccount = deriveAssociatedTokenAddress(params.voter, params.governanceMint, params.programIds);
   return new Transaction().add(
     buildCreateAssociatedTokenAccountIdempotentIx({
       payer: params.voter,
       owner: params.voter,
       mint: params.governanceMint,
       ata: voterTokenAccount,
+      programIds: params.programIds,
     }),
     new TransactionInstruction({
-      programId: ISSUER_REGISTRY_PROGRAM_ID,
+      programId: ids.issuerRegistry,
       keys: [
-        { pubkey: deriveRegistryConfigPda(), isSigner: false, isWritable: false },
-        { pubkey: deriveStakerAccountPda(params.voter), isSigner: false, isWritable: true },
-        { pubkey: deriveGovernanceVaultPda(), isSigner: false, isWritable: true },
+        { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: false },
+        { pubkey: deriveStakerAccountPda(params.voter, params.programIds), isSigner: false, isWritable: true },
+        { pubkey: deriveGovernanceVaultPda(params.programIds), isSigner: false, isWritable: true },
         { pubkey: params.governanceMint, isSigner: false, isWritable: false },
         { pubkey: voterTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.voter, isSigner: true, isWritable: true },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: ids.tokenProgram, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
       ],
@@ -304,14 +500,16 @@ export function buildVoteOnIssuerTransaction(params: {
   voter: PublicKey;
   issuerAccount: PublicKey;
   approve: boolean;
+  programIds?: IssuerRegistryProgramIdOverrides;
 }): Transaction {
+  const ids = resolveProgramIds(params.programIds);
   return new Transaction().add(new TransactionInstruction({
-    programId: ISSUER_REGISTRY_PROGRAM_ID,
+    programId: ids.issuerRegistry,
     keys: [
-      { pubkey: deriveRegistryConfigPda(), isSigner: false, isWritable: false },
+      { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: false },
       { pubkey: params.issuerAccount, isSigner: false, isWritable: true },
-      { pubkey: deriveVoteRecordPda(params.issuerAccount, params.voter), isSigner: false, isWritable: true },
-      { pubkey: deriveStakerAccountPda(params.voter), isSigner: false, isWritable: true },
+      { pubkey: deriveVoteRecordPda(params.issuerAccount, params.voter, params.programIds), isSigner: false, isWritable: true },
+      { pubkey: deriveStakerAccountPda(params.voter, params.programIds), isSigner: false, isWritable: true },
       { pubkey: params.voter, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
@@ -322,16 +520,69 @@ export function buildVoteOnIssuerTransaction(params: {
 export function buildFinalizeVotingTransaction(params: {
   payer: PublicKey;
   issuerAccount: PublicKey;
+  programIds?: IssuerRegistryProgramIdOverrides;
 }): Transaction {
+  const ids = resolveProgramIds(params.programIds);
   return new Transaction().add(new TransactionInstruction({
-    programId: ISSUER_REGISTRY_PROGRAM_ID,
+    programId: ids.issuerRegistry,
     keys: [
-      { pubkey: deriveRegistryConfigPda(), isSigner: false, isWritable: true },
+      { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: true },
       { pubkey: params.issuerAccount, isSigner: false, isWritable: true },
       { pubkey: params.payer, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
     data: Buffer.from(FINALIZE_VOTING_DISCRIMINATOR),
+  }));
+}
+
+export function buildGrantSchemaPermissionTransaction(params: {
+  registryAuthority: PublicKey;
+  issuerAccount: PublicKey;
+  schemaName: string;
+  schemaVersion: number;
+  schemaHash: Uint8Array;
+  programIds?: IssuerRegistryProgramIdOverrides;
+}): Transaction {
+  const ids = resolveProgramIds(params.programIds);
+  if (params.schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${params.schemaHash.length}`);
+  }
+  const schemaAccount = deriveSchemaAccountPda(params.schemaName, params.schemaVersion, params.programIds);
+  const permission = deriveIssuerSchemaPermissionPda(params.issuerAccount, params.schemaHash, params.programIds);
+  return new Transaction().add(new TransactionInstruction({
+    programId: ids.issuerRegistry,
+    keys: [
+      { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: false },
+      { pubkey: params.issuerAccount, isSigner: false, isWritable: false },
+      { pubkey: schemaAccount, isSigner: false, isWritable: false },
+      { pubkey: permission, isSigner: false, isWritable: true },
+      { pubkey: params.registryAuthority, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from(concatBytes(GRANT_SCHEMA_PERMISSION_DISCRIMINATOR, params.schemaHash)),
+  }));
+}
+
+export function buildRevokeSchemaPermissionTransaction(params: {
+  registryAuthority: PublicKey;
+  issuerAccount: PublicKey;
+  schemaHash: Uint8Array;
+  programIds?: IssuerRegistryProgramIdOverrides;
+}): Transaction {
+  const ids = resolveProgramIds(params.programIds);
+  if (params.schemaHash.length !== 32) {
+    throw new Error(`schemaHash must be 32 bytes, got ${params.schemaHash.length}`);
+  }
+  const permission = deriveIssuerSchemaPermissionPda(params.issuerAccount, params.schemaHash, params.programIds);
+  return new Transaction().add(new TransactionInstruction({
+    programId: ids.issuerRegistry,
+    keys: [
+      { pubkey: deriveRegistryConfigPda(params.programIds), isSigner: false, isWritable: false },
+      { pubkey: params.issuerAccount, isSigner: false, isWritable: false },
+      { pubkey: permission, isSigner: false, isWritable: true },
+      { pubkey: params.registryAuthority, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from(concatBytes(REVOKE_SCHEMA_PERMISSION_DISCRIMINATOR, params.schemaHash)),
   }));
 }
 
@@ -384,6 +635,28 @@ export function decodeIssuerAccount(pubkey: PublicKey, data: Buffer | Uint8Array
     statusEpoch: reader.u64('issuer.status_epoch'),
     issuerTreeLeafIndex: reader.u64('issuer.issuer_tree_leaf_index'),
     isTreeEnrolled: reader.bool('issuer.is_tree_enrolled'),
+    dataSize: data.length,
+  };
+}
+
+export function decodeIssuerSchemaPermission(
+  pubkey: PublicKey,
+  data: Buffer | Uint8Array,
+): IssuerSchemaPermissionSummary {
+  assertDiscriminator(data, ISSUER_SCHEMA_PERMISSION_DISCRIMINATOR, 'IssuerSchemaPermission');
+  const reader = new BorshReader(data);
+  reader.skip(8);
+  return {
+    pda: pubkey.toBase58(),
+    issuer: reader.publicKey(),
+    issuerAuthority: reader.publicKey(),
+    schemaHash: bytesToHex(reader.bytes(32, 'issuer_schema_permission.schema_hash')),
+    schemaAccount: reader.publicKey(),
+    grantedBy: reader.publicKey(),
+    grantedAt: reader.i64('issuer_schema_permission.granted_at'),
+    revokedAt: reader.i64('issuer_schema_permission.revoked_at'),
+    active: reader.bool('issuer_schema_permission.active'),
+    bump: reader.u8('issuer_schema_permission.bump'),
     dataSize: data.length,
   };
 }
@@ -466,16 +739,18 @@ function buildCreateAssociatedTokenAccountIdempotentIx(params: {
   owner: PublicKey;
   mint: PublicKey;
   ata: PublicKey;
+  programIds?: IssuerRegistryProgramIdOverrides;
 }): TransactionInstruction {
+  const ids = resolveProgramIds(params.programIds);
   return new TransactionInstruction({
-    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    programId: ids.associatedTokenProgram,
     keys: [
       { pubkey: params.payer, isSigner: true, isWritable: true },
       { pubkey: params.ata, isSigner: false, isWritable: true },
       { pubkey: params.owner, isSigner: false, isWritable: false },
       { pubkey: params.mint, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: ids.tokenProgram, isSigner: false, isWritable: false },
     ],
     data: Buffer.from([1]),
   });

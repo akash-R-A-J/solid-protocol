@@ -8,8 +8,8 @@
  *   4. Package into self-contained EncryptedEnvelope
  */
 import nacl from 'tweetnacl';
-import { encodeBase64 } from 'tweetnacl-util';
 
+import { encodeBase64 } from './base64.js';
 import type { CredentialBundle, EncryptedEnvelope } from './types.js';
 import { assertChannelPublicKey, assertCredentialBundle } from './validation.js';
 

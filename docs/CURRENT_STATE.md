@@ -2,7 +2,8 @@
 > ===============================
 >
 > Per-component snapshot of the implementation as of v0.6.1
-> (post-Phase-E close-out, 2026-05-02).  Every row is a direct mirror of
+> (post-Phase-E close-out plus partial public devnet deploy,
+> 2026-05-06).  Every row is a direct mirror of
 > a section in [`SYSTEM_VISION.md`](./SYSTEM_VISION.md) so the two
 > documents can be read side-by-side: vision on the left, current
 > reality on the right.
@@ -18,6 +19,29 @@
 >
 > File-and-line references use `path:line` per CLAUDE.md.
 > ASCII-only per CLAUDE.md.
+
+# 0. Current Public Devnet State
+
+The protocol is partially live on public devnet, but the system is not
+public-test-ready yet.
+
+| Area | Current state |
+| ---- | ------------- |
+| Program deployment | `schema_registry`, `issuer_registry`, and `zk_verifier` are deployed at the canonical devnet IDs. |
+| On-chain initialization | Registry config, verifier config, batch VK, subgroup VK, issuer-tree binding, global binding, and one schema-tree binding exist. |
+| Smoke schema | `basic_identity_v2`, version 2, schema hash `6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823`, depth-20 tree. |
+| DAO / issuer smoke | One issuer was registered, voted/finalized, and enrolled in the issuer tree. |
+| Credential smoke | One `basic_identity_v2` credential was issued into the schema tree. |
+| Proof smoke | Fresh devnet issue, root sync, local witness generation, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, and replay rejection are green for `basic_identity_v2`. |
+| Remaining protocol blocker | Protocol terminal smoke is green. Public user testing is now blocked by hosted artifacts, indexer/API, solid-sim deployment, and a four-role solid-sim smoke. |
+| Product state | `solid-console` is now being converted to `solid-sim` with DAO, Issuer, Wallet, and Verifier sections. Wallet derives real holder material, imports encrypted envelopes, validates credential integrity, and only proves with real artifacts plus an indexer. |
+| Product blocker | Public solid-sim/integrator testing still needs hosted artifacts, a Merkle proof indexer/API, and public manifest URLs. |
+
+The public machine-readable snapshot lives in `deployments/devnet.json`.
+The human-readable operational snapshot lives in `docs/DEVNET_STATUS.md`.
+Do not send public testers through the flow until hosted artifacts, the
+indexer/API, and solid-sim are deployed and a four-role solid-sim smoke is
+recorded.
 
 # 1. Programs (the contract)
 
@@ -126,7 +150,7 @@ it with placeholders.
 | `scripts/bootstrap_schema_tree.ts`    | [X]    | Per-schema tree bootstrap (mirrors `backfill_issuer_tree.ts`).  Wired into `npm run e2e` between `backfill-issuer-tree` and `bootstrap-issuer`. |
 | `scripts/bootstrap_issuer.ts`         | [X]    | Compresses register / vote / approve / enroll for one issuer.                                           |
 | `scripts/issue.ts`                    | [X]    | Consumes the schema-tree binding produced by `bootstrap_schema_tree.ts`.                                |
-| `scripts/prove.ts`                    | [X]    | Generates Groth16 proof, verifies on-chain.                                                             |
+| `scripts/prove.ts`                    | [X]    | Localnet verifies on-chain. Public devnet fresh issue/prove/replay is green after live-root-aware root sync and root-update CU budget fix. |
 | `scripts/check_program_ids.py`        | [X]    | CI gate.                                                                                                |
 | `scripts/build_idls.mjs`              | [X]    | Denamespaces account names; required for Anchor TS client to find `issuerAccount` / `schemaAccount`.    |
 

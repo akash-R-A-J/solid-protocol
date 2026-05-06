@@ -1,7 +1,7 @@
 # Integration Guide
 
 > How to integrate SolID Protocol into your Solana dApp
-> **Last refreshed:** 2026-04-20 for v0.2 (SPL Account Compression).
+> **Last refreshed:** 2026-05-06 for the public devnet rollout.
 
 ## Overview
 
@@ -9,8 +9,14 @@ SolID Protocol enables your dApp to verify user credentials privately.
 Users prove they meet requirements (age ≥ 21, country = US, etc.) without
 revealing raw data.
 
-**You only need `@solid-protocol/verifier`** — the holder handles proof
-generation on their side.
+Verifier platforms only need the public manifest, hosted artifacts,
+indexer/Merkle-proof API, and `@solid-protocol/verifier`. The holder
+handles proof generation on their side, usually through SolID Wallet.
+
+Current devnet status: programs and live smoke state exist, but external
+platforms should wait for a published manifest URL, hosted artifact URLs,
+and a known-good devnet `verify_batch_proof_v2` transaction before sending
+public testers through the flow.
 
 ---
 
@@ -22,6 +28,9 @@ generation on their side.
 npm install @solid-protocol/verifier @solid-protocol/core
 ```
 
+For monorepo pilots before npm publication, build `solid-protocol/ts-sdk`
+and consume the local packages through the workspace.
+
 ### Create a Verification Query
 
 ```typescript
@@ -30,7 +39,7 @@ import { verifyOnChain, generateVerifierNonce } from '@solid-protocol/verifier';
 
 // Define what you need to verify
 const query = new QueryBuilder()
-  .schema(schemaHash)                  // Which credential schema
+  .schema(schemaHash)                  // Which credential schema from deployments/devnet.json
   .where(0, 'GTE', 21n)                // age >= 21
   .and(1, 'EQ', 840n)                  // country_code == US (ISO 3166-1)
   .nonce(generateVerifierNonce())      // Fresh nonce (prevents replay)
@@ -70,9 +79,8 @@ app.post('/api/verify-callback', async (req, res) => {
       publicInputs: publicSignals,
       nullifier: new Uint8Array(nullifier),
     },
-    // The verifier reads the SPL-AC tree root indirectly, through the
-    // schema-registry SchemaTreeBinding PDA that `query.schemaHash`
-    // points at. No Light Protocol context is required any more.
+    // The verifier reads roots from the public GlobalStateBinding,
+    // SchemaTreeBinding, and IssuerTreeBinding PDAs listed in the manifest.
   });
 
   if (result.verified) {
@@ -222,7 +230,7 @@ const { treePubkey } = await createCredentialTree({
   connection,
   payer: issuerKeypair,
   schemaHash,
-  maxDepth: 14,        // 16 384 credentials per tree
+  maxDepth: 20,        // Must match batch circuit TREE_DEPTH
   maxBufferSize: 64,
 });
 
@@ -254,6 +262,7 @@ await issueCredential({
 
 | Schema | Fields | Use Case |
 |---|---|---|
+| `basic_identity_v2` | age, country_code, region, id_type, verification_level, issued_date, nationality | Current devnet smoke schema; depth-20 tree |
 | `basic_identity_v1` | age, country, region, id_type, verification_level, issued_date, nationality | Hospitality, age-gating |
 | `vaccination_v1` | vaccine_type, dose, date, authority, batch, expiry, country, age | Healthcare verification |
 | `product_cert_v1` | category, cert_level, audit_date, auditor, score, region, organic, validity | Supply chain |

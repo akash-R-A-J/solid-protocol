@@ -34,6 +34,7 @@ import {
   ensureLookupTable,
   lookupAddressesFromTrees,
 } from '@solid-protocol/verifier';
+import { decodeIssuerTreeBinding } from '@solid-protocol/issuer/registry';
 // SOLID-SEC-058 / CRIT-3: verify the .wasm and .zkey before passing them
 // to snarkjs.  The SDK facade does this for callers of `SolID.prove()`;
 // this script calls `generateBatchProof` directly, so it must verify here.
@@ -47,6 +48,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readState, writeState } from './lib/e2e_state';
 import { loadKeypair } from './lib/keypair';
+import {
+  appendTrackedLeafHex,
+  bytesToHex,
+  flattenSiblings,
+  hexToBytes32,
+  planAppendToLiveRoot,
+} from './lib/root_update_plan';
 
 const PROGRAM_PUBKEYS = {
   zkVerifier: new PublicKey(PROGRAM_IDS.zkVerifier),
@@ -59,6 +67,7 @@ const CREDENTIAL_TREE_DEPTH = Number(process.env.SOLID_SCHEMA_TREE_DEPTH ?? '20'
 /// ADR-0014: fixed issuer-tree depth; matches the circuit's main-component
 /// ISSUER_TREE_DEPTH parameter.
 const ISSUER_TREE_DEPTH = 16;
+const ROOT_UPDATE_COMPUTE_UNITS = 1_200_000;
 
 async function main() {
   await initWasm();
@@ -130,60 +139,53 @@ async function main() {
   //    an indexer.
   console.log('[2/4] Seeding local Merkle replica...');
   const credentialTreeDepth = Number(state.schemaTreeDepth ?? CREDENTIAL_TREE_DEPTH);
-  const credReplica = new LocalReplicaAdapter(credentialTreeDepth, poseidonHashPair);
-  credReplica.appendLeaf(credential.commitment);
+  const schemaIdl = JSON.parse(
+    fs.readFileSync('target/idl/schema_registry.json', 'utf-8'),
+  );
+  if (!schemaIdl.address) schemaIdl.address = PROGRAM_PUBKEYS.schemaRegistry.toBase58();
+  const schemaProgram = new anchor.Program(schemaIdl, provider);
+  const schemaTreeBinding = new PublicKey(state.schemaTreeBindingPda);
+  state.schemaCredentialLeaves = appendTrackedLeafHex(
+    state.schemaCredentialLeaves,
+    credential.commitment,
+  );
 
-  // SOLID-SEC-059 sibling closure (2026-04-30): the schema-tree
-  // binding stores the Poseidon root the circuit consumes via
-  // `merkleRoots[i]`.  Push it on-chain via the integrity-checked
-  // `update_tree_root` ix (handler runs on-chain Poseidon recompute
-  // against this caller-supplied path; refuses any push that doesn't
-  // recompute to `new_root`).
-  {
-    const credProof = await credReplica.fetch(
-      new PublicKey(state.schemaTreeAddress ?? state.schemaTreeBindingPda),
-      credential.commitment,
-    );
-    const credPath = new Uint8Array(credentialTreeDepth * 32);
-    for (let i = 0; i < credentialTreeDepth; i++) {
-      credPath.set(credProof.siblings[i], i * 32);
+  // SOLID-SEC-080 made root pushes live-root anchored.  Devnet runs are not
+  // clean-slate: if this credential's root is already mirrored, skip the tx;
+  // if the local state has pending leaves, append exactly the next one with
+  // old_leaf=[0;32] at the correct live index.
+  let liveSchemaRoot = await readAccountRoot(connection, schemaTreeBinding, 72, 'SchemaTreeBinding');
+  for (;;) {
+    const plan = await planAppendToLiveRoot({
+      depth: credentialTreeDepth,
+      trackedLeafHexes: state.schemaCredentialLeaves,
+      currentRoot: liveSchemaRoot,
+    });
+    if (plan.kind === 'skip') {
+      console.log(`   schema_tree_binding root already current (${bytesToHex(liveSchemaRoot).slice(0, 16)}...)`);
+      break;
     }
-    const schemaIdl = JSON.parse(
-      fs.readFileSync('target/idl/schema_registry.json', 'utf-8'),
-    );
-    if (!schemaIdl.address) schemaIdl.address = PROGRAM_PUBKEYS.schemaRegistry.toBase58();
-    const schemaProgram = new anchor.Program(schemaIdl, provider);
-    // SOLID-SEC-080 (NF-03, 2026-05-01): the on-chain handler now
-    // requires `old_leaf` so it can anchor the caller-supplied path
-    // against the binding's current_root before applying.  On the
-    // FIRST update from a fresh binding (current_root == [0; 32]
-    // sentinel), `old_leaf` is unused -- the anchor short-circuits;
-    // `[0u8; 32]` is the canonical placeholder.
-    //
-    // For subsequent updates, the caller is responsible for tracking
-    // the previous leaf at `leaf_index` and threading it here.  At
-    // this stage of `prove.ts` we are always doing the first update
-    // (one credential per e2e run), so `[0u8; 32]` is correct.
-    const credOldLeaf = new Uint8Array(32);
     await schemaProgram.methods
       .updateTreeRoot(
-        Array.from(Uint8Array.from(Buffer.from(state.schemaHash, 'hex'))),
-        Array.from(credProof.root),
-        Array.from(credOldLeaf),
-        Array.from(credential.commitment),
-        new anchor.BN(0),
-        Buffer.from(credPath),
+        Array.from(hexToBytes32(state.schemaHash, 'schemaHash')),
+        Array.from(plan.newRoot),
+        Array.from(plan.oldLeaf),
+        Array.from(plan.newLeaf),
+        new anchor.BN(plan.leafIndex),
+        Buffer.from(flattenSiblings(plan.siblings, credentialTreeDepth)),
       )
       .accounts({
-        schemaTreeBinding: new PublicKey(state.schemaTreeBindingPda),
+        schemaTreeBinding,
         authority: wallet.publicKey,
       })
       .preInstructions([
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+        ComputeBudgetProgram.setComputeUnitLimit({ units: ROOT_UPDATE_COMPUTE_UNITS }),
       ])
       .rpc();
-    console.log(`   schema_tree_binding root pushed: ${Buffer.from(credProof.root).toString('hex').slice(0, 16)}...`);
+    liveSchemaRoot = plan.newRoot;
+    console.log(`   schema_tree_binding root pushed: ${bytesToHex(plan.newRoot).slice(0, 16)}... (leaf ${plan.leafIndex})`);
   }
+  const credReplica = replicaFromHexLeaves(credentialTreeDepth, state.schemaCredentialLeaves);
 
   // Build the global replica: compute the per-schema identity leaf and seed it.
   //
@@ -196,52 +198,43 @@ async function main() {
   // consumed here.
   const holderMasterPriv = Uint8Array.from(state.holderMaster.private_key);
   const kp = deriveCredentialKey(holderMasterPriv, credential.schemaHash);
-  const globalReplica = new LocalReplicaAdapter(GLOBAL_TREE_DEPTH, poseidonHashPair);
   // identity leaf = Poseidon(credPubX, credPubY, revocationNonce). At this
   // bootstrapping stage revocationNonce is 0.
   const identityLeaf = computeIdentityState(kp.public_key_x, kp.public_key_y, 0n);
-  globalReplica.appendLeaf(identityLeaf);
-
-  // SOLID-SEC-059 sibling closure (2026-04-30): push the global-tree
-  // Poseidon root via the integrity-checked `update_global_root` ix.
-  // The on-chain handler runs Poseidon recompute over `poseidon_proof_path`
-  // and refuses any push that doesn't equal `new_root`.
-  {
-    const globalProof = await globalReplica.fetch(
-      new PublicKey(state.globalBindingPda),
-      identityLeaf,
-    );
-    const globalPath = new Uint8Array(GLOBAL_TREE_DEPTH * 32);
-    for (let i = 0; i < GLOBAL_TREE_DEPTH; i++) {
-      globalPath.set(globalProof.siblings[i], i * 32);
+  const globalBinding = new PublicKey(state.globalBindingPda);
+  state.globalIdentityLeaves = appendTrackedLeafHex(state.globalIdentityLeaves, identityLeaf);
+  let liveGlobalRoot = await readAccountRoot(connection, globalBinding, 8, 'GlobalStateBinding');
+  for (;;) {
+    const plan = await planAppendToLiveRoot({
+      depth: GLOBAL_TREE_DEPTH,
+      trackedLeafHexes: state.globalIdentityLeaves,
+      currentRoot: liveGlobalRoot,
+    });
+    if (plan.kind === 'skip') {
+      console.log(`   global_binding root already current (${bytesToHex(liveGlobalRoot).slice(0, 16)}...)`);
+      break;
     }
-    const schemaIdl = JSON.parse(
-      fs.readFileSync('target/idl/schema_registry.json', 'utf-8'),
-    );
-    if (!schemaIdl.address) schemaIdl.address = PROGRAM_PUBKEYS.schemaRegistry.toBase58();
-    const schemaProgram = new anchor.Program(schemaIdl, provider);
-    // SOLID-SEC-080 (NF-03, 2026-05-01): same anchor as update_tree_root
-    // above.  First-update path; `old_leaf` short-circuits via the
-    // [0; 32] sentinel.
-    const globalOldLeaf = new Uint8Array(32);
     await schemaProgram.methods
       .updateGlobalRoot(
-        Array.from(globalProof.root),
-        Array.from(globalOldLeaf),
-        Array.from(identityLeaf),
-        new anchor.BN(0),
-        Buffer.from(globalPath),
+        Array.from(plan.newRoot),
+        Array.from(plan.oldLeaf),
+        Array.from(plan.newLeaf),
+        new anchor.BN(plan.leafIndex),
+        Buffer.from(flattenSiblings(plan.siblings, GLOBAL_TREE_DEPTH)),
       )
       .accounts({
-        globalBinding: new PublicKey(state.globalBindingPda),
+        globalBinding,
         authority: wallet.publicKey,
       })
       .preInstructions([
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+        ComputeBudgetProgram.setComputeUnitLimit({ units: ROOT_UPDATE_COMPUTE_UNITS }),
       ])
       .rpc();
-    console.log(`   global_binding root pushed: ${Buffer.from(globalProof.root).toString('hex').slice(0, 16)}...`);
+    liveGlobalRoot = plan.newRoot;
+    console.log(`   global_binding root pushed: ${bytesToHex(plan.newRoot).slice(0, 16)}... (leaf ${plan.leafIndex})`);
   }
+  const globalReplica = replicaFromHexLeaves(GLOBAL_TREE_DEPTH, state.globalIdentityLeaves);
+  writeState(state);
 
   // ADR-0014: issuer-tree replica.  Seeded with the issuer's leaf
   // (Poseidon(5) over IssuerAccount preimage).  The resulting root
@@ -249,7 +242,24 @@ async function main() {
   // `verify_batch_proof` rejects with `IssuerTreeRootMismatch`.  On a
   // clean localnet E2E run the backfill script updates the binding
   // root right after `append_issuer_leaf`, and this replica matches.
-  const issuerReplica = new LocalReplicaAdapter(ISSUER_TREE_DEPTH, poseidonHashPair);
+  const issuerIdl = JSON.parse(
+    fs.readFileSync('target/idl/issuer_registry.json', 'utf-8'),
+  );
+  if (!issuerIdl.address) issuerIdl.address = PROGRAM_IDS.issuerRegistry;
+  const issuerProgram = new anchor.Program(issuerIdl, provider);
+  const issuerTreeDepth = Number(state.issuerTreeDepth ?? ISSUER_TREE_DEPTH);
+  const issuerTreeBinding = new PublicKey(state.issuerTreeBindingPda);
+  const issuerTreeBindingInfo = await connection.getAccountInfo(issuerTreeBinding, 'confirmed');
+  if (!issuerTreeBindingInfo) throw new Error(`IssuerTreeBinding not found: ${issuerTreeBinding.toBase58()}`);
+  const liveIssuerBinding = decodeIssuerTreeBinding(issuerTreeBindingInfo.data);
+  const { replica: issuerReplica, root: issuerTreeRoot, count: issuerLeafCount } =
+    await buildIssuerReplicaFromChain(issuerProgram, issuerTreeDepth);
+  if (bytesToHex(issuerTreeRoot) !== liveIssuerBinding.currentRoot) {
+    throw new Error(
+      `Issuer tree replica root ${bytesToHex(issuerTreeRoot)} does not match live binding root ${liveIssuerBinding.currentRoot}. ` +
+      'Re-run bootstrap_issuer/backfill or rebuild issuer-tree history before proving.',
+    );
+  }
   const issuerLeaf = computeIssuerLeaf(
     credential.issuerAuthority.toBytes(),
     credential.issuerPubKeyX,
@@ -257,9 +267,9 @@ async function main() {
     credential.issuerStatusEpoch,
     credential.issuerRevocationNonce,
   );
-  issuerReplica.appendLeaf(issuerLeaf);
-  const issuerTreeRoot = issuerReplica.getRoot();
+  await issuerReplica.fetch(new PublicKey(state.issuerMerkleTreeAddress), issuerLeaf);
   console.log(`[debug] witness issuerTreeRoot (poseidon-replica): ${Buffer.from(issuerTreeRoot).toString('hex')}`);
+  console.log(`[debug] issuer tree leaves replayed:              ${issuerLeafCount}`);
   console.log(`[debug] issuer leaf (poseidon-5):                  ${Buffer.from(issuerLeaf).toString('hex')}`);
   console.log(`[debug] witness globalRoot (poseidon-replica):     ${Buffer.from(globalReplica.getRoot()).toString('hex')}`);
   console.log(`[debug] witness credentialRoot (poseidon-replica): ${Buffer.from(credReplica.getRoot()).toString('hex')}`);
@@ -380,7 +390,6 @@ async function main() {
 
   // 4. Submit to on-chain verifier.
   console.log('[4/4] Submitting verify_batch_proof...');
-  const schemaTreeBinding = new PublicKey(state.schemaTreeBindingPda);
   const trees: SchemaTreeAccounts = {
     globalTree: new PublicKey(state.globalBindingPda),
     // SOLID-SEC-054 / B13: only slot 0 is active in this prove flow
@@ -469,6 +478,52 @@ async function main() {
   }
 
   console.log('\nDone.');
+}
+
+function replicaFromHexLeaves(depth: number, leaves: string[]): LocalReplicaAdapter {
+  const replica = new LocalReplicaAdapter(depth, poseidonHashPair);
+  for (const [index, leaf] of leaves.entries()) {
+    replica.appendLeaf(hexToBytes32(leaf, `trackedLeaf[${index}]`));
+  }
+  return replica;
+}
+
+async function readAccountRoot(
+  connection: Connection,
+  pubkey: PublicKey,
+  offset: number,
+  label: string,
+): Promise<Uint8Array> {
+  const account = await connection.getAccountInfo(pubkey, 'confirmed');
+  if (!account) throw new Error(`${label} not found: ${pubkey.toBase58()}`);
+  if (account.data.length < offset + 32) {
+    throw new Error(`${label} account too small: ${account.data.length} bytes`);
+  }
+  return Uint8Array.from(account.data.subarray(offset, offset + 32));
+}
+
+async function buildIssuerReplicaFromChain(
+  issuerProgram: anchor.Program,
+  depth: number,
+): Promise<{ replica: LocalReplicaAdapter; root: Uint8Array; count: number }> {
+  const replica = new LocalReplicaAdapter(depth, poseidonHashPair);
+  const allIssuers = await (issuerProgram.account as any).issuerAccount.all();
+  const enrolled = allIssuers
+    .map((entry: any) => entry.account)
+    .filter((account: any) => account.isTreeEnrolled)
+    .sort((a: any, b: any) =>
+      Number(a.issuerTreeLeafIndex.toString()) - Number(b.issuerTreeLeafIndex.toString()),
+    );
+  for (const account of enrolled) {
+    replica.appendLeaf(computeIssuerLeaf(
+      account.authority.toBytes(),
+      Uint8Array.from(account.bjjPubKeyX),
+      Uint8Array.from(account.bjjPubKeyY),
+      BigInt(account.statusEpoch.toString()),
+      BigInt(account.revocationNonce.toString()),
+    ));
+  }
+  return { replica, root: replica.getRoot(), count: enrolled.length };
 }
 
 main()

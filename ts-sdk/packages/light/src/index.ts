@@ -38,15 +38,6 @@ import {
   SystemProgram,
   sendAndConfirmTransaction,
 } from '@solana/web3.js';
-import {
-  SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-  SPL_NOOP_PROGRAM_ID,
-  ConcurrentMerkleTreeAccount,
-  createAllocTreeIx,
-  createInitEmptyMerkleTreeIx,
-  getConcurrentMerkleTreeAccountSize,
-  ValidDepthSizePair,
-} from '@solana/spl-account-compression';
 import BN from 'bn.js';
 
 /**
@@ -72,7 +63,13 @@ export const SCHEMA_REGISTRY_PROGRAM_ID = new PublicKey(
   '4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1',
 );
 
-export { SPL_ACCOUNT_COMPRESSION_PROGRAM_ID, SPL_NOOP_PROGRAM_ID };
+export const SPL_ACCOUNT_COMPRESSION_PROGRAM_ID = new PublicKey(
+  'cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK',
+);
+
+export const SPL_NOOP_PROGRAM_ID = new PublicKey(
+  'noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV',
+);
 
 // ─── Hash functions ────────────────────────────────────────────────────────
 
@@ -211,15 +208,18 @@ export async function createCredentialTree(
   const treeKeypair = Keypair.generate();
   const { pda: treeAuthority } = deriveTreeAuthority(schemaHash);
 
-  // SPL Account Compression 0.2.x types `(maxDepth, maxBufferSize)` as a
-  // discriminated union of literal-numeric tuples (`ValidDepthSizePair`).
-  // `TreeParams` accepts dynamic numbers (necessary for runtime configuration),
-  // so we widen via cast here. The runtime check inside `createAllocTreeIx`
-  // still enforces validity against `ALL_DEPTH_SIZE_PAIRS`.
+  // SPL Account Compression validates the depth/buffer pair at runtime.
+  // Keep the import lazy so browser proof flows do not load Node-oriented
+  // generated SPL AC codecs just to use adapters and program IDs.
+  const {
+    createAllocTreeIx,
+    createInitEmptyMerkleTreeIx,
+  } = await loadSplAccountCompression();
+
   const depthSizePair = {
     maxDepth: params.maxDepth,
     maxBufferSize: params.maxBufferSize,
-  } as ValidDepthSizePair;
+  };
 
   const allocIx = await createAllocTreeIx(
     connection,
@@ -251,6 +251,7 @@ export async function getCurrentTreeRoot(
   connection: Connection,
   treeAddress: PublicKey,
 ): Promise<Uint8Array> {
+  const { ConcurrentMerkleTreeAccount } = await loadSplAccountCompression();
   const tree = await ConcurrentMerkleTreeAccount.fromAccountAddress(connection, treeAddress);
   // `getCurrentRoot` returns a `Buffer` in SPL AC 0.2.x (a 32-byte node).
   // Convert to a raw Uint8Array (Buffer is a Uint8Array subclass; copy here
@@ -271,6 +272,7 @@ export async function getTreeState(
   maxBufferSize: number;
   canopyDepth: number;
 }> {
+  const { ConcurrentMerkleTreeAccount } = await loadSplAccountCompression();
   const tree = await ConcurrentMerkleTreeAccount.fromAccountAddress(connection, treeAddress);
   return {
     root: new Uint8Array(tree.getCurrentRoot()),
@@ -536,6 +538,36 @@ export function parseCredentialIssuedEvent(dataB64: string): CredentialIssuedEve
 }
 
 // ─── Backwards-compat shim ─────────────────────────────────────────────────
+
+async function loadSplAccountCompression(): Promise<{
+  ConcurrentMerkleTreeAccount: {
+    fromAccountAddress(connection: Connection, treeAddress: PublicKey): Promise<any>;
+  };
+  createAllocTreeIx: (
+    connection: Connection,
+    treeAddress: PublicKey,
+    payer: PublicKey,
+    depthSizePair: { maxDepth: number; maxBufferSize: number },
+    canopyDepth: number,
+  ) => Promise<TransactionInstruction>;
+  createInitEmptyMerkleTreeIx: (
+    treeAddress: PublicKey,
+    authority: PublicKey,
+    depthSizePair: { maxDepth: number; maxBufferSize: number },
+  ) => TransactionInstruction;
+}> {
+  if (typeof window !== 'undefined') {
+    throw new Error(
+      'SPL Account Compression tree administration is only available in Node.js. ' +
+      'Browser clients should use the indexer/proof adapter APIs.',
+    );
+  }
+
+  const importer = new Function('specifier', 'return import(specifier)') as (
+    specifier: string,
+  ) => Promise<any>;
+  return importer('@solana/spl-account-compression');
+}
 
 /**
  * @deprecated Use `createCredentialTree` instead.  Kept so the current

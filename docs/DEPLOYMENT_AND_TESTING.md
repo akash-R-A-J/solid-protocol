@@ -327,8 +327,29 @@ Follow `docs/PROGRAM_ID_RECONCILIATION.md` for the fix.
 
 ```bash
 solana config set --url devnet
-solana airdrop 2 && solana airdrop 2
-anchor deploy --provider.cluster devnet
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
+
+solana program deploy target/deploy/schema_registry.so \
+  --program-id target/deploy/schema_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/zk_verifier.so \
+  --program-id target/deploy/zk_verifier-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+solana program deploy target/deploy/issuer_registry.so \
+  --program-id target/deploy/issuer_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
 
 # Record the manifest for CI + README consumers.
 python3 scripts/regen_devnet_manifest.py > deployments/devnet.json
@@ -821,16 +842,25 @@ Do not invite external testers until all of these are true:
 - Verifier config is initialized.
 - Batch VK and subgroup VK are uploaded, finalized, and frozen or
   otherwise verified by a freeze-gate runbook.
-- `basic_identity_v1` or the launch schema set is registered on-chain.
+- A circuit-compatible schema tree is registered on-chain. Current smoke
+  schema is `basic_identity_v2` with `SOLID_SCHEMA_TREE_DEPTH=20`;
+  the early `basic_identity_v1` depth-16 binding must not be used for
+  batch-circuit proofs.
 - Issuer tree, schema tree, and global binding accounts are initialized.
 - At least one demo issuer is approved and enrolled in the issuer tree.
 - At least one real credential has been issued into the schema tree.
+- A fresh credential can be issued with the currently deployed
+  `issuer_registry` program/source contract, including issuer/schema
+  permission enforcement.
+- One fresh issue -> proof -> on-chain verify -> replay-reject sequence is
+  recorded. The older smoke credential already verifies on-chain, but it is
+  not enough for public testing after the issuer/schema permission upgrade.
 - Artifact host serves all six circuit artifacts and `.sha256` sidecars
   over HTTPS.
 - Indexer/API serves health, registry views, and Merkle proofs.
-- Published manifest has non-null program, artifact, indexer, console,
+- Published manifest has non-null program, artifact, indexer, solid-sim,
   wallet, schema, tree, and root fields.
-- `solid-console` is deployed with `VITE_SOLID_*` values pointing to the
+- `solid-sim` is deployed with `VITE_SOLID_*` values pointing to the
   published manifest.
 - `solid-wallet` is distributed to testers and restricted to tester
   origins or the risk is explicitly accepted.
@@ -847,11 +877,11 @@ turning the deploy into a workaround.
 | RPC URL and optional WebSocket URL | Public RPC may rate-limit VK upload, tree bootstrap, and E2E proof txs. | Provide a devnet RPC such as Helius/Triton/QuickNode if available; otherwise explicitly approve public devnet RPC. |
 | Artifact host destination | Wallet and verifier need HTTPS URLs for pinned `.wasm`, `.zkey`, and VK JSON files. | Provide a storage target such as Vercel static output, Cloudflare R2, S3, GitHub Pages, or another HTTPS host. |
 | Indexer/API deploy target | Holder proof generation needs live Merkle paths and registry reads. | Choose where the API should run: Vercel/Cloudflare Worker/Fly/Render/Railway/custom VPS. Provide deployment credentials or run the commands locally when prompted. |
-| Console deployment target | Public testers need a stable `solid-console` URL. | Provide Vercel/Netlify/etc. project access, or ask the agent to prepare a local build and exact env var list for you to deploy. |
+| SolID Sim deployment target | Public testers need a stable `solid-sim` URL. | Provide Vercel/Netlify/etc. project access, or ask the agent to prepare a local build and exact env var list for you to deploy. |
 | Wallet distribution method | Testers need the extension build and origin policy. | Choose controlled unpacked extension ZIP, Chrome Web Store private listing, or internal file share. For first devnet test, unpacked ZIP is fastest. |
-| Tester origins | Wallet content script should not inject on all sites for public testing. | Provide the console/demo domains that should be allowed, for example `https://console.example.com/*`. |
+| Tester origins | Wallet content script should not inject on all sites for public testing. | Provide the solid-sim/demo domains that should be allowed, for example `https://sim.example.com/*`. |
 | DAO governance mint and test staker | DAO approval flow needs an actual mint/stake setup. | Provide the mint if one exists, or approve creating a devnet-only governance mint and funded DAO tester. |
-| Launch schema set | Issuer/holder/verifier must agree on schemas. | Approve starting with `schemas/basic_identity_v1.json` or provide additional schema JSON files. |
+| Launch schema set | Issuer/holder/verifier must agree on schemas and credential tree depth. | For smoke tests use `basic_identity_v2` with depth 20. For launch, register each schema with a depth-20 tree; do not reuse the early depth-16 `basic_identity_v1` binding. |
 | Public feedback channel | Testers need one place to report bugs. | Provide GitHub Issues, Linear, Discord channel, or a form URL. |
 
 If any input is missing, stop at the corresponding gate. Do not replace
@@ -863,6 +893,7 @@ proofs.
 ```bash
 bash scripts/bootstrap.sh
 export PATH="$PWD/.toolchain/bin:$PATH"
+source config/devnet.env.example
 
 python3 scripts/check_program_ids.py
 npm run validate:devnet
@@ -876,7 +907,9 @@ Expected:
   literals, and deployments.
 - Manifest schema validates.
 - Local artifact hashes match manifest pins.
-- Smoke output shows null fields until the first sanctioned deploy.
+- Smoke output shows live program/schema/tree fields after the 2026-05-06
+  partial protocol deploy; artifact, indexer, solid-sim, and wallet URLs
+  remain null until hosted.
 
 ### 12.4 Build deployable artifacts
 
@@ -889,7 +922,8 @@ cd ..
 wasm-pack build wasm/ --target nodejs \
   --out-dir ts-sdk/packages/core/wasm --release
 
-anchor build
+NO_DNA=1 anchor build --no-idl
+npm run build:idl
 (cd ts-sdk && npm ci && npm run build && npm test --workspaces --if-present)
 npm install
 ```
@@ -904,8 +938,34 @@ wallets.
 
 ```bash
 solana config set --url devnet
-solana balance
-anchor deploy --provider.cluster devnet
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+solana-keygen pubkey "$SOLID_KEYPAIR_PATH"
+solana balance --keypair "$SOLID_KEYPAIR_PATH"
+
+# Public devnet RPC can rate-limit large uploads. Direct one-program deploys
+# with --use-rpc are easier to resume than one bulk `anchor deploy`.
+solana program deploy target/deploy/schema_registry.so \
+  --program-id target/deploy/schema_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+
+solana program deploy target/deploy/zk_verifier.so \
+  --program-id target/deploy/zk_verifier-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 10
+
+solana program deploy target/deploy/issuer_registry.so \
+  --program-id target/deploy/issuer_registry-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
+
 python3 scripts/check_program_ids.py
 ```
 
@@ -913,7 +973,13 @@ Then initialize and seed the live state:
 
 ```bash
 export SOLID_RPC_URL="https://api.devnet.solana.com"
+export SOLID_ALLOW_NON_LOCALNET=1
 export SOLID_VOTING_PERIOD_SECONDS=120
+export SOLID_SCHEMA_NAME="basic_identity_v2"
+export SOLID_SCHEMA_VERSION=2
+export SOLID_SCHEMA_CATEGORY="Identity"
+export SOLID_SCHEMA_FIELDS="age,country_code,region,id_type,verification_level,issued_date,nationality,_reserved"
+export SOLID_SCHEMA_TREE_DEPTH=20
 
 npm run build:idl
 npm run init-onchain
@@ -926,9 +992,49 @@ npm run prove
 
 The final `prove` step must generate a real Groth16 proof, submit the
 proof-buffer transaction sequence, create the nullifier PDA, and reject
-replay of the same proof. If public devnet latency makes the combined
-pipeline brittle, run each command individually and record every tx
-signature.
+replay of the same proof. Current 2026-05-06 devnet status:
+
+- Existing sample: on-chain `verify_batch_proof_v2` is green at
+  `56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`,
+  and replay rejects.
+- Fresh issue: blocked until `issuer_registry` is upgraded from current
+  source and issuer/schema permission is granted. The missing smoke
+  permission PDA is
+  `4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H`.
+- A public-RPC `issuer_registry` upgrade attempt on 2026-05-06 failed with
+  `Max retries exceeded`; the failed buffer was recovered and closed. Use a
+  reliable devnet RPC for the next upgrade attempt.
+
+If public devnet latency makes the combined pipeline brittle, run each
+command individually and record every tx signature.
+
+If an issuer bootstrap run fails with `StakeTooNew`, wait a few slots and
+rerun `npm run bootstrap-issuer`. The script now persists the generated
+issuer keys before voting so retrying continues the same issuer flow.
+
+If deploy upload fails with a buffer account, inspect and resume or close it:
+
+```bash
+solana program show --buffers \
+  --buffer-authority "$SOLID_KEYPAIR_PATH" \
+  --url devnet --output json
+
+# Resume if the buffer is funded:
+solana program deploy target/deploy/<program>.so \
+  --buffer <BUFFER_ADDRESS> \
+  --program-id target/deploy/<program>-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
+
+# Or close an abandoned buffer:
+solana program close <BUFFER_ADDRESS> \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --authority "$SOLID_KEYPAIR_PATH" \
+  --recipient "$(solana-keygen pubkey "$SOLID_KEYPAIR_PATH")" \
+  --url devnet
+```
 
 ### 12.6 Host artifacts
 
@@ -952,6 +1058,9 @@ Minimum endpoints for user testing:
 ```text
 GET /v1/health
 GET /v1/merkle-proof/:tree/:leaf
+GET /v1/credential-requests
+POST /v1/credential-requests
+PATCH /v1/credential-requests/:id
 GET /v1/issuers
 GET /v1/schemas
 GET /.well-known/solid-protocol.json
@@ -973,6 +1082,11 @@ GET /.well-known/solid-protocol.json
 `lagSlots`, and a manifest hash. For public testing, set an operational
 lag threshold and alert if the indexer falls behind.
 
+`POST /v1/tree-leaves` and `POST /v1/events/credential-issued` are
+operator/write-path endpoints and must require a bearer token. Holder-facing
+proof generation must fail closed with `LEAF_NOT_INDEXED` until the credential
+commitment has actually been ingested.
+
 ### 12.8 Publish manifest and apps
 
 After deployment and infrastructure setup:
@@ -985,13 +1099,14 @@ npm run smoke:devnet-config
 ```
 
 The published manifest must include deployed timestamp, git commit,
-deployer, upgrade authorities, artifact URL/pins, indexer URL, console
+deployer, upgrade authorities, artifact URL/pins, indexer URL, solid-sim
 URL, wallet release URL, schemas, tree addresses, roots, a sample
 issuer, a sample credential commitment, and a known-good verification tx.
 
-Deploy `solid-console` with:
+Deploy or run `solid-sim` from the `solid-console` directory with:
 
 ```bash
+VITE_SOLID_NETWORK=devnet
 VITE_SOLID_CLUSTER=devnet
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com
@@ -1002,9 +1117,58 @@ VITE_SOLID_CONSOLE_URL=https://<console-host>
 VITE_SOLID_EXPLORER_CLUSTER=devnet
 ```
 
+For a local smoke run before Vercel/Netlify:
+
+```bash
+cd ../solid-console
+npm install
+VITE_SOLID_NETWORK=devnet \
+VITE_SOLID_CLUSTER=devnet \
+VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
+VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
+VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
+VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+npm run dev
+```
+
 Build `solid-wallet` with the same manifest/artifact/indexer defaults,
 then distribute `solid-wallet/dist` as an unpacked Chrome/Brave extension
-for controlled testing.
+for controlled testing:
+
+```bash
+cd ../solid-wallet
+npm install
+VITE_SOLID_NETWORK=devnet \
+VITE_SOLID_CLUSTER=devnet \
+VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
+VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
+VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
+VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+npm run build
+```
+
+Until the artifact host and indexer are public, wallet/solid-sim testing is
+operator-local only. For independent issuer/verifier platforms, publish
+`deployments/devnet.json`, the six circuit artifacts, `.sha256` sidecars,
+and an indexer endpoint before sending them the quickstart.
+
+For localnet, use the matching checked-in profiles instead of rewriting
+commands by hand:
+
+```bash
+cd solid-protocol
+source config/localnet.env.example
+
+cd ../solid-console
+cp .env.localnet.example .env
+npm run dev
+
+cd ../solid-wallet
+cp .env.localnet.example .env
+npm run build
+```
 
 ### 12.9 Four-role live smoke
 

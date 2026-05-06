@@ -705,9 +705,11 @@ export async function generateBatchProof(
     //   - full dump only behind a separate env var
     //     `SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS=DANGER_I_UNDERSTAND`
     //   - output goes to a 0700-mode mkdtempSync directory, not /tmp
-    const fs = await import('fs');
-    const path = await import('path');
-    const os = await import('os');
+    const [fs, path, os] = await Promise.all([
+      importNodeModule<typeof import('fs')>('fs'),
+      importNodeModule<typeof import('path')>('path'),
+      importNodeModule<typeof import('os')>('os'),
+    ]);
     const includeSecrets =
       process.env?.SOLID_DEBUG_CIRCUIT_INPUT_INCLUDE_SECRETS === 'DANGER_I_UNDERSTAND';
     const REDACTED = '<redacted by SOLID-SEC-066 -- set ' +
@@ -766,12 +768,21 @@ export async function verifyProofLocally(
   publicSignals: string[],
   verificationKeyPath: string,
 ): Promise<boolean> {
-  const fs = await import('fs');
+  const fs = await importNodeModule<typeof import('fs')>('fs');
   const vk = JSON.parse(fs.readFileSync(verificationKeyPath, 'utf-8'));
   return await snarkjs.groth16.verify(vk, publicSignals, proof);
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+async function importNodeModule<T>(specifier: string): Promise<T> {
+  if (typeof window !== 'undefined') {
+    throw new Error(`${specifier} is only available in Node.js`);
+  }
+
+  const importer = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<T>;
+  return importer(specifier);
+}
 
 /**
  * Interpret a byte buffer as a little-endian integer (field-element

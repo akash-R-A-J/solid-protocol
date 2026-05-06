@@ -3,6 +3,11 @@
 Verifiers should integrate through `@solid-protocol/verifier`, not by
 constructing proof request JSON manually.
 
+Current devnet status (2026-05-06): program accounts and live smoke
+bindings are deployed, but public verifier onboarding should wait until
+`deployments/devnet.json` has public artifact/indexer URLs and a known-good
+devnet `verify_batch_proof_v2` transaction.
+
 ## Install
 
 ```bash
@@ -43,7 +48,7 @@ const solid = new SolidVerifier({
 });
 
 const requirement = solid.defineRequirement({
-  schema: "basic_identity_v1",
+  schema: "basic_identity_v2",
   predicates: [{ field: "age", op: "GTE", value: 18 }],
   compoundLogic: "AND",
   action: {
@@ -64,6 +69,10 @@ const proof = await solid.requestProof({
 
 For public devnet feedback, prefer on-chain verification so testers see a
 real Solana transaction and replay protection.
+
+Until the public artifact host and Merkle proof indexer are live, verifier
+platforms can inspect the deployed program IDs and PDAs but cannot run an
+independent holder proof flow without local operator files.
 
 The verifier must fail closed when:
 
