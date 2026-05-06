@@ -30,9 +30,15 @@ export interface SolidSchemaManifestEntry {
   display_name?: string;
   version: number;
   category?: string;
+  status?: string;
   schema_hash: string;
   schema_pda: string | null;
   tree_address: string | null;
+  tree_depth?: number;
+  tree_authority_pda?: string | null;
+  tree_binding_pda?: string | null;
+  current_root?: string | null;
+  current_root_slot?: number | null;
   fields: string[];
   predicates: string[];
   field_metadata?: Array<{
@@ -41,6 +47,15 @@ export interface SolidSchemaManifestEntry {
     description?: string;
     range_queryable?: boolean;
   }>;
+}
+
+export interface SolidTreeRootManifestEntry {
+  tree_address?: string | null;
+  binding_pda?: string | null;
+  tree_authority_pda?: string | null;
+  current_root?: string | null;
+  current_root_slot?: number | null;
+  depth?: number | null;
 }
 
 export interface SolidDevnetManifest {
@@ -74,14 +89,14 @@ export interface SolidDevnetManifest {
   };
   schemas: SolidSchemaManifestEntry[];
   trees: {
-    global_state_tree: string | null;
-    issuer_tree: {
+    global_state_tree: SolidTreeRootManifestEntry | null;
+    issuer_tree: SolidTreeRootManifestEntry & {
       tree_address: string | null;
       binding_pda: string | null;
       current_root: string | null;
       current_root_slot: number | null;
     };
-    schema_trees: Array<{
+    schema_trees: Array<SolidTreeRootManifestEntry & {
       schema_hash: string;
       tree_address: string;
       binding_pda: string | null;
@@ -289,6 +304,7 @@ export function validateSolidManifest(input: unknown): SolidDevnetManifest {
     throw new Error('SolID manifest schemas must be an array');
   }
   manifest.schemas.forEach(validateSchemaEntry);
+  validateTrees(manifest);
   return manifest;
 }
 
@@ -399,6 +415,21 @@ function validateSchemaEntry(schema: SolidSchemaManifestEntry, index: number): v
   if (schema.tree_address != null && !isLikelySolanaPublicKey(schema.tree_address)) {
     throw new Error(`${label}.tree_address must be a Solana public key or null`);
   }
+  if (schema.tree_depth !== undefined && !isValidDepth(schema.tree_depth)) {
+    throw new Error(`${label}.tree_depth must be an integer from 1 to 64`);
+  }
+  if (schema.tree_authority_pda != null && !isLikelySolanaPublicKey(schema.tree_authority_pda)) {
+    throw new Error(`${label}.tree_authority_pda must be a Solana public key or null`);
+  }
+  if (schema.tree_binding_pda != null && !isLikelySolanaPublicKey(schema.tree_binding_pda)) {
+    throw new Error(`${label}.tree_binding_pda must be a Solana public key or null`);
+  }
+  if (schema.current_root != null && !isSha256Hex(schema.current_root)) {
+    throw new Error(`${label}.current_root must be a 32-byte hex root or null`);
+  }
+  if (schema.current_root_slot != null && !isValidSlot(schema.current_root_slot)) {
+    throw new Error(`${label}.current_root_slot must be a non-negative integer or null`);
+  }
   if (!Array.isArray(schema.fields) || schema.fields.length < 1 || schema.fields.length > 8) {
     throw new Error(`${label}.fields must contain 1-8 fields`);
   }
@@ -438,6 +469,71 @@ function validateSchemaEntry(schema: SolidSchemaManifestEntry, index: number): v
       }
     }
   }
+}
+
+function validateTrees(manifest: SolidDevnetManifest): void {
+  if (!manifest.trees || typeof manifest.trees !== 'object') {
+    throw new Error('SolID manifest requires trees');
+  }
+  validateOptionalTreeEntry(manifest.trees.global_state_tree, 'trees.global_state_tree', {
+    requireAddressOrBinding: true,
+  });
+  validateOptionalTreeEntry(manifest.trees.issuer_tree, 'trees.issuer_tree', {
+    requireTreeAddress: manifest.trees.issuer_tree?.tree_address != null,
+  });
+  if (!Array.isArray(manifest.trees.schema_trees)) {
+    throw new Error('trees.schema_trees must be an array');
+  }
+  manifest.trees.schema_trees.forEach((entry, index) => {
+    const label = `trees.schema_trees[${index}]`;
+    if (!isSha256Hex(entry.schema_hash)) {
+      throw new Error(`${label}.schema_hash must be a 32-byte hex hash`);
+    }
+    validateOptionalTreeEntry(entry, label, { requireTreeAddress: true });
+  });
+}
+
+function validateOptionalTreeEntry(
+  entry: SolidTreeRootManifestEntry | null | undefined,
+  label: string,
+  options: { requireTreeAddress?: boolean; requireAddressOrBinding?: boolean } = {},
+): void {
+  if (entry == null) return;
+  if (typeof entry !== 'object') {
+    throw new Error(`${label} must be an object or null`);
+  }
+  if (options.requireTreeAddress && !isLikelySolanaPublicKey(entry.tree_address)) {
+    throw new Error(`${label}.tree_address must be a Solana public key`);
+  }
+  if (options.requireAddressOrBinding && !isLikelySolanaPublicKey(entry.tree_address) && !isLikelySolanaPublicKey(entry.binding_pda)) {
+    throw new Error(`${label} must include tree_address or binding_pda`);
+  }
+  if (entry.tree_address != null && !isLikelySolanaPublicKey(entry.tree_address)) {
+    throw new Error(`${label}.tree_address must be a Solana public key or null`);
+  }
+  if (entry.binding_pda != null && !isLikelySolanaPublicKey(entry.binding_pda)) {
+    throw new Error(`${label}.binding_pda must be a Solana public key or null`);
+  }
+  if (entry.tree_authority_pda != null && !isLikelySolanaPublicKey(entry.tree_authority_pda)) {
+    throw new Error(`${label}.tree_authority_pda must be a Solana public key or null`);
+  }
+  if (entry.current_root != null && !isSha256Hex(entry.current_root)) {
+    throw new Error(`${label}.current_root must be a 32-byte hex root or null`);
+  }
+  if (entry.current_root_slot != null && !isValidSlot(entry.current_root_slot)) {
+    throw new Error(`${label}.current_root_slot must be a non-negative integer or null`);
+  }
+  if (entry.depth != null && !isValidDepth(entry.depth)) {
+    throw new Error(`${label}.depth must be an integer from 1 to 64 or null`);
+  }
+}
+
+function isValidSlot(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function isValidDepth(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 64;
 }
 
 function emptyToNull(value: string | null | undefined): string | null {

@@ -99,6 +99,69 @@ SEC-041 VK pin).
 
 ---
 
+## 0.1 Current Devnet + Solid-Sim Testing Surface
+
+As of 2026-05-07, the upgraded devnet programs are deployed and the
+devnet smoke path has confirmed issuance, verification, and replay
+rejection.  The canonical devnet program IDs are:
+
+```text
+schema_registry  4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1
+issuer_registry  5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+zk_verifier      DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb
+```
+
+For local testing against those deployed programs, run the indexer API
+and Solid-Sim in separate terminals:
+
+```bash
+cd solid-protocol/indexer
+PORT=8787 HOST=127.0.0.1 \
+  SOLID_MANIFEST_PATH=/absolute/path/to/solid-protocol/deployments/devnet.json \
+  SOLID_RPC_URL=https://api.devnet.solana.com \
+  npm run start
+```
+
+```bash
+cd solid-console
+VITE_SOLID_NETWORK=devnet \
+  VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
+  VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
+  VITE_SOLID_MANIFEST_URL=http://127.0.0.1:8787/v1/manifest \
+  VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787 \
+  VITE_SOLID_ARTIFACT_BASE_URL=/artifacts \
+  npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+The public devnet RPC is good enough for one-off smoke calls, but it
+rate-limits the full console click-through. Use a private devnet RPC for
+tester builds and set it in `SOLID_RPC_URL`, `VITE_SOLID_RPC_URL`, and
+`VITE_SOLID_WS_URL`.
+
+Before public testers, these off-chain pieces must also be hosted:
+
+```text
+artifact host/CDN    all six pinned circuit artifacts from circuits/build/
+indexer/API         solid-protocol/indexer as an HTTPS Node service
+solid-sim frontend  solid-console built with the public manifest/indexer/artifact URLs
+npm packages        @solid-protocol/* SDK packages after npm pack checks
+manifest            deployments/devnet.json served over HTTPS or /v1/manifest
+```
+
+Keep private values out of Git and out of frontend `VITE_*` variables.
+Use local shell env for deployer keypairs and host-provider secret
+stores for RPC API keys, DB credentials, and `SOLID_INDEXER_WRITE_TOKEN`.
+
+Known testing limitation: `solid-console/public/artifacts/` currently
+contains only the subgroup artifacts and the batch verification key. The
+integrated wallet proof-generation path also needs
+`batch_credential_query.wasm` and `batch_credential_query.zkey` served
+from the configured artifact base URL, and the indexer must have indexed
+the issued credential leaves before `/v1/merkle-proof/:tree/:leaf` can
+return inclusion proofs.
+
+---
+
 ## 1. Prerequisites
 
 ### 1.1 Pinned toolchain versions
@@ -827,124 +890,237 @@ from the fresh validator, and downstream steps pick up from it.
 
 ---
 
-## 12. Public devnet user-testing deployment
+## 12. Public devnet deployment and exhaustive testing
 
-This section is the operator runbook for exposing the whole system to
-real devnet testers. It extends the localnet loop above; it does not
-replace the mainnet checklist below.
+This is the public-devnet operator runbook. Follow it top to bottom when
+you want to deploy the complete system, link every deployed piece together,
+and prove the deployed product works through the DAO, issuer, holder wallet,
+and verifier roles.
 
-### 12.1 Release gate
+The key idea: `deployments/devnet.json` is the wiring contract. Programs,
+SDK consumers, `solid-sim`, the embedded console wallet, indexer, artifact
+host, and external dApps should all read or mirror the same values from that
+file. If something is not in the manifest or in an explicit `VITE_SOLID_*`
+env var, assume it is not deployed.
 
-Do not invite external testers until all of these are true:
+Current green protocol status as of 2026-05-06:
 
-- Three programs are deployed to devnet at the canonical IDs in
-  `deployments/devnet.json`.
-- Verifier config is initialized.
-- Batch VK and subgroup VK are uploaded, finalized, and frozen or
-  otherwise verified by a freeze-gate runbook.
-- A circuit-compatible schema tree is registered on-chain. Current smoke
-  schema is `basic_identity_v2` with `SOLID_SCHEMA_TREE_DEPTH=20`;
-  the early `basic_identity_v1` depth-16 binding must not be used for
-  batch-circuit proofs.
-- Issuer tree, schema tree, and global binding accounts are initialized.
-- At least one demo issuer is approved and enrolled in the issuer tree.
-- At least one real credential has been issued into the schema tree.
-- A fresh credential can be issued with the currently deployed
-  `issuer_registry` program/source contract, including issuer/schema
-  permission enforcement.
-- One fresh issue -> proof -> on-chain verify -> replay-reject sequence is
-  recorded. The older smoke credential already verifies on-chain, but it is
-  not enough for public testing after the issuer/schema permission upgrade.
-- Artifact host serves all six circuit artifacts and `.sha256` sidecars
-  over HTTPS.
-- Indexer/API serves health, registry views, and Merkle proofs.
-- Published manifest has non-null program, artifact, indexer, solid-sim,
-  wallet, schema, tree, and root fields.
-- `solid-sim` is deployed with `VITE_SOLID_*` values pointing to the
-  published manifest.
-- `solid-wallet` is distributed to testers and restricted to tester
-  origins or the risk is explicitly accepted.
+- `issuer_registry` is upgraded on devnet at
+  `5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx`.
+- Last known upgraded slot for `issuer_registry`: `460541773`.
+- Upgrade authority: `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`.
+- Issuer/schema permission is granted for the devnet smoke issuer.
+- Fresh issue -> root sync -> Groth16 proof -> on-chain
+  `verify_batch_proof_v2` -> replay rejection is green.
+- Remaining public-deploy work is infrastructure and wiring:
+  hosted artifacts, live indexer/API, published manifest, deployed
+  `solid-sim` with its embedded wallet role, and full browser E2E.
+- `solid-wallet` exists as a separate browser extension, but it is not required
+  for the current deployment milestone. Treat it as optional/future distribution
+  unless the release explicitly chooses to test the extension path.
 
-### 12.2 Required operator inputs
+### 12.1 What gets deployed
 
-These are the only values that cannot be invented locally without
-turning the deploy into a workaround.
+There are six deployable surfaces. They are different things. Treat them
+separately.
 
-| Input | Why it is needed | How to provide it safely |
+| Surface | What it is | Output you deploy | Where it can live | Why it matters |
+| --- | --- | --- | --- | --- |
+| Solana programs | On-chain executable BPF programs. | `target/deploy/schema_registry.so`, `target/deploy/issuer_registry.so`, `target/deploy/zk_verifier.so` plus their program keypairs. | Solana devnet via `solana program deploy`. | This is the protocol state machine: schema registry, issuer governance/issuance, and proof verification. |
+| Circuit artifacts | Proving/verifying files used by browsers and scripts. | Six files: two `.wasm`, two `.zkey`, two VK `.json` files, plus hash pins. | HTTPS static host: Vercel static, Cloudflare R2, S3+CloudFront, GitHub Pages, Netlify, or same-origin under `solid-sim`. | Wallet and console proof flows download these files and verify SHA-256 before using them. |
+| SDK packages | TypeScript packages consumed by console, wallet, scripts, and external apps. | Built `dist/` package contents, optionally npm packages. | Local monorepo `file:` deps for dev, npm registry for external integrators. | Keeps all clients using the same manifest parser, proof APIs, issuer APIs, and crypto bridge. |
+| WASM bridge | Rust crypto compiled for JS. | `ts-sdk/packages/core/wasm/` and `ts-sdk/packages/core/wasm-web/`, especially `solid_wasm_bg.wasm` and JS bindings. | Included inside `@solid-protocol/core`, then bundled by console/wallet. | Keeps off-chain key, hash, and proof input generation byte-compatible with on-chain/circuit logic. |
+| Indexer/API | Node HTTP API for registry reads, credential requests, issued-event ingestion, and Merkle proofs. | `solid-protocol/indexer` service. | Render, Fly.io with persistent volume, Railway, VPS, Docker host. Avoid stateless serverless unless you replace the file store with durable storage. | Holder proof generation needs real Merkle paths. The console request inbox also uses this API. |
+| App | Public simulator UI with DAO, issuer, holder wallet, and verifier roles. | `solid-console/dist`. | Vercel, Netlify, GitHub Pages, S3+CloudFront, or another static host. | This is what current testers use. The embedded wallet in `solid-sim` must point to the published manifest, artifact host, RPC, and indexer. |
+| Optional extension | Standalone browser wallet. | `solid-wallet/dist`. | Unpacked ZIP, private Chrome Web Store listing, or controlled tester download. | Not required for the current deploy. Use only when testing external dApp injection through `window.solid`. |
+
+### 12.2 Values you must decide before deploying
+
+Do not make up placeholders for these. If one is unknown, stop at that step.
+
+| Value | Example | Configure it in |
 | --- | --- | --- |
-| Devnet deployer keypair path | Pays for program deploy, program data accounts, VK uploads, tree creation, and smoke txs. | Create a dedicated devnet-only keypair. Share the local path, not the secret contents, if the agent is running on the same machine. |
-| Funded devnet SOL balance | Anchor deploy and init transactions need rent and fees. | Airdrop or transfer devnet SOL, then confirm `solana balance --keypair <path> --url devnet`. |
-| RPC URL and optional WebSocket URL | Public RPC may rate-limit VK upload, tree bootstrap, and E2E proof txs. | Provide a devnet RPC such as Helius/Triton/QuickNode if available; otherwise explicitly approve public devnet RPC. |
-| Artifact host destination | Wallet and verifier need HTTPS URLs for pinned `.wasm`, `.zkey`, and VK JSON files. | Provide a storage target such as Vercel static output, Cloudflare R2, S3, GitHub Pages, or another HTTPS host. |
-| Indexer/API deploy target | Holder proof generation needs live Merkle paths and registry reads. | Choose where the API should run: Vercel/Cloudflare Worker/Fly/Render/Railway/custom VPS. Provide deployment credentials or run the commands locally when prompted. |
-| SolID Sim deployment target | Public testers need a stable `solid-sim` URL. | Provide Vercel/Netlify/etc. project access, or ask the agent to prepare a local build and exact env var list for you to deploy. |
-| Wallet distribution method | Testers need the extension build and origin policy. | Choose controlled unpacked extension ZIP, Chrome Web Store private listing, or internal file share. For first devnet test, unpacked ZIP is fastest. |
-| Tester origins | Wallet content script should not inject on all sites for public testing. | Provide the solid-sim/demo domains that should be allowed, for example `https://sim.example.com/*`. |
-| DAO governance mint and test staker | DAO approval flow needs an actual mint/stake setup. | Provide the mint if one exists, or approve creating a devnet-only governance mint and funded DAO tester. |
-| Launch schema set | Issuer/holder/verifier must agree on schemas and credential tree depth. | For smoke tests use `basic_identity_v2` with depth 20. For launch, register each schema with a depth-20 tree; do not reuse the early depth-16 `basic_identity_v1` binding. |
-| Public feedback channel | Testers need one place to report bugs. | Provide GitHub Issues, Linear, Discord channel, or a form URL. |
+| Devnet RPC URL | `https://api.devnet.solana.com` or paid RPC | `config/devnet.env.example`, deploy env, `VITE_SOLID_RPC_URL`, manifest `cluster` |
+| Devnet WebSocket URL | `wss://api.devnet.solana.com` | `VITE_SOLID_WS_URL`, manifest `websocket_cluster` |
+| Deployer keypair path | `$HOME/.config/solana/solid-devnet-admin.json` | `SOLID_KEYPAIR_PATH`, `SOLANA_KEYPAIR_PATH`, `ANCHOR_WALLET` |
+| Artifact base URL | `https://sim.example.com/artifacts` | manifest `artifacts.base_url`, `VITE_SOLID_ARTIFACT_BASE_URL`, wallet settings |
+| Manifest URL | `https://sim.example.com/solid/devnet.json` | `VITE_SOLID_MANIFEST_URL`, wallet settings, indexer `/.well-known/solid-protocol.json` |
+| Indexer URL | `https://solid-indexer.example.com` | manifest `indexer.url`, `VITE_SOLID_INDEXER_URL`, wallet settings |
+| Console URL | `https://solid-sim.example.com` | manifest `console.url`, `VITE_SOLID_CONSOLE_URL` |
+| Wallet release URL | private ZIP or Chrome listing URL | manifest `wallet.release_url`; optional for this milestone because the wallet role is embedded in `solid-console` |
+| Tester origins | `https://solid-sim.example.com/*` | Only needed if deploying `solid-wallet`; configure `solid-wallet/public/manifest.json` `host_permissions`, `content_scripts.matches`, `web_accessible_resources.matches` |
+| Indexer write token | random secret | `SOLID_INDEXER_WRITE_TOKEN` on the indexer host and issuer/operator ingestion commands |
+| Schema launch set | `basic_identity_v2`, depth 20 | protocol env, manifest `schemas`, schema tree bindings |
 
-If any input is missing, stop at the corresponding gate. Do not replace
-it with placeholder URLs, fake roots, local-only artifacts, or simulated
-proofs.
+Generate the indexer write token locally:
 
-### 12.3 Devnet preflight
+```bash
+openssl rand -hex 32
+```
+
+Why: the read API is public, but ingestion endpoints like
+`POST /v1/tree-leaves` and `POST /v1/events/credential-issued` must not be
+open to random browsers.
+
+### 12.3 One-time preflight on the operator machine
+
+Run from `solid-protocol`.
 
 ```bash
 bash scripts/bootstrap.sh
 export PATH="$PWD/.toolchain/bin:$PATH"
 source config/devnet.env.example
 
+rustc --version
+solana --version
+anchor --version
+circom --version
+snarkjs --version 2>&1 | head -1
+wasm-pack --version
+node --version
+npm --version
+python3 --version
+```
+
+Expected versions are listed in section 1. If `rustc`, `anchor`, or
+`wasm-pack` is missing, do not continue. Program binaries and WASM artifacts
+are release inputs; building them with a drifting toolchain makes debugging
+miserable.
+
+Then run the invariant checks:
+
+```bash
 python3 scripts/check_program_ids.py
 npm run validate:devnet
 npm run verify:artifacts
-npm run smoke:devnet-config
+npm run test:prove-root-plan
 ```
 
-Expected:
+What each check proves:
 
-- Program IDs are consistent across Anchor.toml, `declare_id!`, TS
-  literals, and deployments.
-- Manifest schema validates.
-- Local artifact hashes match manifest pins.
-- Smoke output shows live program/schema/tree fields after the 2026-05-06
-  partial protocol deploy; artifact, indexer, solid-sim, and wallet URLs
-  remain null until hosted.
+- `check_program_ids.py`: `Anchor.toml`, Rust `declare_id!`, and
+  `deployments/devnet.json` agree on program IDs.
+- `validate:devnet`: manifest shape and required program/artifact pins are valid.
+- `verify:artifacts`: local artifact bytes match the SHA-256 pins in the manifest.
+- `test:prove-root-plan`: root-update transaction planning still handles the
+  compute-budget and root-refresh path used by `npm run prove`.
 
-### 12.4 Build deployable artifacts
+### 12.4 Build everything you may deploy
+
+Run from `solid-protocol`.
 
 ```bash
+export PATH="$PWD/.toolchain/bin:$PATH"
+
+# 1. Build circuit artifacts.
 cd circuits
 npm install
 node scripts/setup.js
 cd ..
 
+# 2. Build the Rust-to-JS WASM bridge used by SDK, console, and wallet.
 wasm-pack build wasm/ --target nodejs \
   --out-dir ts-sdk/packages/core/wasm --release
 
+# 3. Build Solana program binaries.
 NO_DNA=1 anchor build --no-idl
+
+# 4. Build IDLs consumed by scripts and clients.
 npm run build:idl
-(cd ts-sdk && npm ci && npm run build && npm test --workspaces --if-present)
+
+# 5. Build and test SDK packages.
+cd ts-sdk
+npm ci
+npm run build
+npm test
+npm run pack:check
+cd ..
+
+# 6. Install root script dependencies.
 npm install
+
+# 7. Build indexer package dependencies.
+npm install --prefix indexer
+npm test --prefix indexer
 ```
 
-Archive the program `.so` files from `target/deploy/` and all six
-circuit artifacts from `circuits/build/` with their `.sha256` files.
+Expected deployable files:
 
-### 12.5 Deploy and initialize devnet
+```text
+target/deploy/schema_registry.so
+target/deploy/schema_registry-keypair.json
+target/deploy/issuer_registry.so
+target/deploy/issuer_registry-keypair.json
+target/deploy/zk_verifier.so
+target/deploy/zk_verifier-keypair.json
 
-Use a dedicated devnet deployer. Do not reuse mainnet or personal
-wallets.
+circuits/build/batch_credential_query_js/batch_credential_query.wasm
+circuits/build/batch_credential_query_final.zkey
+circuits/build/verification_key.json
+circuits/build/bjj_subgroup_proof_js/bjj_subgroup_proof.wasm
+circuits/build/bjj_subgroup_proof_final.zkey
+circuits/build/bjj_subgroup_verification_key.json
+
+ts-sdk/packages/*/dist/
+ts-sdk/packages/core/wasm/
+```
+
+Verify the files exist and match the manifest:
+
+```bash
+npm run verify:artifacts
+ls -lh target/deploy/*.so
+```
+
+If `npm run verify:artifacts` passes, the circuit artifacts exist at the
+local paths recorded in `deployments/devnet.json` and their bytes match
+the expected SHA-256 pins.
+
+### 12.5 Deploy or verify the Solana programs
+
+If the current devnet programs are already deployed and green, verify them
+instead of redeploying:
+
+```bash
+solana program show 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1 --url devnet
+solana program show 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx --url devnet
+solana program show DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb --url devnet
+```
+
+Expected for each program:
+
+- `Executable: Yes`
+- `Upgradeable: Yes`
+- upgrade authority equals `deployments/devnet.json`
+- last deployed slot is at or after the release slot you intend to test
+
+Current `issuer_registry` green check:
+
+```bash
+solana program show 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx --url devnet
+```
+
+Expected:
+
+```text
+Program Id: 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx
+Authority: Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm
+Last Deployed In Slot: 460541773 or newer
+Executable: Yes
+```
+
+If you need to deploy or upgrade, use one-program deploys. They are easier
+to resume than a bulk `anchor deploy`, especially on public devnet RPC.
 
 ```bash
 solana config set --url devnet
 export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
 export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
-solana-keygen pubkey "$SOLID_KEYPAIR_PATH"
-solana balance --keypair "$SOLID_KEYPAIR_PATH"
+export ANCHOR_WALLET="$SOLID_KEYPAIR_PATH"
 
-# Public devnet RPC can rate-limit large uploads. Direct one-program deploys
-# with --use-rpc are easier to resume than one bulk `anchor deploy`.
+solana-keygen pubkey "$SOLID_KEYPAIR_PATH"
+solana balance --keypair "$SOLID_KEYPAIR_PATH" --url devnet
+
 solana program deploy target/deploy/schema_registry.so \
   --program-id target/deploy/schema_registry-keypair.json \
   --upgrade-authority "$SOLID_KEYPAIR_PATH" \
@@ -965,16 +1141,59 @@ solana program deploy target/deploy/issuer_registry.so \
   --keypair "$SOLID_KEYPAIR_PATH" \
   --fee-payer "$SOLID_KEYPAIR_PATH" \
   --url devnet --use-rpc --max-sign-attempts 20
-
-python3 scripts/check_program_ids.py
 ```
 
-Then initialize and seed the live state:
+After deploy:
 
 ```bash
-export SOLID_RPC_URL="https://api.devnet.solana.com"
-export SOLID_ALLOW_NON_LOCALNET=1
-export SOLID_VOTING_PERIOD_SECONDS=120
+python3 scripts/check_program_ids.py
+npm run validate:devnet
+```
+
+If a deploy stalls or fails after uploading a buffer, inspect buffers:
+
+```bash
+solana program show --buffers \
+  --buffer-authority "$SOLID_KEYPAIR_PATH" \
+  --url devnet --output json
+```
+
+Resume with a funded buffer:
+
+```bash
+solana program deploy target/deploy/<program>.so \
+  --buffer <BUFFER_ADDRESS> \
+  --program-id target/deploy/<program>-keypair.json \
+  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --fee-payer "$SOLID_KEYPAIR_PATH" \
+  --url devnet --use-rpc --max-sign-attempts 20
+```
+
+Close abandoned buffers to recover rent:
+
+```bash
+solana program close <BUFFER_ADDRESS> \
+  --keypair "$SOLID_KEYPAIR_PATH" \
+  --authority "$SOLID_KEYPAIR_PATH" \
+  --recipient "$(solana-keygen pubkey "$SOLID_KEYPAIR_PATH")" \
+  --url devnet
+```
+
+### 12.6 Initialize and seed on-chain state
+
+Run this only after program binaries are deployed or verified.
+
+```bash
+export PATH="$PWD/.toolchain/bin:$PATH"
+source config/devnet.env.example
+
+# Use the real deployer.
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+export ANCHOR_WALLET="$SOLID_KEYPAIR_PATH"
+
+# Keep the schema compatible with the batch credential circuit.
 export SOLID_SCHEMA_NAME="basic_identity_v2"
 export SOLID_SCHEMA_VERSION=2
 export SOLID_SCHEMA_CATEGORY="Identity"
@@ -990,221 +1209,1112 @@ npm run issue
 npm run prove
 ```
 
-The final `prove` step must generate a real Groth16 proof, submit the
-proof-buffer transaction sequence, create the nullifier PDA, and reject
-replay of the same proof. Current 2026-05-06 devnet status:
+What these scripts do:
 
-- Existing sample: on-chain `verify_batch_proof_v2` is green at
-  `56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`,
-  and replay rejects.
-- Fresh issue: blocked until `issuer_registry` is upgraded from current
-  source and issuer/schema permission is granted. The missing smoke
-  permission PDA is
-  `4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H`.
-- A public-RPC `issuer_registry` upgrade attempt on 2026-05-06 failed with
-  `Max retries exceeded`; the failed buffer was recovered and closed. Use a
-  reliable devnet RPC for the next upgrade attempt.
+- `init-onchain`: initializes verifier config, uploads verification key data,
+  and prepares protocol config accounts.
+- `backfill-issuer-tree`: syncs issuer tree state after issuer registry changes.
+- `bootstrap-schema-tree`: creates or binds the schema credential tree.
+- `bootstrap-issuer`: runs issuer registration, DAO vote/approval, issuer tree
+  enrollment, and schema permission grant for the smoke issuer.
+- `issue`: issues a real credential into the schema tree.
+- `prove`: builds a real Groth16 proof, refreshes roots as needed, submits
+  `verify_batch_proof_v2`, and asserts replay rejection.
 
-If public devnet latency makes the combined pipeline brittle, run each
-command individually and record every tx signature.
-
-If an issuer bootstrap run fails with `StakeTooNew`, wait a few slots and
-rerun `npm run bootstrap-issuer`. The script now persists the generated
-issuer keys before voting so retrying continues the same issuer flow.
-
-If deploy upload fails with a buffer account, inspect and resume or close it:
-
-```bash
-solana program show --buffers \
-  --buffer-authority "$SOLID_KEYPAIR_PATH" \
-  --url devnet --output json
-
-# Resume if the buffer is funded:
-solana program deploy target/deploy/<program>.so \
-  --buffer <BUFFER_ADDRESS> \
-  --program-id target/deploy/<program>-keypair.json \
-  --upgrade-authority "$SOLID_KEYPAIR_PATH" \
-  --keypair "$SOLID_KEYPAIR_PATH" \
-  --fee-payer "$SOLID_KEYPAIR_PATH" \
-  --url devnet --use-rpc --max-sign-attempts 20
-
-# Or close an abandoned buffer:
-solana program close <BUFFER_ADDRESS> \
-  --keypair "$SOLID_KEYPAIR_PATH" \
-  --authority "$SOLID_KEYPAIR_PATH" \
-  --recipient "$(solana-keygen pubkey "$SOLID_KEYPAIR_PATH")" \
-  --url devnet
-```
-
-### 12.6 Host artifacts
-
-Upload these files to a stable HTTPS host:
-
-- `batch_credential_query.wasm`
-- `batch_credential_query.zkey`
-- `batch_credential_query_verification_key.json`
-- `bjj_subgroup_proof.wasm`
-- `bjj_subgroup_proof.zkey`
-- `bjj_subgroup_verification_key.json`
-- `.sha256` sidecars for each file
-
-Use immutable caching for versioned artifact paths and verify every
-downloaded hash against `deployments/devnet.json`.
-
-### 12.7 Deploy indexer/API
-
-Minimum endpoints for user testing:
+Green terminal evidence:
 
 ```text
-GET /v1/health
-GET /v1/merkle-proof/:tree/:leaf
-GET /v1/credential-requests
-POST /v1/credential-requests
-PATCH /v1/credential-requests/:id
-GET /v1/issuers
-GET /v1/schemas
-GET /.well-known/solid-protocol.json
+verified: true
+Replay test (should fail)...
+ok (replay rejected by nullifier PDA init constraint)
 ```
 
-`/v1/merkle-proof/:tree/:leaf` should return:
+Record every important output in `deployments/devnet.json`:
 
-```json
-{
-  "root": "32-byte hex",
-  "siblings": ["32-byte hex"],
-  "pathIndices": [0],
-  "leafIndex": 0,
-  "slot": 0
-}
-```
+- deployed program slots
+- schema PDA
+- schema tree address
+- tree binding PDA
+- current schema root and slot
+- global state root and slot
+- issuer account
+- issuer authority
+- credential commitment
+- credential issue tx
+- verify tx
+- schema permission tx
+- schema permission PDA
+- replay status
 
-`/v1/health` should include `lastProcessedSlot`, `rpcSlot`,
-`lagSlots`, and a manifest hash. For public testing, set an operational
-lag threshold and alert if the indexer falls behind.
-
-`POST /v1/tree-leaves` and `POST /v1/events/credential-issued` are
-operator/write-path endpoints and must require a bearer token. Holder-facing
-proof generation must fail closed with `LEAF_NOT_INDEXED` until the credential
-commitment has actually been ingested.
-
-### 12.8 Publish manifest and apps
-
-After deployment and infrastructure setup:
+Then validate:
 
 ```bash
-python3 scripts/regen_devnet_manifest.py > deployments/devnet.json
 npm run validate:devnet
 npm run verify:artifacts
 npm run smoke:devnet-config
 ```
 
-The published manifest must include deployed timestamp, git commit,
-deployer, upgrade authorities, artifact URL/pins, indexer URL, solid-sim
-URL, wallet release URL, schemas, tree addresses, roots, a sample
-issuer, a sample credential commitment, and a known-good verification tx.
+### 12.7 Prepare circuit artifacts for hosting
 
-Deploy or run `solid-sim` from the `solid-console` directory with:
+Create a clean publish directory from the manifest. This avoids copying stale
+or wrong filenames by hand.
+
+```bash
+rm -rf public-devnet-artifacts
+mkdir -p public-devnet-artifacts
+
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const manifest = JSON.parse(fs.readFileSync('deployments/devnet.json', 'utf8'));
+const out = 'public-devnet-artifacts';
+
+for (const [key, item] of Object.entries(manifest.artifacts.items)) {
+  const source = path.resolve(item.local_path);
+  const dest = path.join(out, item.filename);
+  const bytes = fs.readFileSync(source);
+  const actual = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (actual !== item.sha256) {
+    throw new Error(`${key} hash mismatch: expected ${item.sha256}, got ${actual}`);
+  }
+  fs.copyFileSync(source, dest);
+  fs.writeFileSync(`${dest}.sha256`, `${actual}  ${item.filename}\n`);
+  console.log(`${item.filename} ${actual}`);
+}
+NODE
+
+ls -lh public-devnet-artifacts
+```
+
+Expected files:
+
+```text
+batch_credential_query.wasm
+batch_credential_query.wasm.sha256
+batch_credential_query.zkey
+batch_credential_query.zkey.sha256
+batch_credential_query_verification_key.json
+batch_credential_query_verification_key.json.sha256
+bjj_subgroup_proof.wasm
+bjj_subgroup_proof.wasm.sha256
+bjj_subgroup_proof.zkey
+bjj_subgroup_proof.zkey.sha256
+bjj_subgroup_verification_key.json
+bjj_subgroup_verification_key.json.sha256
+```
+
+Why these files matter:
+
+- Batch `.wasm`: witness generator for holder credential query proofs.
+- Batch `.zkey`: Groth16 proving key for the holder proof.
+- Batch VK JSON: verification key used by verifier-side local checks.
+- Subgroup `.wasm` and `.zkey`: proof that issuer BJJ keys are in the
+  allowed subgroup before registration.
+- Subgroup VK JSON: verification key for subgroup proof verification.
+- `.sha256` sidecars: human/operator verification files. The app uses pins
+  from `deployments/devnet.json`.
+
+### 12.8 Host artifacts
+
+Any stable HTTPS host is acceptable. Use versioned paths when possible,
+for example:
+
+```text
+https://<artifact-host>/solid/devnet/2026-05-06/
+```
+
+The manifest value should be the directory, not an individual file:
+
+```json
+"artifacts": {
+  "base_url": "https://<artifact-host>/solid/devnet/2026-05-06"
+}
+```
+
+#### Option A: Same-origin Vercel static files
+
+Use this if `solid-console` and artifacts should live under the same host.
+
+```bash
+cd ../solid-console
+rm -rf public/artifacts
+mkdir -p public/artifacts
+cp -R ../solid-protocol/public-devnet-artifacts/. public/artifacts/
+npm ci
+npm run build
+```
+
+Deploy `solid-console` to Vercel. The artifact base URL becomes:
+
+```text
+https://<console-host>/artifacts
+```
+
+This works because `solid-console/vercel.json` already sets immutable cache
+headers for `/artifacts/(.*)`.
+
+#### Option B: Cloudflare R2
+
+```bash
+wrangler r2 bucket create solid-devnet-artifacts
+for f in public-devnet-artifacts/*; do
+  wrangler r2 object put "solid-devnet-artifacts/solid/devnet/2026-05-06/$(basename "$f")" \
+    --file "$f"
+done
+```
+
+Then attach a public custom domain and use that HTTPS URL as
+`artifacts.base_url`.
+
+#### Option C: S3 or S3-compatible storage
+
+```bash
+aws s3 sync public-devnet-artifacts/ \
+  s3://<bucket>/solid/devnet/2026-05-06/ \
+  --cache-control "public,max-age=31536000,immutable"
+```
+
+Put CloudFront or another HTTPS CDN in front of the bucket. Do not use a
+plain HTTP bucket URL. Browsers reject non-HTTPS artifact URLs unless they
+are same-origin or localhost.
+
+#### Verify hosted artifacts
+
+Replace `ARTIFACT_BASE_URL` with the final URL:
+
+```bash
+export ARTIFACT_BASE_URL="https://<artifact-host>/solid/devnet/2026-05-06"
+
+node <<'NODE'
+const manifest = require('./deployments/devnet.json');
+const base = process.env.ARTIFACT_BASE_URL.replace(/\/$/, '');
+for (const item of Object.values(manifest.artifacts.items)) {
+  console.log(`${base}/${item.filename}`);
+}
+NODE
+```
+
+Download and hash-check:
+
+```bash
+rm -rf /tmp/solid-artifact-check
+mkdir -p /tmp/solid-artifact-check
+
+node <<'NODE' > /tmp/solid-artifact-urls.txt
+const manifest = require('./deployments/devnet.json');
+const base = process.env.ARTIFACT_BASE_URL.replace(/\/$/, '');
+for (const item of Object.values(manifest.artifacts.items)) {
+  console.log(`${item.sha256} ${base}/${item.filename}`);
+}
+NODE
+
+while read -r expected url; do
+  file="/tmp/solid-artifact-check/$(basename "$url")"
+  curl -fsSL "$url" -o "$file"
+  actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  test "$actual" = "$expected" || {
+    echo "hash mismatch for $url expected=$expected actual=$actual"
+    exit 1
+  }
+  echo "ok $url"
+done < /tmp/solid-artifact-urls.txt
+```
+
+### 12.9 Deploy the indexer/API
+
+The current indexer is a Node HTTP service with a file-backed store:
+
+```text
+solid-protocol/indexer/src/server.mjs
+solid-protocol/indexer/src/store.mjs
+```
+
+Because it uses `SOLID_INDEXER_STORE_PATH`, deploy it to a target with
+persistent storage unless you replace the store implementation. Good first
+targets: Render persistent disk, Fly.io volume, Railway volume, or a VPS.
+Stateless serverless such as plain Vercel functions is not enough for the
+current implementation because the store will disappear between invocations.
+
+Required env vars:
+
+```bash
+PORT=8787
+HOST=0.0.0.0
+SOLID_MANIFEST_PATH=/app/deployments/devnet.json
+SOLID_INDEXER_STORE_PATH=/data/solid-indexer/state.json
+SOLID_RPC_URL=https://api.devnet.solana.com
+SOLID_INDEXER_WRITE_TOKEN=<random 32-byte hex>
+```
+
+What each env var does:
+
+- `PORT`: HTTP port the host routes to.
+- `HOST`: bind address. Use `0.0.0.0` on hosted infra, `127.0.0.1` locally.
+- `SOLID_MANIFEST_PATH`: the manifest the API serves and reads for program,
+  schema, tree, and artifact values.
+- `SOLID_INDEXER_STORE_PATH`: persistent JSON state for credential requests
+  and indexed leaves.
+- `SOLID_RPC_URL`: devnet RPC used for live reads.
+- `SOLID_INDEXER_WRITE_TOKEN`: bearer token required for write ingestion.
+
+#### Local indexer smoke before cloud deploy
+
+```bash
+cd solid-protocol
+npm install --prefix indexer
+
+PORT=8787 \
+HOST=127.0.0.1 \
+SOLID_MANIFEST_PATH="$PWD/deployments/devnet.json" \
+SOLID_INDEXER_STORE_PATH="$PWD/.solid-indexer/state.json" \
+SOLID_RPC_URL=https://api.devnet.solana.com \
+SOLID_INDEXER_WRITE_TOKEN="$(openssl rand -hex 32)" \
+npm start --prefix indexer
+```
+
+In a second terminal:
+
+```bash
+curl -fsS http://127.0.0.1:8787/v1/health | python3 -m json.tool
+curl -fsS http://127.0.0.1:8787/v1/manifest | python3 -m json.tool
+curl -fsS http://127.0.0.1:8787/v1/schemas | python3 -m json.tool
+curl -fsS http://127.0.0.1:8787/v1/issuers | python3 -m json.tool
+curl -fsS http://127.0.0.1:8787/.well-known/solid-protocol.json | python3 -m json.tool
+```
+
+#### Minimal Dockerfile for VPS/Fly/Render
+
+Create this only if your host wants Docker:
+
+```dockerfile
+FROM node:20-slim
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY ts-sdk ./ts-sdk
+COPY deployments ./deployments
+COPY indexer ./indexer
+RUN npm ci
+RUN npm ci --prefix indexer
+ENV HOST=0.0.0.0
+ENV PORT=8787
+CMD ["npm", "start", "--prefix", "indexer"]
+```
+
+Runtime env:
+
+```bash
+SOLID_MANIFEST_PATH=/app/deployments/devnet.json
+SOLID_INDEXER_STORE_PATH=/data/solid-indexer/state.json
+SOLID_RPC_URL=https://api.devnet.solana.com
+SOLID_INDEXER_WRITE_TOKEN=<secret>
+```
+
+Mount `/data` as a persistent volume.
+
+#### Verify deployed indexer
+
+```bash
+export SOLID_INDEXER_URL="https://<indexer-host>"
+
+curl -fsS "$SOLID_INDEXER_URL/v1/health" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/manifest" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/roots/current" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/schemas" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/issuers" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/.well-known/solid-protocol.json" | python3 -m json.tool
+```
+
+Negative check, proof must fail closed for an unknown leaf:
+
+```bash
+curl -i "$SOLID_INDEXER_URL/v1/merkle-proof/4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc/0000000000000000000000000000000000000000000000000000000000000000"
+```
+
+Expected: `404` with `LEAF_NOT_INDEXED` or equivalent error. If it returns
+a fake proof, do not deploy. That would make proofs meaningless.
+
+### 12.10 Publish the final manifest
+
+Update `deployments/devnet.json` after artifact, indexer, console, and wallet
+URLs exist.
+
+Required fields to make non-null before public testing:
+
+```json
+{
+  "artifacts": {
+    "base_url": "https://<artifact-host>/solid/devnet/2026-05-06",
+    "manifest_url": "https://<manifest-host>/solid/devnet.json"
+  },
+  "indexer": {
+    "url": "https://<indexer-host>",
+    "health_path": "/v1/health",
+    "api_version": "v1"
+  },
+  "console": {
+    "url": "https://<console-host>"
+  },
+  "wallet": {
+    "release_url": "https://<wallet-release-url>"
+  }
+}
+```
+
+Also confirm these are current:
+
+- `programs.*.program_id`
+- `programs.*.upgrade_authority`
+- `schemas[0].tree_address`
+- `schemas[0].tree_binding_pda`
+- `schemas[0].current_root`
+- `schemas[0].current_root_slot`
+- `trees.global_state_tree.current_root`
+- `trees.issuer_tree.current_root`
+- `sample.credential_tx`
+- `sample.verify_tx`
+- `sample.schema_permission_tx`
+- `sample.verify_status`
+
+Validate locally:
+
+```bash
+npm run validate:devnet
+npm run verify:artifacts
+npm run smoke:devnet-config
+```
+
+Publish the manifest to HTTPS. Three common choices:
+
+1. Same-origin under `solid-console`, for example
+   `solid-console/public/solid/devnet.json`.
+2. The indexer well-known endpoint, if it serves the same manifest:
+   `https://<indexer-host>/.well-known/solid-protocol.json`.
+3. Static storage/CDN:
+   `https://<artifact-host>/solid/devnet.json`.
+
+Verify the published manifest:
+
+```bash
+export SOLID_MANIFEST_URL="https://<manifest-host>/solid/devnet.json"
+curl -fsS "$SOLID_MANIFEST_URL" -o /tmp/solid-devnet.json
+python3 -m json.tool /tmp/solid-devnet.json >/dev/null
+```
+
+### 12.11 Deploy `solid-console` / `solid-sim`
+
+`solid-console` is a Vite static app. It can deploy to Vercel, Netlify,
+GitHub Pages, S3+CloudFront, or any static web host.
+
+Production env vars:
 
 ```bash
 VITE_SOLID_NETWORK=devnet
 VITE_SOLID_CLUSTER=devnet
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com
-VITE_SOLID_MANIFEST_URL=https://<host>/solid/devnet.json
-VITE_SOLID_ARTIFACT_BASE_URL=https://<host>/artifacts
+VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json
+VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06
 VITE_SOLID_INDEXER_URL=https://<indexer-host>
 VITE_SOLID_CONSOLE_URL=https://<console-host>
 VITE_SOLID_EXPLORER_CLUSTER=devnet
 ```
 
-For a local smoke run before Vercel/Netlify:
+What each value does:
+
+- `VITE_SOLID_NETWORK` and `VITE_SOLID_CLUSTER`: label the app as devnet.
+- `VITE_SOLID_RPC_URL`: Solana read/write RPC used by console actions.
+- `VITE_SOLID_WS_URL`: websocket endpoint for account/transaction updates.
+- `VITE_SOLID_MANIFEST_URL`: lets the app load the published deployment state.
+- `VITE_SOLID_ARTIFACT_BASE_URL`: overrides artifact URLs if the manifest
+  does not include a base URL or you want same-origin artifacts.
+- `VITE_SOLID_INDEXER_URL`: request inbox, credential request workflow, and
+  proof Merkle paths.
+- `VITE_SOLID_CONSOLE_URL`: self URL recorded in manifest and shared links.
+- `VITE_SOLID_EXPLORER_CLUSTER`: explorer link cluster parameter.
+
+#### Local production build test
 
 ```bash
 cd ../solid-console
-npm install
+npm ci
+
 VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
-VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
-VITE_SOLID_INDEXER_URL=http://localhost:8787 \
-npm run dev
+VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06 \
+VITE_SOLID_INDEXER_URL=https://<indexer-host> \
+VITE_SOLID_CONSOLE_URL=https://<console-host> \
+VITE_SOLID_EXPLORER_CLUSTER=devnet \
+npm run build
+
+npm run preview
 ```
 
-Build `solid-wallet` with the same manifest/artifact/indexer defaults,
-then distribute `solid-wallet/dist` as an unpacked Chrome/Brave extension
-for controlled testing:
+Open the preview URL and check:
+
+- Overview page loads.
+- DAO page loads.
+- Issuer Request Inbox loads.
+- Issuer Issue Credential loads.
+- Wallet page loads.
+- Verifier page loads.
+- No blank screens.
+- No browser console error for `process is not defined`.
+- No browser console error for `tweetnacl-util` named exports.
+- Artifact loading either succeeds or fails with a clear pinned-artifact error.
+
+#### Vercel deploy
+
+`solid-console/vercel.json` already sets:
+
+- framework: `vite`
+- build command: `npm run build`
+- output directory: `dist`
+- immutable cache headers for `/artifacts/(.*)`
+
+Set the production env vars in Vercel, then deploy:
+
+```bash
+cd ../solid-console
+vercel pull --yes --environment=production
+vercel build --prod
+vercel deploy --prebuilt --prod
+```
+
+After deploy:
+
+```bash
+curl -I https://<console-host>/
+curl -I https://<console-host>/artifacts/batch_credential_query.wasm
+```
+
+If artifacts are hosted elsewhere, the second command is only required
+against the artifact host, not the console host.
+
+### 12.12 Optional: build and distribute `solid-wallet`
+
+Skip this section for the current `solid-sim` deployment unless you explicitly
+want to test the standalone browser extension. The current wallet role lives
+inside `solid-console`, so the required public E2E path is:
+
+```text
+solid-console DAO -> solid-console Issuer -> solid-console Wallet -> solid-console Verifier
+```
+
+`solid-wallet` is a separate browser extension. Its build output is
+`solid-wallet/dist`. Use it only when testing external dApp injection,
+`window.solid`, or extension-specific encrypted storage.
+
+Before building the extension for public testers, update
+`solid-wallet/public/manifest.json` so the extension can talk to your deployed
+app and only your deployed app.
+
+Current local-only values look like:
+
+```json
+"host_permissions": [
+  "http://localhost/*",
+  "http://127.0.0.1/*"
+],
+"content_scripts": [
+  {
+    "matches": ["http://localhost/*", "http://127.0.0.1/*"]
+  }
+]
+```
+
+For public devnet, change them to your tester origins:
+
+```json
+"host_permissions": [
+  "https://<console-host>/*",
+  "https://<verifier-dapp-host>/*"
+],
+"content_scripts": [
+  {
+    "matches": ["https://<console-host>/*", "https://<verifier-dapp-host>/*"],
+    "js": ["content.js"],
+    "run_at": "document_start"
+  }
+],
+"web_accessible_resources": [
+  {
+    "resources": ["icons/*"],
+    "matches": ["https://<console-host>/*", "https://<verifier-dapp-host>/*"]
+  }
+]
+```
+
+Do not use `<all_urls>` for public testing unless you explicitly accept the
+risk. The wallet injects `window.solid`; keep that scoped.
+
+Build:
 
 ```bash
 cd ../solid-wallet
-npm install
+npm ci
+
 VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
-VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
-VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json \
+VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06 \
+VITE_SOLID_INDEXER_URL=https://<indexer-host> \
 npm run build
 ```
 
-Until the artifact host and indexer are public, wallet/solid-sim testing is
-operator-local only. For independent issuer/verifier platforms, publish
-`deployments/devnet.json`, the six circuit artifacts, `.sha256` sidecars,
-and an indexer endpoint before sending them the quickstart.
-
-For localnet, use the matching checked-in profiles instead of rewriting
-commands by hand:
+Package an unpacked-test ZIP:
 
 ```bash
-cd solid-protocol
-source config/localnet.env.example
-
-cd ../solid-console
-cp .env.localnet.example .env
-npm run dev
-
-cd ../solid-wallet
-cp .env.localnet.example .env
-npm run build
+rm -f solid-wallet-devnet.zip
+(cd dist && zip -r ../solid-wallet-devnet.zip .)
+shasum -a 256 solid-wallet-devnet.zip
 ```
 
-### 12.9 Four-role live smoke
+Install locally:
 
-DAO evidence:
+1. Open `chrome://extensions`.
+2. Enable Developer Mode.
+3. Click "Load unpacked".
+4. Select `solid-wallet/dist`.
+5. Open the extension settings page and confirm manifest URL, artifact URL,
+   and indexer URL are populated.
 
-- DAO voter public key, governance mint, staker account, issuer
-  application PDA, vote tx, finalize tx, final issuer status, issuer-tree
-  root.
+If you do not deploy the extension, leave `deployments/devnet.json`
+`wallet.release_url` as `null` and record that the active wallet for this
+milestone is the embedded `solid-console` wallet. If you do deploy it, update
+`wallet.release_url` with the ZIP URL or private Chrome Web Store URL.
 
-Issuer evidence:
+### 12.13 Optional verifier dApp deployment
 
-- Issuer wallet, derived BJJ public key, subgroup proof artifact pins,
-  `register_issuer` tx, issuer status after approval, credential
-  commitment, encrypted envelope hash.
+For full external-dApp testing, deploy a simple verifier app or use
+`solid-console` verifier pages as the verifier role.
 
-Holder evidence:
+If using `examples/verifier-dapp`, remember its `package.json` currently
+uses published package ranges:
 
-- Wallet extension version, manifest URL, imported credential metadata,
-  proof request origin, artifact URLs/pins used, indexer proof root/slot,
-  returned proof/public signals/nullifier.
+```json
+"@solid-protocol/sdk": "^0.3.0",
+"@solid-protocol/verifier": "^0.2.0"
+```
 
-Verifier evidence:
+Until npm packages are published, use one of these:
 
-- Requirement spec, local verification result, proof-buffer transaction
-  signatures, nullifier PDA, replay rejection evidence.
+1. Publish SDK packages first.
+2. Temporarily switch example deps to local `file:` paths for operator testing.
+3. Use `solid-console` verifier pages instead of the example dApp.
 
-### 12.10 Rollback and feedback
+Verifier app requirements:
 
-If deployment fails before testers, stop publishing the manifest URL or
-mark status `ok: false`, keep old manifests accessible for debugging,
-record affected tx signatures, and invalidate wallet instructions that
-reference stale roots.
+- Reads the same manifest URL.
+- Builds a proof request envelope with artifact pins from the manifest.
+- Calls `window.solid.requestProof(...)`.
+- Receives proof/public signals/nullifier.
+- Submits on-chain verification to `zk_verifier`.
+- Rejects access if on-chain verification fails or replay is rejected.
 
-Tester bug reports must include role, browser/OS, Solana wallet, SolID
-Wallet version, console URL, manifest URL, tx signatures, error message,
-screenshots/logs, and whether refresh or unlock fixed it.
+### 12.14 SDK package publishing gate
+
+For monorepo deployment, local `file:` deps are fine. For external apps,
+publish the SDK packages or provide tarballs.
+
+Run:
+
+```bash
+cd solid-protocol/ts-sdk
+npm ci
+npm run build
+npm test
+npm run pack:check
+npm audit --audit-level=high
+```
+
+Publish order, because packages depend on each other:
+
+```bash
+npm publish --workspace @solid-protocol/channel --access public
+npm publish --workspace @solid-protocol/core --access public
+npm publish --workspace @solid-protocol/light --access public
+npm publish --workspace @solid-protocol/issuer --access public
+npm publish --workspace @solid-protocol/holder --access public
+npm publish --workspace @solid-protocol/verifier --access public
+npm publish --workspace @solid-protocol/sdk --access public
+```
+
+Do not publish while `npm audit --audit-level=high` is red unless the
+release notes explicitly accept the risk. Current known audit pressure comes
+from transitive dependencies such as `underscore/jsonpath/bfj` and
+`bigint-buffer` in Solana-related chains. Fix or document before public npm
+release.
+
+After publishing:
+
+```bash
+npm view @solid-protocol/sdk version
+npm view @solid-protocol/verifier version
+npm view @solid-protocol/channel version
+```
+
+### 12.15 Link everything together
+
+After all pieces are deployed, the links should form this graph:
+
+```text
+solid-console
+  -> VITE_SOLID_MANIFEST_URL
+  -> VITE_SOLID_RPC_URL / VITE_SOLID_WS_URL
+  -> VITE_SOLID_INDEXER_URL
+  -> VITE_SOLID_ARTIFACT_BASE_URL
+
+embedded console wallet
+  -> same solid-console VITE_SOLID_MANIFEST_URL
+  -> same solid-console VITE_SOLID_INDEXER_URL
+  -> same solid-console VITE_SOLID_ARTIFACT_BASE_URL
+
+optional solid-wallet extension
+  -> baked VITE_SOLID_MANIFEST_URL, if extension is deployed
+  -> baked or user-configured artifact base URL, if extension is deployed
+  -> baked or user-configured indexer URL, if extension is deployed
+  -> allowed tester origins in extension manifest, if extension is deployed
+
+indexer
+  -> SOLID_MANIFEST_PATH
+  -> SOLID_RPC_URL
+  -> SOLID_INDEXER_STORE_PATH
+  -> SOLID_INDEXER_WRITE_TOKEN
+
+manifest
+  -> program IDs
+  -> artifact base URL + hashes
+  -> indexer URL
+  -> console URL
+  -> optional wallet release URL, null when using only the embedded console wallet
+  -> schema/tree/root/sample tx state
+```
+
+Run this final wiring checklist:
+
+```bash
+export SOLID_MANIFEST_URL="https://<manifest-host>/solid/devnet.json"
+export SOLID_INDEXER_URL="https://<indexer-host>"
+export ARTIFACT_BASE_URL="https://<artifact-host>/solid/devnet/2026-05-06"
+export SOLID_CONSOLE_URL="https://<console-host>"
+
+curl -fsS "$SOLID_MANIFEST_URL" -o /tmp/solid-devnet.json
+curl -fsS "$SOLID_INDEXER_URL/v1/health" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/manifest" -o /tmp/solid-indexer-manifest.json
+
+python3 - <<'PY'
+import json
+m1=json.load(open('/tmp/solid-devnet.json'))
+m2=json.load(open('/tmp/solid-indexer-manifest.json'))
+assert m1['programs']==m2['programs'], 'indexer manifest programs differ'
+assert m1['schemas']==m2['schemas'], 'indexer manifest schemas differ'
+print('manifest wiring ok')
+PY
+
+curl -I "$SOLID_CONSOLE_URL/"
+```
+
+### 12.16 Exhaustive deployed-system test plan
+
+Run these after public URLs are live.
+
+#### A. Static and config checks
+
+```bash
+curl -fsS "$SOLID_MANIFEST_URL" | python3 -m json.tool >/dev/null
+curl -fsS "$SOLID_INDEXER_URL/v1/health" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/schemas" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/issuers" | python3 -m json.tool
+curl -fsS "$SOLID_INDEXER_URL/v1/roots/current" | python3 -m json.tool
+```
+
+Expected:
+
+- manifest JSON parses
+- indexer health is OK
+- schema list contains `basic_identity_v2`
+- issuer list contains the approved smoke issuer
+- roots match or are not older than the manifest roots
+
+#### B. Hosted artifact checks
+
+Use the command from section 12.8 to download every artifact and compare
+SHA-256 against the manifest. Also open the console in a browser and trigger
+pages that use artifacts:
+
+- Issuer registration, subgroup proof path.
+- Wallet proof generation path.
+- Verifier proof verification path.
+
+Expected:
+
+- no mixed-content errors
+- no CORS errors if artifact host differs from console host
+- no hash mismatch
+- no missing `.wasm` or `.zkey`
+
+#### C. On-chain program checks
+
+```bash
+solana program show 4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1 --url devnet
+solana program show 5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx --url devnet
+solana program show DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb --url devnet
+```
+
+Expected:
+
+- executable
+- owned by BPF Upgradeable Loader
+- expected authority
+- expected recent deploy slots
+
+#### D. Terminal E2E against deployed devnet
+
+Run from `solid-protocol`:
+
+```bash
+source config/devnet.env.example
+export SOLID_KEYPAIR_PATH="$HOME/.config/solana/solid-devnet-admin.json"
+export SOLANA_KEYPAIR_PATH="$SOLID_KEYPAIR_PATH"
+export ANCHOR_WALLET="$SOLID_KEYPAIR_PATH"
+
+npm run issue
+npm run prove
+```
+
+Expected:
+
+- new credential issue tx
+- schema/global roots update if needed
+- local Groth16 verify passes
+- on-chain verify tx succeeds
+- replay attempt fails
+
+Update manifest sample values after this if the purpose is a release smoke.
+
+#### E. DAO flow in `solid-sim`
+
+In browser:
+
+1. Open deployed `solid-sim`.
+2. Connect a devnet Solana wallet.
+3. Go to DAO.
+4. Confirm registry config loads.
+5. Create or inspect issuer application.
+6. Vote/approve issuer if running a fresh issuer.
+7. Finalize approval.
+8. Confirm issuer appears in active issuer list and issuer tree root updates.
+
+Evidence to record:
+
+- DAO wallet pubkey
+- issuer application PDA
+- vote tx
+- finalize tx
+- issuer account
+- issuer status
+- issuer tree root before/after
+
+#### F. Issuer flow in `solid-sim`
+
+1. Go to Issuer.
+2. Open Register Issuer.
+3. Generate or load issuer identity.
+4. Submit registration with subgroup proof.
+5. Confirm DAO approval state.
+6. Open Schema Permissions.
+7. Confirm issuer has permission for `basic_identity_v2`.
+8. Open Request Inbox.
+9. Confirm holder credential requests appear.
+10. Open Issue Credential.
+11. Issue a credential to the selected holder.
+
+Evidence to record:
+
+- issuer authority pubkey
+- BJJ pubkey
+- registration tx
+- schema permission PDA
+- issue tx
+- credential commitment
+- encrypted credential envelope hash
+
+Expected failure tests:
+
+- unapproved issuer cannot issue
+- issuer without schema permission cannot issue
+- malformed holder key is rejected
+- expired or mismatched schema request is rejected
+
+#### G. Holder wallet flow
+
+For the current milestone, use the embedded Wallet section in deployed
+`solid-sim`.
+
+1. Open deployed `solid-sim`.
+2. Go to the Wallet role.
+3. Confirm the app is using the devnet manifest URL, artifact base URL, and
+   indexer URL from the production env/manifest.
+4. Create or load holder identity/material in the simulator wallet.
+5. Go to Holder Discover and request a credential from an active issuer.
+6. Go to Issuer Request Inbox and confirm the request appears.
+7. Issue the credential from the Issuer role.
+8. Return to Wallet and import/store the issued encrypted credential envelope.
+9. Confirm credential integrity validation passes.
+10. Trigger a proof request from the Verifier role.
+11. Generate the proof using hosted artifacts and live Merkle proof data from
+    the indexer.
+12. Confirm proof generation succeeds.
+
+If and only if the standalone extension is part of the test release, repeat
+the same flow through `solid-wallet` and `window.solid`.
+
+Evidence to record:
+
+- console build hash and wallet mode: `embedded solid-console wallet`
+- holder public material, not secret seed
+- credential metadata
+- proof request origin
+- artifact URLs and pins
+- Merkle proof root/slot
+- generated nullifier
+- generated public signals
+
+Expected failure tests:
+
+- embedded wallet blocks proof generation when indexer URL is missing
+- embedded wallet blocks proof generation when artifact base URL is missing
+- embedded wallet rejects artifact hash mismatch
+- embedded wallet rejects non-HTTPS artifact URL unless same-origin or localhost
+- embedded wallet rejects credential issued to a different holder key
+- embedded wallet rejects expired credential
+- embedded wallet returns a clear error for missing matching credential
+
+#### H. Verifier/dApp flow
+
+1. Open deployed verifier page or `solid-sim` verifier role.
+2. Build a requirement for `basic_identity_v2`.
+3. Request proof through the embedded `solid-sim` wallet flow. If testing the
+   optional extension, request proof through `window.solid`.
+4. Receive proof and public signals.
+5. Run local verification if the UI supports it.
+6. Submit on-chain verification.
+7. Confirm dApp grants access only after on-chain success.
+8. Submit the same proof again.
+9. Confirm replay fails because the nullifier PDA already exists.
+
+Evidence to record:
+
+- requirement JSON
+- proof request envelope
+- artifact pins
+- verify tx
+- nullifier PDA
+- replay rejection logs
+
+Expected failure tests:
+
+- dApp does not grant access before on-chain success
+- dApp does not grant access after local-only success if on-chain submission fails
+- replay is rejected
+- wrong schema hash fails
+- wrong root fails
+- wrong verifier program ID fails
+
+#### I. Browser regression checks
+
+Open every route in deployed `solid-sim`:
+
+- Overview
+- DAO Applications
+- DAO Actions
+- Issuer Register
+- Issuer Request Inbox
+- Issuer Issue Credential
+- Issuer Schema Permissions
+- Issuer Active Issuers
+- Wallet Dashboard
+- Holder Discover
+- Verifier Query Builder
+- Verifier Verify Proof
+- VK Management
+- Analytics
+
+Expected:
+
+- no blank pages
+- no uncaught exceptions
+- page error boundary never appears
+- wallet section renders credential state
+- request inbox renders empty, loading, and populated states
+- issue credential page renders even before a request exists
+
+Browser console must not contain:
+
+```text
+process is not defined
+tweetnacl-util does not provide an export named
+Module "fs" has been externalized
+Module "path" has been externalized
+Module "os" has been externalized
+```
+
+#### J. API negative tests
+
+```bash
+# Unknown proof should fail closed.
+curl -i "$SOLID_INDEXER_URL/v1/merkle-proof/<tree>/0000000000000000000000000000000000000000000000000000000000000000"
+
+# Missing write token should be rejected.
+curl -i -X POST "$SOLID_INDEXER_URL/v1/tree-leaves" \
+  -H "Content-Type: application/json" \
+  --data '{}'
+
+# Bad write token should be rejected.
+curl -i -X POST "$SOLID_INDEXER_URL/v1/tree-leaves" \
+  -H "Authorization: Bearer wrong" \
+  -H "Content-Type: application/json" \
+  --data '{}'
+```
+
+Expected:
+
+- unknown proof: `404`
+- missing/bad write token: `401` or `403`
+- no fake proof is returned
+- no stack trace leaks secrets
+
+#### K. Performance and size sanity
+
+Record:
+
+- console initial JS size
+- wallet background bundle size
+- artifact file sizes
+- proof generation time
+- on-chain verification tx time
+- indexer health latency
+
+Current build warnings may show chunks over 500 kB. This is acceptable for
+devnet testing if proof flows are green, but track it before mainnet/public
+growth. If the wallet feels slow, split proof generation and heavy crypto
+paths with dynamic imports.
+
+### 12.17 Final release evidence checklist
+
+Create a release note or status doc with:
+
+```text
+Protocol:
+- schema_registry program show output
+- issuer_registry program show output
+- zk_verifier program show output
+- init tx
+- issuer approval tx
+- schema permission tx
+- issue tx
+- verify tx
+- replay rejection evidence
+
+Artifacts:
+- artifact base URL
+- SHA-256 for all six artifacts
+- curl/hash verification output
+
+Indexer:
+- URL
+- /v1/health output
+- /v1/schemas output
+- /v1/issuers output
+- unknown leaf 404 output
+
+Console:
+- URL
+- commit/build hash
+- env vars used
+- browser route smoke results
+
+Wallet:
+- active wallet mode: embedded `solid-console` wallet
+- console wallet route smoke result
+- proof generation result
+- optional extension release URL, ZIP hash, and allowed origins only if
+  `solid-wallet` is included in the test release
+
+E2E:
+- DAO approval evidence
+- issuer issuance evidence
+- holder import/proof evidence
+- verifier on-chain success evidence
+- replay rejection evidence
+```
+
+### 12.18 Rollback
+
+If public deployment fails before testers start:
+
+1. Remove or unpublish the manifest URL.
+2. Keep the broken manifest under a timestamped debug path.
+3. Restore the previous console deployment.
+4. Stop the indexer if it is writing bad state.
+5. Do not delete tx signatures. They are evidence.
+6. Publish a new manifest only after `validate:devnet`, artifact hash checks,
+   indexer health, and browser smoke pass again.
+
+If testers are using only the embedded console wallet:
+
+1. Restore the previous console deployment.
+2. Publish corrected `VITE_SOLID_*` env vars and manifest values.
+3. Ask testers to hard refresh the console and retry the Wallet role.
+
+If testers already received the optional extension:
+
+1. Keep the old artifact URLs alive. Wallets may have cached settings.
+2. Publish a new wallet ZIP/version with corrected manifest/artifact/indexer
+   defaults.
+3. Tell testers to remove the old unpacked extension before loading the new one.
+4. Mark old roots and sample txs stale in status docs.
+
+### 12.19 Tester bug report template
+
+Ask testers for this exact data:
+
+```text
+Role: DAO / Issuer / Holder / Verifier
+Browser + version:
+OS:
+Solana wallet:
+Wallet mode: embedded console wallet / optional solid-wallet extension
+Console build hash:
+SolID Wallet version or ZIP hash, only if using extension:
+Console URL:
+Manifest URL:
+Indexer URL:
+Action attempted:
+Expected:
+Actual:
+Error message:
+Browser console logs:
+Transaction signature(s):
+Credential request ID:
+Credential commitment, if visible:
+Proof/nullifier, if visible:
+Screenshot/video:
+Did refresh help:
+Did wallet lock/unlock help:
+```
+
+Do not accept "it doesn't work" as a complete report. The system spans
+browser, console wallet state, indexer, artifact host, RPC, and three
+programs. If the optional extension is included, it also spans extension
+permissions and extension storage. You need the failing layer.
 
 ---
 

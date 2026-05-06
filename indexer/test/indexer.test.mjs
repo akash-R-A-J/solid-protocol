@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { beforeEach, describe, it } from 'node:test';
+import { writeJsonResponse } from '../src/encoding.mjs';
 import { createIndexerHandler } from '../src/service.mjs';
 import { MemoryIndexerStore } from '../src/store.mjs';
 
@@ -149,6 +150,17 @@ describe('SolID indexer API', () => {
     assert.equal(proof.slot, 7);
   });
 
+  it('serializes BigInt account fields without partially writing a broken response', async () => {
+    const response = await captureJsonResponse({
+      amountStaked: 123n,
+      nested: { credentialsIssued: 456n },
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.amountStaked, '123');
+    assert.equal(response.body.nested.credentialsIssued, '456');
+  });
+
   async function get(path) {
     const response = await request(path);
     assert.equal(response.ok, true, `${path} returned ${response.status}: ${JSON.stringify(response.body)}`);
@@ -202,6 +214,27 @@ describe('SolID indexer API', () => {
         },
       };
       handler(req, res);
+    });
+  }
+
+  async function captureJsonResponse(body) {
+    return new Promise((resolve) => {
+      const res = {
+        status: 0,
+        headers: {},
+        writeHead(status, headers) {
+          this.status = status;
+          this.headers = headers;
+        },
+        end(payload) {
+          resolve({
+            status: this.status,
+            headers: this.headers,
+            body: JSON.parse(payload),
+          });
+        },
+      };
+      writeJsonResponse(res, 200, body);
     });
   }
 });

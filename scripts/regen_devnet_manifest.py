@@ -147,6 +147,18 @@ def main(argv: list[str]) -> int:
             "description": DESCRIPTIONS.get(name, ""),
         }
 
+    global_tree_address = os.environ.get("SOLID_GLOBAL_STATE_TREE") or None
+    global_binding = os.environ.get("SOLID_GLOBAL_BINDING") or global_tree_address
+    global_tree = None
+    if global_tree_address or global_binding or os.environ.get("SOLID_GLOBAL_STATE_ROOT"):
+        global_tree = {
+            "tree_address": global_tree_address,
+            "binding_pda": global_binding,
+            "current_root": os.environ.get("SOLID_GLOBAL_STATE_ROOT") or None,
+            "current_root_slot": None,
+            "depth": int(os.environ.get("SOLID_GLOBAL_STATE_DEPTH", "20")),
+        }
+
     manifest = {
         "schema_version": 1,
         "network": cluster,
@@ -182,7 +194,7 @@ def main(argv: list[str]) -> int:
         },
         "schemas": [],
         "trees": {
-            "global_state_tree": os.environ.get("SOLID_GLOBAL_STATE_TREE") or None,
+            "global_state_tree": global_tree,
             "issuer_tree": {
                 "tree_address": os.environ.get("SOLID_ISSUER_TREE") or None,
                 "binding_pda": os.environ.get("SOLID_ISSUER_TREE_BINDING") or None,

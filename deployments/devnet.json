@@ -89,6 +89,7 @@
   "schemas": [
     {
       "name": "basic_identity_v2",
+      "display_name": "Basic Identity v2",
       "version": 2,
       "category": "Identity",
       "status": "devnet-smoke",
@@ -104,6 +105,52 @@
         "nationality",
         "_reserved"
       ],
+      "predicates": ["EQ", "NE", "GT", "GTE", "LT", "LTE"],
+      "field_metadata": [
+        {
+          "name": "age",
+          "type": "uint64",
+          "description": "Age in years",
+          "range_queryable": true
+        },
+        {
+          "name": "country_code",
+          "type": "uint64",
+          "description": "ISO 3166-1 numeric country code"
+        },
+        {
+          "name": "region",
+          "type": "uint64",
+          "description": "Region or state code"
+        },
+        {
+          "name": "id_type",
+          "type": "enum",
+          "description": "1 passport, 2 license, 3 national ID"
+        },
+        {
+          "name": "verification_level",
+          "type": "enum",
+          "description": "1 self, 2 KYC, 3 in-person",
+          "range_queryable": true
+        },
+        {
+          "name": "issued_date",
+          "type": "timestamp",
+          "description": "Credential issuance date as Unix seconds",
+          "range_queryable": true
+        },
+        {
+          "name": "nationality",
+          "type": "uint64",
+          "description": "ISO 3166-1 numeric nationality code"
+        },
+        {
+          "name": "_reserved",
+          "type": "uint64",
+          "description": "Reserved field; keep 0"
+        }
+      ],
       "tree_depth": 20,
       "tree_address": "4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc",
       "tree_authority_pda": "CHc3kWDEiSGx9gHFaqj3whe4yo33ocbLVHKjYi6D3im1",
@@ -114,9 +161,11 @@
   ],
   "trees": {
     "global_state_tree": {
+      "tree_address": "68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o",
       "binding_pda": "68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o",
       "current_root": "610b2e31e33bc10e3e7e0cf0e6fbeaae0c23b42c24266f1bc3a80685e805ce01",
-      "current_root_slot": 460542860
+      "current_root_slot": 460542860,
+      "depth": 20
     },
     "issuer_tree": {
       "tree_address": "FajCWko9tc6dhdPtwrS5kfkehPoEV8pn5LdL4kLL7k7f",

@@ -28,6 +28,7 @@ export function readU64Le(bytes, offset) {
 }
 
 export function writeJsonResponse(res, status, body) {
+  const payload = JSON.stringify(body, jsonReplacer, 2);
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
@@ -35,5 +36,9 @@ export function writeJsonResponse(res, status, body) {
     'access-control-allow-methods': 'GET,POST,PATCH,OPTIONS',
     'access-control-allow-headers': 'authorization,content-type,accept',
   });
-  res.end(JSON.stringify(body, null, 2));
+  res.end(payload);
+}
+
+function jsonReplacer(_key, value) {
+  return typeof value === 'bigint' ? value.toString() : value;
 }

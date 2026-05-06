@@ -67,6 +67,9 @@ describe('devnet manifest', () => {
           schema_hash: 'a'.repeat(64),
           schema_pda: null,
           tree_address: null,
+          tree_depth: 20,
+          current_root: null,
+          current_root_slot: null,
           fields: ['age', 'country_code'],
           predicates: ['GTE', 'EQ'],
           field_metadata: [
@@ -92,5 +95,58 @@ describe('devnet manifest', () => {
         schemas: [{ ...goodManifest.schemas[0], fields: [] }],
       }),
     ).toThrow(/fields/);
+  });
+
+  it('validates tree root metadata used by wallet proof generation', () => {
+    const manifest: SolidDevnetManifest = {
+      ...DEFAULT_DEVNET_MANIFEST,
+      trees: {
+        global_state_tree: {
+          binding_pda: '11111111111111111111111111111112',
+          current_root: 'b'.repeat(64),
+          current_root_slot: 1,
+          depth: 20,
+        },
+        issuer_tree: {
+          tree_address: '11111111111111111111111111111113',
+          binding_pda: '11111111111111111111111111111114',
+          current_root: 'c'.repeat(64),
+          current_root_slot: 2,
+        },
+        schema_trees: [
+          {
+            schema_hash: 'd'.repeat(64),
+            tree_address: '11111111111111111111111111111115',
+            binding_pda: '11111111111111111111111111111116',
+            current_root: 'e'.repeat(64),
+            current_root_slot: 3,
+          },
+        ],
+      },
+    };
+
+    expect(validateSolidManifest(manifest).trees.global_state_tree?.binding_pda).toBe(
+      '11111111111111111111111111111112',
+    );
+
+    expect(() =>
+      validateSolidManifest({
+        ...manifest,
+        trees: {
+          ...manifest.trees,
+          global_state_tree: { current_root: 'b'.repeat(64) },
+        },
+      }),
+    ).toThrow(/tree_address or binding_pda/);
+
+    expect(() =>
+      validateSolidManifest({
+        ...manifest,
+        trees: {
+          ...manifest.trees,
+          schema_trees: [{ ...manifest.trees.schema_trees[0], current_root: 'not-a-root' }],
+        },
+      }),
+    ).toThrow(/current_root/);
   });
 });
