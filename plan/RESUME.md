@@ -116,12 +116,16 @@ authoritative.
   rejection.
 
   **solid-sim state:** `solid-console` is now the `solid-sim` package and
-  app surface. It has DAO, Issuer, Wallet, and Verifier role sections. The
-  Wallet section creates/imports a simulator seed, derives real channel and
-  schema-bound holder BJJ public keys, imports encrypted credential envelopes,
-  validates holder binding/commitment/subgroup/signature integrity, and only
-  generates proofs when real artifacts plus a Merkle proof indexer are
-  configured. `npm run build` and `npm run test` pass in `solid-console`.
+  app surface. It has one System tree with Flow, Schemas, Logs, and DAO,
+  Issuer, Wallet, and Verifier subsections. The Flow page visualizes DAO ->
+  Issuer -> Wallet -> Verifier causality, with motion originating at the DAO
+  trust body. The visual system uses one SolID product accent; status colors
+  are semantic only. The Wallet section creates/imports a simulator seed,
+  derives real channel and schema-bound holder BJJ public keys, imports
+  encrypted credential envelopes, validates holder
+  binding/commitment/subgroup/signature integrity, and only generates proofs
+  when real artifacts plus a Merkle proof indexer are configured. `npm run
+  build` and `npm run test` pass in `solid-console`.
 
   Public solid-sim/integrator testing still requires hosted circuit artifacts,
   a Merkle proof indexer/API, public manifest URLs, and a four-role browser

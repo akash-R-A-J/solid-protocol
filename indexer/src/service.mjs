@@ -9,10 +9,22 @@ import {
 import { buildMerkleProof } from './proofs.mjs';
 import {
   createCredentialRequest,
+  createCustomSchemaRequest,
+  createProofRequest,
+  createSchemaPermissionRequest,
   getCredentialRequest,
+  getCustomSchemaRequest,
+  getProofRequest,
+  getSchemaPermissionRequest,
   listCredentialRequests,
+  listCustomSchemaRequests,
+  listProofRequests,
+  listSchemaPermissionRequests,
   nextLeafIndex,
   updateCredentialRequest,
+  updateCustomSchemaRequest,
+  updateProofRequest,
+  updateSchemaPermissionRequest,
   upsertTreeLeaf,
 } from './store.mjs';
 import { normalizeHex32, writeJsonResponse } from './encoding.mjs';
@@ -45,6 +57,9 @@ export function createIndexerHandler({ manifest, store, connection = null, write
           lagSlots: rpcSlot === null ? null : Math.max(0, rpcSlot - lastProcessedSlot),
           indexedLeaves: state.treeLeaves.length,
           credentialRequests: state.credentialRequests.length,
+          proofRequests: state.proofRequests.length,
+          customSchemaRequests: state.customSchemaRequests.length,
+          schemaPermissionRequests: state.schemaPermissionRequests.length,
           manifestHash,
         });
         return;
@@ -104,6 +119,102 @@ export function createIndexerHandler({ manifest, store, connection = null, write
         }
         if (req.method === 'PATCH') {
           const updated = updateCredentialRequest(store, id, await readJsonBody(req));
+          writeJsonResponse(res, 200, updated);
+          return;
+        }
+      }
+
+      if (url.pathname === '/v1/proof-requests' && req.method === 'GET') {
+        writeJsonResponse(res, 200, {
+          requests: listProofRequests(store, Object.fromEntries(url.searchParams.entries())),
+        });
+        return;
+      }
+
+      if (url.pathname === '/v1/proof-requests' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const record = createProofRequest(store, body, manifest.network ?? 'devnet');
+        writeJsonResponse(res, 201, record);
+        return;
+      }
+
+      if (/^\/v1\/proof-requests\/[^/]+$/.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.split('/')[3] ?? '');
+        const existing = getProofRequest(store, id);
+        if (!existing) {
+          writeJsonResponse(res, 404, { ok: false, error: 'PROOF_REQUEST_NOT_FOUND', id });
+          return;
+        }
+        if (req.method === 'GET') {
+          writeJsonResponse(res, 200, existing);
+          return;
+        }
+        if (req.method === 'PATCH') {
+          const updated = updateProofRequest(store, id, await readJsonBody(req));
+          writeJsonResponse(res, 200, updated);
+          return;
+        }
+      }
+
+      if (url.pathname === '/v1/schema-permission-requests' && req.method === 'GET') {
+        writeJsonResponse(res, 200, {
+          requests: listSchemaPermissionRequests(store, Object.fromEntries(url.searchParams.entries())),
+        });
+        return;
+      }
+
+      if (url.pathname === '/v1/schema-permission-requests' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const record = createSchemaPermissionRequest(store, body, manifest.network ?? 'devnet');
+        writeJsonResponse(res, 201, record);
+        return;
+      }
+
+      if (url.pathname === '/v1/custom-schema-requests' && req.method === 'GET') {
+        writeJsonResponse(res, 200, {
+          requests: listCustomSchemaRequests(store, Object.fromEntries(url.searchParams.entries())),
+        });
+        return;
+      }
+
+      if (url.pathname === '/v1/custom-schema-requests' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        const record = createCustomSchemaRequest(store, body, manifest.network ?? 'devnet');
+        writeJsonResponse(res, 201, record);
+        return;
+      }
+
+      if (/^\/v1\/custom-schema-requests\/[^/]+$/.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.split('/')[3] ?? '');
+        const existing = getCustomSchemaRequest(store, id);
+        if (!existing) {
+          writeJsonResponse(res, 404, { ok: false, error: 'CUSTOM_SCHEMA_REQUEST_NOT_FOUND', id });
+          return;
+        }
+        if (req.method === 'GET') {
+          writeJsonResponse(res, 200, existing);
+          return;
+        }
+        if (req.method === 'PATCH') {
+          const updated = updateCustomSchemaRequest(store, id, await readJsonBody(req));
+          writeJsonResponse(res, 200, updated);
+          return;
+        }
+      }
+
+      if (/^\/v1\/schema-permission-requests\/[^/]+$/.test(url.pathname)) {
+        const id = decodeURIComponent(url.pathname.split('/')[3] ?? '');
+        const existing = getSchemaPermissionRequest(store, id);
+        if (!existing) {
+          writeJsonResponse(res, 404, { ok: false, error: 'SCHEMA_PERMISSION_REQUEST_NOT_FOUND', id });
+          return;
+        }
+        if (req.method === 'GET') {
+          writeJsonResponse(res, 200, existing);
+          return;
+        }
+        if (req.method === 'PATCH') {
+          const updated = updateSchemaPermissionRequest(store, id, await readJsonBody(req));
           writeJsonResponse(res, 200, updated);
           return;
         }

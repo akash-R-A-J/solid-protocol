@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/channel",
   "version": "0.1.0",
-  "description": "Secure credential transport (NaCl box / X25519 + XSalsa20-Poly1305) for the SolID Protocol",
+  "description": "Encrypted credential delivery channel for SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,5 +33,15 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "credentials",
+    "encryption",
+    "x25519",
+    "privacy"
+  ]
 }

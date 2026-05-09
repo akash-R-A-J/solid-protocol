@@ -1,0 +1,28 @@
+{
+  "credentialRequests": [],
+  "proofRequests": [],
+  "schemaPermissionRequests": [
+    {
+      "id": "5fc81fb8-6dc6-4b26-8b5b-4c381c3146d0",
+      "network": "devnet",
+      "issuerAuthority": "4D586isLE9c2WEhVvoQdgwjc3GrPoovePcP3ma6WiZ22",
+      "issuerAccount": "BxFcgZB6K8W5oxESL7GzE95JS9zmNDQPE3VtdUR7Mmcj",
+      "issuerName": "solid-test-issue-5",
+      "schemaHash": "c27b4c5f3e75c3f0320d02298d06d689a2d3c7e973fbbd23022c567e37bb8306",
+      "schemaName": "basic_identity_v1",
+      "schemaVersion": 1,
+      "reason": "Requesting DAO permission to issue this credential schema.",
+      "status": "requested",
+      "requestedAt": "2026-05-08T06:27:34.782Z",
+      "updatedAt": "2026-05-08T06:27:34.782Z",
+      "transactionSignature": null,
+      "rejectionReason": null
+    }
+  ],
+  "treeLeaves": [],
+  "processedTransactions": [],
+  "metadata": {
+    "createdAt": "2026-05-08T06:27:34.782Z",
+    "updatedAt": "2026-05-08T06:27:34.782Z"
+  }
+}

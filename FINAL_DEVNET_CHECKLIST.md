@@ -412,6 +412,9 @@ Console requirements:
 
 - [ ] No fake valid proof path.
 - [ ] No default demo data pretending to be live data.
+- [ ] Sidebar is one System tree with DAO, Issuer, Wallet, and Verifier subsections, not four disconnected mini-apps.
+- [ ] Flow view starts from DAO trust and moves through Issuer, Wallet, and Verifier.
+- [ ] Product color is a single SolID accent; green/yellow/red are used only for semantic status.
 - [ ] Reads live registry, schema, verifier, issuer, DAO, and indexer state.
 - [ ] Shows honest "not deployed", "not configured", or "no data yet" states.
 - [ ] Can register issuer using real wallet signature and subgroup proof.

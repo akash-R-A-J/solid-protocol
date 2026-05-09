@@ -36,10 +36,12 @@ Read `plan/RESUME.md` first when resuming deployment work. As of
 - On-chain devnet `verify_batch_proof_v2` retest is now blocked earlier by
   schema `BindingRootStale` during `scripts/prove.ts`; refresh the live
   schema-tree path or use a fresh depth-20 launch schema/tree before rerun.
-- `solid-console` is now being used as `solid-sim`: DAO, Issuer, Wallet,
-  and Verifier in one tester app. Wallet derives real holder material,
-  imports encrypted envelopes, validates integrity, and only proves with
-  real artifacts plus an indexer.
+- `solid-console` is now being used as `solid-sim`: one shared tester
+  environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and
+  Logs. The visual flow starts at DAO trust and moves through issuer,
+  holder wallet, and verifier. Wallet derives real holder material, imports
+  encrypted envelopes, validates integrity, and only proves with real
+  artifacts plus an indexer.
 - Artifact, indexer, solid-sim, and wallet release URLs are intentionally
   still null in `deployments/devnet.json`; public tester onboarding waits
   on those hosted services.

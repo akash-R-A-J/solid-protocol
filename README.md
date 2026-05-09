@@ -62,43 +62,30 @@ hosted devnet defaults are the next milestone -- see
 
 ## How a verification flow looks today
 
-The high-level `verifyRequirement(...)` wrapper in
-`@solid-protocol/verifier` is being designed
-([`plan/VERIFIER_SDK_SHAPE.md`](plan/VERIFIER_SDK_SHAPE.md)) and is
-**not yet shipped**. The current shipped surface is the chunked-upload
-orchestration; what an integrator writes today:
+App developers should start with the high-level verifier SDK. It builds a
+typed requirement, requests a holder proof through a transport, submits the
+proof on-chain, and returns a stable success/failure result:
 
 ```ts
-import { verifyOnChainV2 } from "@solid-protocol/verifier";
+import { SolidVerifier, walletAdapterTransport } from "@solid-protocol/verifier";
 
-const { signature, verified } = await verifyOnChainV2({
-  connection,
-  payer,
-  proof,            // Groth16 proof bytes (G1.A | G2.B | G1.C)
-  publicSignals,    // 21-element wire subset of the 32-input contract
-  issuerTreeRoot,
-  schemaTreeRoots,
-  // ... + a dozen more accounts the SDK derives for you
-});
-```
+const solid = new SolidVerifier({ cluster: "devnet" });
 
-The target shape -- one call, no manual account derivation -- is the
-core of the upcoming verifier SDK:
-
-```ts
-const { verified, reason } = await solid.verifyRequirement({
-  wallet,
-  schema: "kyc_basic_v1",
-  predicates: [
-    { field: "kyc_level", op: ">=", value: 1 },
-    { field: "restricted_jurisdiction", op: "==", value: 0 },
-  ],
-  action: "join_launchpad_pool",
+const result = await solid.verifyRequirement({
+  wallet: wallet.publicKey,
+  payer: verifierPayer,
+  spec: {
+    schema: "basic_identity_v1",
+    predicates: [
+      { field: "verification_level", op: ">=", value: 2 },
+      { field: "country_code", op: "!=", value: 840 },
+    ],
+    action: { appId: "my-launchpad", action: "join_pool_42" },
+  },
+  transport: walletAdapterTransport(wallet),
 });
 
-if (!verified) {
-  // typed reason: MISSING_CREDENTIAL | EXPIRED_CREDENTIAL | REVOKED_ISSUER | ...
-}
+if (result.verified) allowUser();
 ```
 
 This is what gets a developer from "evaluating SolID" to "integrated
@@ -151,8 +138,8 @@ Layered top to bottom; each layer has exactly one source of truth.
 Apps          Eligibility-gated Solana apps
               (DeFi, launchpads, DAO membership, gated mints)
 
-TS SDK        @solid-protocol/sdk          (one-call facade -- TODO product wrapper)
-              @solid-protocol/verifier     (verifyOnChainV2 chunked-upload)
+TS SDK        @solid-protocol/sdk          (unified facade + manifest helpers)
+              @solid-protocol/verifier     (SolidVerifier + on-chain verification)
               @solid-protocol/issuer       (issueCredential + generateSubgroupProof)
               @solid-protocol/holder       (Groth16 fullProve + Merkle adapters)
               @solid-protocol/light        (SPL AC adapter; PDA derivers)

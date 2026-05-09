@@ -182,10 +182,12 @@ VITE_SOLID_INDEXER_URL=http://localhost:8787 \
 npm run dev
 ```
 
-The current app is now the `solid-sim` four-role simulator. It has DAO,
-Issuer, Wallet, and Verifier sections. The Wallet section can derive holder
-material, import encrypted credential envelopes, validate credential integrity,
-and generate proofs only when real artifacts and an indexer are configured.
+The current app is now `solid-sim`: one shared simulator with System, Flow,
+DAO, Issuer, Wallet, Verifier, Schemas, and Logs. Use Flow to present the
+DAO -> Issuer -> Wallet -> Verifier path, then use each role subsection to
+perform the real action. The Wallet section can derive holder material, import
+encrypted credential envelopes, validate credential integrity, and generate
+proofs only when real artifacts and an indexer are configured.
 
 ## 5. Real End-To-End Flow
 

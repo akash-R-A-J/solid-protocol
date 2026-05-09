@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/sdk",
   "version": "0.3.0",
-  "description": "Unified high-level entry point for SolID Protocol (SPL-AC + Groth16)",
+  "description": "Unified TypeScript SDK for private Solana eligibility verification with SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,7 +37,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
@@ -56,5 +56,16 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "zk",
+    "zero-knowledge",
+    "credentials",
+    "eligibility",
+    "privacy"
+  ],
   "license": "MIT"
 }

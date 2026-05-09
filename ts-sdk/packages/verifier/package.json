@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/verifier",
   "version": "0.2.0",
-  "description": "High-level private eligibility verification SDK for SolID",
+  "description": "Verifier SDK for private Solana eligibility checks with SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
@@ -37,5 +37,15 @@
   "publishConfig": {
     "access": "public"
   },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "verifier",
+    "zero-knowledge",
+    "eligibility",
+    "privacy"
+  ],
   "license": "MIT"
 }

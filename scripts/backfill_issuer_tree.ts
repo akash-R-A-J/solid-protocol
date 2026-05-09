@@ -154,10 +154,17 @@ async function main() {
 
   // ─── 1. Create the SPL AC tree account (if absent) ─────────────────
   let treeKeypair: Keypair;
+  let createdTree = false;
   if (state.issuerMerkleTreeAddress && state.issuerMerkleTreeAddress !== PublicKey.default.toBase58()) {
     const existing = new PublicKey(state.issuerMerkleTreeAddress);
     const info = await connection.getAccountInfo(existing);
     if (info) {
+      if (!info.owner.equals(SPL_ACCOUNT_COMPRESSION_PROGRAM_ID)) {
+        throw new Error(
+          `state.issuerMerkleTreeAddress = ${existing.toBase58()} exists but is ` +
+          `owned by ${info.owner.toBase58()}, expected ${SPL_ACCOUNT_COMPRESSION_PROGRAM_ID.toBase58()}.`,
+        );
+      }
       console.log(`\n[1/4] reuse tree ${existing.toBase58()}`);
       treeKeypair = Keypair.generate(); // unused
       treeKeypair = { publicKey: existing, secretKey: new Uint8Array(64) } as any;
@@ -191,6 +198,7 @@ async function main() {
       }),
     );
     await anchor.web3.sendAndConfirmTransaction(connection, tx, [wallet, treeKeypair]);
+    createdTree = true;
     console.log(
       `   ok (tree=${treeKeypair.publicKey.toBase58()}, size=${size}b, rent=${(rent / LAMPORTS_PER_SOL).toFixed(4)} SOL)`,
     );
@@ -226,31 +234,26 @@ async function main() {
   console.log('\n[2a/4] spl_account_compression::init_empty_merkle_tree');
   const INIT_EMPTY_DISC = Buffer.from([191, 11, 119, 7, 180, 107, 220, 110]);
   const TRANSFER_AUTH_DISC = Buffer.from([48, 169, 76, 72, 229, 180, 55, 161]);
-  const initEmptyData = Buffer.alloc(8 + 4 + 4);
-  INIT_EMPTY_DISC.copy(initEmptyData, 0);
-  initEmptyData.writeUInt32LE(ISSUER_TREE_DEPTH, 8);
-  initEmptyData.writeUInt32LE(ISSUER_TREE_BUFFER, 12);
-  const initEmptyIx = new anchor.web3.TransactionInstruction({
-    programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-    keys: [
-      { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-      { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data: initEmptyData,
-  });
-  try {
+  if (createdTree) {
+    const initEmptyData = Buffer.alloc(8 + 4 + 4);
+    INIT_EMPTY_DISC.copy(initEmptyData, 0);
+    initEmptyData.writeUInt32LE(ISSUER_TREE_DEPTH, 8);
+    initEmptyData.writeUInt32LE(ISSUER_TREE_BUFFER, 12);
+    const initEmptyIx = new anchor.web3.TransactionInstruction({
+      programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+      keys: [
+        { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+        { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: initEmptyData,
+    });
     await anchor.web3.sendAndConfirmTransaction(
       connection, new Transaction().add(initEmptyIx), [wallet],
     );
     console.log('   ok');
-  } catch (e: any) {
-    const m = String(e?.message ?? e);
-    if (m.includes('already in use') || m.includes('already initialized')) {
-      console.log('   ok (already initialised)');
-    } else {
-      throw e;
-    }
+  } else {
+    console.log('   ok (existing tree; init skipped)');
   }
 
   // ─── 2b. SPL AC transfer_authority -> issuer-registry PDA ──────────
@@ -261,30 +264,22 @@ async function main() {
   //   [2] new_authority        (readonly, no-sign)
   // Data: discriminator(8) | new_authority(32)
   console.log('\n[2b/4] spl_account_compression::transfer_authority -> tree_authority_pda');
-  const transferData = Buffer.concat([TRANSFER_AUTH_DISC, treeAuthorityPda.toBuffer()]);
-  const transferIx = new anchor.web3.TransactionInstruction({
-    programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-    keys: [
-      { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-    ],
-    data: transferData,
-  });
-  try {
+  if (createdTree) {
+    const transferData = Buffer.concat([TRANSFER_AUTH_DISC, treeAuthorityPda.toBuffer()]);
+    const transferIx = new anchor.web3.TransactionInstruction({
+      programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+      keys: [
+        { pubkey: treeKeypair.publicKey, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: transferData,
+    });
     await anchor.web3.sendAndConfirmTransaction(
       connection, new Transaction().add(transferIx), [wallet],
     );
     console.log('   ok');
-  } catch (e: any) {
-    // If we already transferred (re-run), the wallet is no longer
-    // authority and SPL AC will reject this with a "wrong authority"
-    // signal -- treat as idempotent success.
-    const m = String(e?.message ?? e);
-    if (m.includes('IncorrectAuthority') || m.includes('already')) {
-      console.log('   ok (already transferred)');
-    } else {
-      throw e;
-    }
+  } else {
+    console.log('   ok (existing tree; authority transfer skipped)');
   }
 
   // ─── 3. initialize_issuer_tree_binding ────────────────────────────
@@ -334,18 +329,32 @@ async function main() {
   // supplies the Poseidon siblings the new leaf would have at its
   // assigned index; the on-chain handler verifies via Poseidon-recompute.
   const replica = new LocalReplicaAdapter(ISSUER_TREE_DEPTH, poseidonHashPair);
-  for (const { pda, account: acc } of approved) {
+  const issuerLeaf = (acc: any): Uint8Array => computeIssuerLeaf(
+    acc.authority.toBytes(),
+    Uint8Array.from(acc.bjjPubKeyX),
+    Uint8Array.from(acc.bjjPubKeyY),
+    BigInt(acc.statusEpoch.toString()),
+    BigInt(acc.revocationNonce.toString()),
+  );
+  const enrolled = approved
+    .filter(({ account: acc }) => acc.isTreeEnrolled)
+    .sort((a, b) =>
+      Number(a.account.issuerTreeLeafIndex.toString()) -
+      Number(b.account.issuerTreeLeafIndex.toString()),
+    );
+  const notEnrolled = approved.filter(({ account: acc }) => !acc.isTreeEnrolled);
+
+  for (const { pda, account: acc } of enrolled) {
+    replica.appendLeaf(issuerLeaf(acc));
+    console.log(`   skip ${pda.toBase58()} (already enrolled)`);
+  }
+
+  for (const { pda, account: acc } of notEnrolled) {
     if (acc.isTreeEnrolled) {
       console.log(`   skip ${pda.toBase58()} (already enrolled)`);
       continue;
     }
-    const leaf = computeIssuerLeaf(
-      acc.authority.toBytes(),
-      Uint8Array.from(acc.bjjPubKeyX),
-      Uint8Array.from(acc.bjjPubKeyY),
-      BigInt(acc.statusEpoch.toString()),
-      BigInt(acc.revocationNonce.toString()),
-    );
+    const leaf = issuerLeaf(acc);
     replica.appendLeaf(leaf);
     const proof = await replica.fetch(treeKeypair.publicKey, leaf);
     const flatPath = new Uint8Array(ISSUER_TREE_DEPTH * 32);
@@ -373,6 +382,44 @@ async function main() {
       ])
       .rpc();
     console.log(`   enrolled ${pda.toBase58()} -> leaf_index ${(await issuerNs.fetch(pda)).issuerTreeLeafIndex}`);
+  }
+
+  const finalRoot = replica.getRoot();
+  const bindingInfo = await connection.getAccountInfo(bindingPda, 'confirmed');
+  if (!bindingInfo || bindingInfo.data.length < 72) {
+    throw new Error(`IssuerTreeBinding not readable: ${bindingPda.toBase58()}`);
+  }
+  const liveRoot = Buffer.from(bindingInfo.data.subarray(40, 72));
+  if (!liveRoot.equals(Buffer.from(finalRoot)) && enrolled.length + notEnrolled.length > 0) {
+    const finalLeafEntry = [...enrolled, ...notEnrolled]
+      .sort((a, b) =>
+        Number(a.account.issuerTreeLeafIndex.toString()) -
+        Number(b.account.issuerTreeLeafIndex.toString()),
+      )
+      .at(-1);
+    if (!finalLeafEntry) throw new Error('issuer tree root mismatch but no issuer leaf is available');
+    const finalLeaf = issuerLeaf(finalLeafEntry.account);
+    const finalProof = await replica.fetch(treeKeypair.publicKey, finalLeaf);
+    const flatPath = new Uint8Array(ISSUER_TREE_DEPTH * 32);
+    for (let i = 0; i < ISSUER_TREE_DEPTH; i++) {
+      flatPath.set(finalProof.siblings[i], i * 32);
+    }
+    await issuerProgram.methods
+      .updateIssuerTreeRoot(
+        Array.from(finalRoot),
+        Array.from(finalLeaf),
+        new anchor.BN(finalLeafEntry.account.issuerTreeLeafIndex.toString()),
+        Buffer.from(flatPath),
+      )
+      .accounts({
+        issuerTreeBinding: bindingPda,
+        authority: wallet.publicKey,
+      })
+      .preInstructions([
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+      ])
+      .rpc();
+    console.log('   repaired issuer-tree binding root from replayed enrolled leaves');
   }
 
   // ─── Persist state ────────────────────────────────────────────────

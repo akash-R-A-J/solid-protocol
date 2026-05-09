@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/issuer",
   "version": "0.2.0",
-  "description": "Credential issuance SDK. Wraps `issuer-registry::issue_credential` (SPL Account Compression append with PDA-signed tree authority).",
+  "description": "Credential issuance SDK for SolID Protocol issuers.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,7 +22,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "clean": "rm -rf dist",
     "pack:check": "npm pack --dry-run"
   },
@@ -41,5 +41,15 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "credentials",
+    "issuer",
+    "zero-knowledge",
+    "privacy"
+  ]
 }

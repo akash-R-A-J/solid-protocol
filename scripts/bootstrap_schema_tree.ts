@@ -188,6 +188,7 @@ async function main() {
   // ─── 1. Create / reuse the SPL AC tree account ────────────────────
   let treePubkey: PublicKey;
   let treeKeypair: Keypair | null = null;
+  let createdTree = false;
   if (
     state.merkleTreeAddress &&
     state.merkleTreeAddress !== PublicKey.default.toBase58()
@@ -195,6 +196,12 @@ async function main() {
     const existing = new PublicKey(state.merkleTreeAddress);
     const info = await connection.getAccountInfo(existing);
     if (info) {
+      if (!info.owner.equals(SPL_ACCOUNT_COMPRESSION_PROGRAM_ID)) {
+        throw new Error(
+          `state.merkleTreeAddress = ${existing.toBase58()} exists but is ` +
+          `owned by ${info.owner.toBase58()}, expected ${SPL_ACCOUNT_COMPRESSION_PROGRAM_ID.toBase58()}.`,
+        );
+      }
       console.log(`\n[1/4] reuse tree ${existing.toBase58()}`);
       treePubkey = existing;
     } else {
@@ -228,6 +235,7 @@ async function main() {
       }),
     );
     await anchor.web3.sendAndConfirmTransaction(connection, tx, [wallet, treeKeypair]);
+    createdTree = true;
     console.log(
       `   ok (tree=${treePubkey.toBase58()}, size=${size}b, rent=${(rent / LAMPORTS_PER_SOL).toFixed(4)} SOL)`,
     );
@@ -247,57 +255,46 @@ async function main() {
   console.log('\n[2a/4] spl_account_compression::init_empty_merkle_tree');
   const INIT_EMPTY_DISC = Buffer.from([191, 11, 119, 7, 180, 107, 220, 110]);
   const TRANSFER_AUTH_DISC = Buffer.from([48, 169, 76, 72, 229, 180, 55, 161]);
-  const initEmptyData = Buffer.alloc(8 + 4 + 4);
-  INIT_EMPTY_DISC.copy(initEmptyData, 0);
-  initEmptyData.writeUInt32LE(SCHEMA_TREE_DEPTH, 8);
-  initEmptyData.writeUInt32LE(SCHEMA_TREE_BUFFER, 12);
-  const initEmptyIx = new anchor.web3.TransactionInstruction({
-    programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-    keys: [
-      { pubkey: treePubkey, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-      { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
-    ],
-    data: initEmptyData,
-  });
-  try {
+  if (createdTree) {
+    const initEmptyData = Buffer.alloc(8 + 4 + 4);
+    INIT_EMPTY_DISC.copy(initEmptyData, 0);
+    initEmptyData.writeUInt32LE(SCHEMA_TREE_DEPTH, 8);
+    initEmptyData.writeUInt32LE(SCHEMA_TREE_BUFFER, 12);
+    const initEmptyIx = new anchor.web3.TransactionInstruction({
+      programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+      keys: [
+        { pubkey: treePubkey, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+        { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: initEmptyData,
+    });
     await anchor.web3.sendAndConfirmTransaction(
       connection, new Transaction().add(initEmptyIx), [wallet],
     );
     console.log('   ok');
-  } catch (e: any) {
-    if (isAlreadyInitialised(e)) {
-      console.log('   ok (already initialised)');
-    } else {
-      throw e;
-    }
+  } else {
+    console.log('   ok (existing tree; init skipped)');
   }
 
   // ─── 2b. SPL AC transfer_authority -> (b"tree-authority", schema_hash) ─
   console.log('\n[2b/4] spl_account_compression::transfer_authority -> tree_authority_pda');
-  const transferData = Buffer.concat([TRANSFER_AUTH_DISC, treeAuthorityPda.toBuffer()]);
-  const transferIx = new anchor.web3.TransactionInstruction({
-    programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-    keys: [
-      { pubkey: treePubkey, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
-    ],
-    data: transferData,
-  });
-  try {
+  if (createdTree) {
+    const transferData = Buffer.concat([TRANSFER_AUTH_DISC, treeAuthorityPda.toBuffer()]);
+    const transferIx = new anchor.web3.TransactionInstruction({
+      programId: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+      keys: [
+        { pubkey: treePubkey, isSigner: false, isWritable: true },
+        { pubkey: wallet.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: transferData,
+    });
     await anchor.web3.sendAndConfirmTransaction(
       connection, new Transaction().add(transferIx), [wallet],
     );
     console.log('   ok');
-  } catch (e: any) {
-    const m = String(e?.message ?? e);
-    // Re-runs: the wallet is no longer authority and SPL AC will
-    // reject; treat as idempotent success.
-    if (m.includes('IncorrectAuthority') || m.includes('already')) {
-      console.log('   ok (already transferred)');
-    } else {
-      throw e;
-    }
+  } else {
+    console.log('   ok (existing tree; authority transfer skipped)');
   }
 
   // ─── 3. schema_registry::initialize_tree_binding ──────────────────

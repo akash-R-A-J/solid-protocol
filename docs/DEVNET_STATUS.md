@@ -112,8 +112,10 @@ The following public devnet state has been created with deployer
 ### SolID Sim state
 
 `solid-console` has been reworked as `solid-sim` for local devnet testing.
-It now has four sections: DAO, Issuer, Wallet, and Verifier. The Wallet
-section creates/imports a simulator identity, derives real holder channel and
+It now has one System tree: Flow, Schemas, Logs, and DAO, Issuer, Wallet, and
+Verifier subsections. The Flow view starts from DAO trust and moves through
+issuer issuance, holder wallet state, and verifier checks. The Wallet section
+creates/imports a simulator identity, derives real holder channel and
 schema-bound BabyJubJub public keys, imports encrypted credential envelopes,
 validates holder binding/commitment/subgroup/signature integrity, and generates
 proofs only when real artifacts plus a Merkle proof indexer are configured.

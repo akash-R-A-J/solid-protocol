@@ -35,6 +35,7 @@ import { createHash } from 'crypto';
 import {
   PROGRAM_IDS,
   QueryBuilder,
+  initWasm,
   MAX_PREDICATES,
   NUM_FIELDS,
   type CompoundQuery,
@@ -1304,8 +1305,12 @@ export class SolidVerifier {
         this.programIds.schemaRegistry,
         this.programIds.issuerRegistry,
       );
+      const query = await buildQueryFromRequirement(
+        args.requirement,
+        normalized.fullPublicInputs,
+      );
       const request: VerificationRequest = {
-        query: buildQueryFromRequirement(args.requirement, normalized.fullPublicInputs),
+        query,
         proofData: {
           proof_a: normalized.proofA,
           proof_b: normalized.proofB,
@@ -1838,22 +1843,34 @@ function deriveTreesFromPublicInputs(
   };
 }
 
-function buildQueryFromRequirement(requirement: Requirement, fullPublicInputs: Uint8Array[]): MultiCredentialQuery {
-  return {
-    schemaHashes: fullPublicInputs.slice(6, 10),
-    predicates: requirement.publicInputs.predicateEncodings.map((pred) => ({
-      credentialIndex: 0,
-      fieldIndex: pred.fieldIndex,
-      operator: pred.op,
-      value: BigInt(pred.value),
-    })),
-    compoundLogic: requirement.publicInputs.compoundLogic,
-    verifierAddress: requirement.verifierAddress.toBytes(),
-    verifierNonce: hexToBytes(requirement.publicInputs.verifierNonce),
-    expirationTimestamp: requirement.publicInputs.expiresAt,
-    globalRoot: fullPublicInputs[1],
-    queryContextHash: new Uint8Array(32),
-  };
+async function buildQueryFromRequirement(
+  requirement: Requirement,
+  fullPublicInputs: Uint8Array[],
+): Promise<MultiCredentialQuery> {
+  const schemaHashes = fullPublicInputs.slice(6, 10);
+  const credentialIndex = schemaHashes.findIndex(
+    schemaHash => bytesToHex(schemaHash) === requirement.schemaHash,
+  );
+  if (credentialIndex < 0) {
+    throw new SolidVerificationError(
+      'INVALID_PUBLIC_INPUTS',
+      `Proof schema hashes do not include requirement schema ${requirement.schemaHash}.`,
+    );
+  }
+
+  await initWasm();
+  const builder = new QueryBuilder()
+    .schemas(schemaHashes)
+    .verifier(requirement.verifierAddress.toBytes())
+    .nonce(hexToBytes(requirement.publicInputs.verifierNonce))
+    .expiration(requirement.publicInputs.expiresAt)
+    .globalRoot(fullPublicInputs[1]);
+
+  for (const pred of requirement.publicInputs.predicateEncodings) {
+    builder.where(credentialIndex, pred.fieldIndex, pred.op, BigInt(pred.value));
+  }
+
+  return builder.build();
 }
 
 function normalizeVerificationFailure(err: unknown): VerificationFailure {

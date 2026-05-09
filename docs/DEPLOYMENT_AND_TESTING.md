@@ -2132,20 +2132,26 @@ Expected failure tests:
 
 Open every route in deployed `solid-sim`:
 
-- Overview
+- System Overview
+- System Protocol Flow
+- System Schemas
+- System Logs
+- DAO Overview
 - DAO Applications
-- DAO Actions
+- DAO Active Issuers
+- DAO Schema Permissions
+- DAO VK Management
 - Issuer Register
 - Issuer Request Inbox
 - Issuer Issue Credential
-- Issuer Schema Permissions
-- Issuer Active Issuers
+- Issuer Issued Log
+- Issuer Staking
+- Wallet Request Credential
 - Wallet Dashboard
-- Holder Discover
 - Verifier Query Builder
 - Verifier Verify Proof
-- VK Management
-- Analytics
+- Verifier History
+- Verifier Analytics
 
 Expected:
 
@@ -2155,6 +2161,8 @@ Expected:
 - wallet section renders credential state
 - request inbox renders empty, loading, and populated states
 - issue credential page renders even before a request exists
+- Flow motion originates at DAO and progresses toward Verifier
+- visual accent is consistent; only semantic states use separate colors
 
 Browser console must not contain:
 

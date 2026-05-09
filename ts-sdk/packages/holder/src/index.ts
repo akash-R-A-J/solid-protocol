@@ -37,10 +37,14 @@ import {
   type MerkleProof,
 } from '@solid-protocol/light';
 import { PublicKey } from '@solana/web3.js';
-
-// @ts-ignore — snarkjs doesn't have perfect types
-import * as snarkjs from 'snarkjs';
 import { Buffer } from 'buffer';
+
+let snarkJsPromise: Promise<typeof import('snarkjs')> | undefined;
+
+function loadSnarkJs(): Promise<typeof import('snarkjs')> {
+  snarkJsPromise ??= import('snarkjs');
+  return snarkJsPromise;
+}
 
 /** Verifier Program ID, derived from @solid-protocol/core (single source of truth). */
 const VERIFIER_ID_BYTES = new PublicKey(PROGRAM_IDS.zkVerifier).toBytes();
@@ -261,6 +265,7 @@ export async function generateProof(
     issuerPathIndices: issuerProof.pathIndices,
   };
 
+  const snarkjs = await loadSnarkJs();
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
     circuitPaths.wasmPath,
@@ -744,6 +749,7 @@ export async function generateBatchProof(
         `(${includeSecrets ? 'WITH SECRETS -- DO NOT COMMIT' : 'redacted'})`,
     );
   }
+  const snarkjs = await loadSnarkJs();
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
     circuitPaths.wasmPath,
@@ -769,6 +775,7 @@ export async function verifyProofLocally(
   verificationKeyPath: string,
 ): Promise<boolean> {
   const fs = await importNodeModule<typeof import('fs')>('fs');
+  const snarkjs = await loadSnarkJs();
   const vk = JSON.parse(fs.readFileSync(verificationKeyPath, 'utf-8'));
   return await snarkjs.groth16.verify(vk, publicSignals, proof);
 }

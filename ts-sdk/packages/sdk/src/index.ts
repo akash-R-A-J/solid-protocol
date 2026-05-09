@@ -164,11 +164,8 @@ export class SolID {
       zkeyPath: `${SOLID_CONFIG.ARTIFACT_BASE_URL}${SOLID_CONFIG.CIRCUIT_METADATA.BATCH_QUERY.ZKEY_PATH}`,
     };
 
-    // SOLID-SEC-058 / CRIT-3: load each artifact, compute SHA-256, refuse
-    // on mismatch / refuse on missing pin for CDN-loaded artifacts.  Pass
-    // the verified bytes (Uint8Array) downstream -- snarkjs.groth16.fullProve
-    // accepts Buffer/Uint8Array as well as path/URL strings.  This removes
-    // the TOCTOU between hash check and snarkjs's own re-fetch.
+    // Load and verify each prover artifact before handing bytes to snarkjs.
+    // This keeps the integrity check and proof generation on the same bytes.
     const wasmBytes = await loadAndVerifyArtifact(
       sourcePaths.wasmPath,
       WASM_PIN,
@@ -186,7 +183,7 @@ export class SolID {
       params.masterPrivateKey,
       params.masterPublicKey,
       params.revocationNonce,
-      { wasmPath: wasmBytes as unknown as string, zkeyPath: zkeyBytes as unknown as string },
+      { wasmPath: wasmBytes, zkeyPath: zkeyBytes },
       {
         merkleProofAdapter: params.merkleProofAdapter,
         globalStateTree: params.globalStateTree,

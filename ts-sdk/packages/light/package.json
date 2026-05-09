@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/light",
   "version": "0.2.0",
-  "description": "SPL Account-Compression backend adapter for the SolID protocol. Provides credential-tree creation, leaf append, root reads, and Merkle-proof retrieval. The package name is kept for API stability; the implementation is 100% SPL Account Compression.",
+  "description": "SPL Account Compression adapter and Merkle proof utilities for SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "npm run build",
     "clean": "rm -rf dist",
     "pack:check": "npm pack --dry-run"
   },
@@ -33,5 +33,15 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "spl-account-compression",
+    "merkle-tree",
+    "credentials",
+    "indexer"
+  ]
 }

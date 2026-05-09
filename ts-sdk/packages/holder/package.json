@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/holder",
   "version": "0.2.0",
-  "description": "Proof generation SDK for credential holders. Builds Groth16 witnesses, fetches Merkle proofs from an SPL Account-Compression adapter, and returns Solana-formatted Groth16 proofs.",
+  "description": "Holder-side proof generation SDK for SolID Protocol credentials.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "vitest run --passWithNoTests",
+    "test": "npm run build",
     "clean": "rm -rf dist",
     "pack:check": "npm pack --dry-run"
   },
@@ -33,5 +33,15 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "solana",
+    "credentials",
+    "holder",
+    "groth16",
+    "privacy"
+  ]
 }

@@ -89,7 +89,7 @@ The protocol layer is now partially live on public devnet:
 | Issuer/DAO smoke | issuer registration, stake, vote, finalize, and issuer-tree enrollment completed |
 | Credential smoke | one `basic_identity_v2` credential issued on devnet |
 | Proof smoke | existing sample local witness, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, and replay rejection pass |
-| Remaining protocol blocker | fresh issuance with current SDK/source awaits `issuer_registry` upgrade and issuer/schema permission grant |
+| Remaining protocol blocker | protocol terminal smoke is green; public testing is blocked by hosted artifacts, indexer/API, solid-sim deployment, and a four-role solid-sim browser smoke |
 
 `basic_identity_v1` was created earlier with a depth-16 schema tree and
 must not be used with the current batch circuit. Public launch schemas
@@ -99,9 +99,9 @@ must use depth-20 trees.
 
 | Role | Current code path | Required infrastructure | Status |
 | --- | --- | --- | --- |
-| DAO | `solid-sim` reads issuer accounts and builds vote/finalize txs | Governance mint, staked DAO voter, live registry config, pending issuer application | protocol smoke green via scripts; public UX still needs smoke |
+| DAO | `solid-sim` reads issuer accounts and builds vote/finalize txs; System/Flow shows DAO as the start of trust causality | Governance mint, staked DAO voter, live registry config, pending issuer application | protocol smoke green via scripts; public UX still needs smoke |
 | Issuer | `solid-sim` derives BJJ identity, loads subgroup artifacts, builds `register_issuer`, signs encrypted credential envelopes | Live programs, hosted subgroup artifacts, registered schema, approved issuer flow, Wallet material | protocol smoke green via scripts; public artifact URLs still missing |
-| Wallet | `solid-sim` Wallet creates/imports simulator identity, derives holder keys, imports encrypted envelopes, validates integrity, and proves with artifacts/indexer | Hosted batch artifacts, live Merkle proof indexer, current tree roots, real issued credential | build/test green; public proof UX blocked by hosted artifacts/indexer and fresh issuance |
+| Wallet | `solid-sim` Wallet creates/imports simulator identity, derives holder keys, imports encrypted envelopes, validates integrity, and proves with artifacts/indexer | Hosted batch artifacts, live Merkle proof indexer, current tree roots, real issued credential | build/test green; public proof UX blocked by hosted artifacts/indexer and four-role smoke |
 | Verifier | `solid-sim` locally verifies Groth16 proof or submits proof-buffer tx sequence | Finalized VK, active schema/issuer/global bindings, funded payer, live nullifier PDA path | existing devnet sample verify green; public four-role smoke pending |
 
 ### Current P0 blockers

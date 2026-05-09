@@ -113,6 +113,44 @@ describe('SolID indexer API', () => {
     assert.equal(updated.commitment, LEAF);
   });
 
+  it('creates, lists, and registers custom schema requests', async () => {
+    const created = await post('/v1/custom-schema-requests', {
+      proposerAuthority: 'GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi',
+      proposerIssuerAccount: '8z3pKLPbB8Rc3o55dWmfZbXgwTpMhwowpP9dzVtywp55',
+      proposerIssuerName: 'Example Issuer',
+      name: 'proof_of_humanity',
+      displayName: 'Proof of Humanity',
+      version: 1,
+      category: 'Identity',
+      fields: [
+        { name: 'is_unique', type: 'boolean', description: '1 if unique human', rangeQueryable: false },
+        { name: 'issued_at', type: 'timestamp', description: 'Unix timestamp', rangeQueryable: true },
+      ],
+      schemaHash: SCHEMA_HASH,
+      reason: 'Need custom app-gating credential.',
+    });
+
+    assert.equal(created.status, 'requested');
+    assert.equal(created.name, 'proof_of_humanity');
+    assert.equal(created.fields.length, 2);
+
+    const listed = await get(`/v1/custom-schema-requests?proposerAuthority=${created.proposerAuthority}`);
+    assert.equal(listed.requests.length, 1);
+    assert.equal(listed.requests[0].id, created.id);
+
+    const updated = await patch(`/v1/custom-schema-requests/${created.id}`, {
+      status: 'registered',
+      registeredBy: 'Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm',
+      registerSchemaSignature: 'register-schema-signature',
+      initializeTreeSignature: 'initialize-tree-signature',
+      schemaPda: 'BDqhj8WoFQ1VfRWErJVV6cR48TsTf4amXzngGXXy5UmB',
+      schemaTreeBindingPda: 'AKDjcDE3YwRdJrkCFwYEZDXs9WMeXMCvxX7aERvynpVx',
+      treeAddress: TREE_ADDRESS,
+    });
+    assert.equal(updated.status, 'registered');
+    assert.equal(updated.treeAddress, TREE_ADDRESS);
+  });
+
   it('requires the write token for tree ingestion and never returns fake proofs', async () => {
     const denied = await request('/v1/tree-leaves', {
       method: 'POST',

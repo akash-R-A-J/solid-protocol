@@ -15,7 +15,9 @@
     { "path": "packages/light" },
     { "path": "packages/issuer" },
     { "path": "packages/holder" },
-    { "path": "packages/verifier" }
+    { "path": "packages/verifier" },
+    { "path": "packages/channel" },
+    { "path": "packages/sdk" }
   ],
   "files": []
 }
