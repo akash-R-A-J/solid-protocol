@@ -6,6 +6,9 @@ dist/
 pkg/
 circuits/build/
 circuits/ptau/
+.solid-indexer/
+logs/
+public-devnet-artifacts/
 .vscode/*
 # Track shared rust-analyzer configuration so all contributors get the
 # same proc-macro toolchain and target-dir wiring (see file header for

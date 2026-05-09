@@ -2,8 +2,8 @@
 > ===============================
 >
 > Per-component snapshot of the implementation as of v0.6.1
-> (post-Phase-E close-out plus partial public devnet deploy,
-> 2026-05-06).  Every row is a direct mirror of
+> (post-Phase-E close-out plus local solid-sim devnet UI smoke,
+> 2026-05-09).  Every row is a direct mirror of
 > a section in [`SYSTEM_VISION.md`](./SYSTEM_VISION.md) so the two
 > documents can be read side-by-side: vision on the left, current
 > reality on the right.
@@ -22,8 +22,8 @@
 
 # 0. Current Public Devnet State
 
-The protocol is partially live on public devnet, but the system is not
-public-test-ready yet.
+The protocol is live enough for local public-devnet smoke testing through
+`solid-sim`, but the system is not public-test-ready yet.
 
 | Area | Current state |
 | ---- | ------------- |
@@ -32,16 +32,16 @@ public-test-ready yet.
 | Smoke schema | `basic_identity_v2`, version 2, schema hash `6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823`, depth-20 tree. |
 | DAO / issuer smoke | One issuer was registered, voted/finalized, and enrolled in the issuer tree. |
 | Credential smoke | One `basic_identity_v2` credential was issued into the schema tree. |
-| Proof smoke | Fresh devnet issue, root sync, local witness generation, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, and replay rejection are green for `basic_identity_v2`. |
-| Remaining protocol blocker | Protocol terminal smoke is green. Public user testing is now blocked by hosted artifacts, indexer/API, solid-sim deployment, and a four-role solid-sim smoke. |
-| Product state | `solid-console` is now `solid-sim`: one shared tester environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and Logs. Flow starts at DAO trust and moves through issuer, holder wallet, and verifier. Wallet derives real holder material, imports encrypted envelopes, validates credential integrity, and only proves with real artifacts plus an indexer. |
-| Product blocker | Public solid-sim/integrator testing still needs hosted artifacts, a Merkle proof indexer/API, and public manifest URLs. |
+| Proof smoke | Fresh devnet issue, root sync, local witness generation, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, replay rejection, and the local four-role `solid-sim` proof-buffer verifier path are green for `basic_identity_v2`. |
+| Remaining protocol blocker | Protocol terminal smoke and local UI smoke are green. Public user testing is now blocked by hosted artifacts, hosted indexer/API, hosted solid-sim deployment, and public URLs in the manifest. |
+| Product state | `solid-console` is now `solid-sim`: one shared tester environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and Logs. Flow starts at DAO trust and moves through issuer, holder wallet, and verifier. Wallet derives real holder material, imports encrypted envelopes, validates credential integrity, and proves with real artifacts plus an indexer. The indexer owns schema/global root sync service-side, so holders do not need the DAO/admin wallet to generate proofs. |
+| Product blocker | Public solid-sim/integrator testing still needs hosted artifacts, a hosted Merkle proof indexer/API, hosted simulator URL, and public manifest URLs. |
 
 The public machine-readable snapshot lives in `deployments/devnet.json`.
 The human-readable operational snapshot lives in `docs/DEVNET_STATUS.md`.
 Do not send public testers through the flow until hosted artifacts, the
-indexer/API, and solid-sim are deployed and a four-role solid-sim smoke is
-recorded.
+indexer/API, and solid-sim are deployed and the green local four-role smoke is
+repeated against hosted URLs.
 
 # 1. Programs (the contract)
 

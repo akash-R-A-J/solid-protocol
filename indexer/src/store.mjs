@@ -145,6 +145,7 @@ export function createProofRequest(store, input, network = 'devnet') {
       operator: requiredString(predicate.operator, `predicates[${index}].operator`),
       value: requiredString(predicate.value, `predicates[${index}].value`),
     })),
+    compoundLogic: input.compoundLogic === 'OR' ? 'OR' : 'AND',
     status: 'requested',
     requestedAt: now,
     updatedAt: now,

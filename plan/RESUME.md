@@ -4,7 +4,7 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-07 (fresh devnet issue/prove/replay green).
+- **Last updated:** 2026-05-09 (local solid-sim four-role UI smoke green).
 
   **Current truth:** the protocol is partially live on public devnet, but
   the system is **not public-test-ready yet**. Programs, registry config,
@@ -15,8 +15,11 @@ authoritative.
   live-root-aware for repeated devnet runs, and fresh issue -> root sync ->
   Groth16 proof -> on-chain verify -> replay rejection is green:
   `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE`.
-  Public tester onboarding is now blocked by hosted artifacts, indexer/API,
-  solid-sim deployment, and a four-role solid-sim smoke.
+  The local `solid-sim` four-role UI smoke is also green through DAO/issuer
+  setup, holder proof generation, and verifier proof-buffer submission with
+  `Proof accepted`. Public tester onboarding is now blocked by hosted artifacts,
+  hosted indexer/API, hosted solid-sim deployment, and repeating the green smoke
+  against hosted URLs.
 
   **Admin/deployer state:**
   - Deployer pubkey: `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`.

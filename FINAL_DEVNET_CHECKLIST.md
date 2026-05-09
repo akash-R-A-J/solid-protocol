@@ -4,11 +4,12 @@ Status: final operator checklist for the first public devnet feedback run.
 Scope: `solid-protocol`, `ts-sdk`, `solid-channel`, `solid-wallet`, and
 `solid-console`.
 
-Last updated: 2026-05-06. Protocol deployment is partially live on public
+Last updated: 2026-05-09. Protocol deployment is partially live on public
 devnet. Fresh `basic_identity_v2` issue -> root sync -> proof -> on-chain
-verify -> replay rejection is green, but the public feedback run is still
-blocked by hosted artifacts, an indexer/API, public solid-sim URL, and a
-four-role solid-sim smoke.
+verify -> replay rejection is green, and the local `solid-sim` four-role UI
+smoke has reached `Proof accepted`. The public feedback run is still blocked by
+hosted artifacts, a hosted indexer/API, public solid-sim URL, and repeating the
+green local smoke against hosted URLs.
 
 This checklist is intentionally strict. A public tester should be able to
 install the wallet, open the console, issue a credential, request a proof,

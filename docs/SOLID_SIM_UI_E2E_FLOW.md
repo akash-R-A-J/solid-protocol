@@ -2,6 +2,11 @@
 
 This is the end-to-end flow for testing `solid-sim` locally against the deployed devnet programs.
 
+After this base flow is green, use
+[`SOLID_SIM_SCHEMA_BATCH_TEST_PLAN.md`](./SOLID_SIM_SCHEMA_BATCH_TEST_PLAN.md)
+to add three more schemas, test custom schema registration, and test the
+protocol's four-credential batch proof shape.
+
 Current intended setup:
 
 - Programs run on devnet: `schema_registry`, `issuer_registry`, `zk_verifier`.
@@ -9,6 +14,19 @@ Current intended setup:
 - Indexer/API runs locally: `solid-protocol/indexer` on `http://127.0.0.1:8787`.
 - Proof artifacts are served by `solid-sim` from `/artifacts`.
 - Wallet roles are separate even if you test them in one browser.
+
+Current implementation note:
+
+- The holder never connects the DAO/admin wallet to generate a proof. The local
+  indexer owns proof-root maintenance for this devnet simulator run: before
+  returning Merkle proofs, it can sync `SchemaTreeBinding` and
+  `GlobalStateBinding` roots with the configured root-sync keypair. If root sync
+  is not configured, proof generation fails as an operator setup issue, not as a
+  holder wallet action.
+- The verifier uses the on-chain proof-buffer flow:
+  `init_proof_buffer` only when the per-payer buffer PDA does not already exist,
+  then `upload_proof_chunk` transactions, then `verify_batch_proof_v2`. On retry,
+  an existing buffer is reused and overwritten by the upload chunks.
 
 ## Mental Model
 
@@ -39,6 +57,7 @@ SOLID_MANIFEST_PATH=../deployments/devnet.json \
 SOLID_INDEXER_STORE_PATH=../.solid-indexer/state.json \
 SOLID_RPC_URL="https://devnet.helius-rpc.com/?api-key=<YOUR_HELIUS_KEY>" \
 SOLID_INDEXER_WRITE_TOKEN="local-dev-token" \
+SOLID_ROOT_SYNC_KEYPAIR_PATH="../keys/devnet/deployer.json" \
 npm start
 ```
 
@@ -46,6 +65,7 @@ Expected result:
 
 ```text
 SolID indexer listening on http://127.0.0.1:8787
+Root sync: Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm
 ```
 
 Check:
@@ -59,7 +79,11 @@ What it does:
 - Stores credential requests.
 - Stores verifier proof requests.
 - Stores indexed credential leaves.
-- Serves real Merkle proofs for holder proof generation.
+- Serves real Merkle proofs for holder proof generation. The issuer-tree proof
+  depth must be 16 and schema/global proof depth must be 20.
+- Backfills root-update history for diagnostics through `/v1/root-sync/plan`.
+- Performs service-side schema/global root sync before serving proofs when local
+  leaf history has advanced beyond the live on-chain binding root.
 
 If this is not running, holder request delivery and proof generation will not work naturally.
 
@@ -74,7 +98,7 @@ VITE_SOLID_RPC_URL="https://devnet.helius-rpc.com/?api-key=<YOUR_HELIUS_KEY>"
 VITE_SOLID_WS_URL="wss://devnet.helius-rpc.com/?api-key=<YOUR_HELIUS_KEY>"
 VITE_SOLID_ARTIFACT_BASE_URL=/artifacts
 VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787
-VITE_SOLID_CONSOLE_URL=http://localhost:5173
+VITE_SOLID_CONSOLE_URL=http://localhost:5174
 VITE_SOLID_EXPLORER_CLUSTER=devnet
 ```
 
@@ -89,17 +113,29 @@ npm run dev
 Expected result:
 
 ```text
-Local: http://localhost:5173
+Local: http://localhost:5174
 ```
 
 ## Wallet Setup Before Testing
 
-You need at least two external Solana accounts:
+You need three external Solana accounts for the full on-chain UI flow:
 
 1. DAO wallet
 2. Issuer wallet
+3. Verifier/payer wallet
 
 You can use Phantom and switch accounts, or use two browser profiles. In one browser, Phantom can only expose the currently selected account, so switch accounts before each role action.
+
+Known devnet smoke wallets used in the current local run:
+
+| Role | Address |
+| --- | --- |
+| DAO / registry authority / root-sync operator | `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm` |
+| Issuer | `4D586isLE9c2WEhVvoQdgwjc3GrPoovePcP3ma6WiZ22` |
+| Extra tester / verifier if needed | `28mPhtobp2wyretdXEiAi1NgLuMggTSjDdU1FsccvzvB` |
+
+The holder is not one of these Phantom accounts. The holder lives inside
+`Wallet -> Wallet Vault` as a local simulator wallet seed.
 
 ### DAO wallet requirements
 
@@ -480,9 +516,12 @@ Actions:
 What happens:
 
 - Issuer signs the credential data.
-- The credential commitment is inserted into the schema/global tree.
+- The credential commitment is inserted into the schema tree.
+- The holder identity state leaf is indexed for the global state tree.
 - The local indexer stores the issued envelope and indexed leaf.
 - The request status changes to `issued`.
+- The indexer will sync schema/global binding roots service-side before serving
+  holder Merkle proofs, using the configured root-sync operator key.
 
 Expected result:
 
@@ -592,6 +631,8 @@ What happens:
 - Holder explicitly approves the proof purpose.
 - Browser loads pinned Groth16 artifacts.
 - Browser fetches real Merkle paths from the local indexer.
+- Indexer refreshes schema/global proof roots if needed before returning those
+  Merkle paths.
 - Browser generates the proof locally.
 - Proof result is written back to the proof request record.
 
@@ -630,12 +671,19 @@ Actions:
 4. Click verify.
 5. If local verification passes, choose `On-chain Solana`.
 6. Click verify.
-7. Approve the transaction.
+7. Approve the Phantom transactions.
 
 What happens:
 
 - Local verification uses `snarkjs` and the pinned verification key.
-- On-chain verification submits to `zk_verifier`.
+- On-chain verification stages the proof in the verifier proof-buffer PDA.
+- If the verifier wallet has no open proof buffer, the UI sends
+  `init_proof_buffer`.
+- The UI uploads proof chunks with `upload_proof_chunk`.
+- The UI submits `verify_batch_proof_v2`.
+- If a previous failed run left the proof buffer open, the UI skips init and
+  reuses the existing buffer, so the transaction count is usually `3` instead
+  of `4`.
 - `zk_verifier` creates a nullifier PDA to prevent replay.
 - Proof request is marked verified.
 
@@ -643,6 +691,7 @@ Expected result:
 
 - Local verification passes.
 - On-chain verification passes.
+- The page shows `Proof accepted`.
 - Reusing the same proof/nullifier should be rejected by replay protection.
 
 ### Step 13. Check history and logs
@@ -677,6 +726,28 @@ Expected result:
 12. Verifier loads proof and verifies locally/on-chain.
 13. App grants access based on verification success.
 
+## Known Good UI Smoke: 2026-05-09
+
+This exact local UI flow has been run successfully against devnet with the local
+indexer and `solid-sim`:
+
+| Item | Value |
+| --- | --- |
+| Schema | `basic_identity_v2` |
+| Predicate | `age GTE 18` |
+| Proof request | `Demo DeFi Pool 5` |
+| Holder proof status | `proof_ready` |
+| Verifier result | `Proof accepted` / access granted |
+| Verifier wallet | `4D586isLE9c2WEhVvoQdgwjc3GrPoovePcP3ma6WiZ22` |
+| Proof-buffer plan | `schemaTrees=1`, `txs=3` because an existing proof buffer was reused |
+| Upload tx 1 | `25mrG4Tkwuu5vwz68GjXGpDB...` |
+| Upload tx 2 | `2BAXMSVCCAxRS4uVvXbDdtKC...` |
+| Verify tx | `5aZHcMVv5V1oTN1yTyWKUS9M...` |
+
+If a rerun shows `txs=4`, that is also valid: it means the verifier proof-buffer
+PDA was closed by the prior successful verification and the UI needs to initialize
+a fresh buffer before uploading chunks.
+
 ## Common Failure Causes
 
 | Symptom | Cause | Fix |
@@ -689,7 +760,13 @@ Expected result:
 | Issuer cannot find where to ask for schema permission | Old UI did not expose the request step | Use `Issuer -> Request Schema`, then approve it from `DAO -> Schema Permissions` |
 | Holder request does not appear for issuer | Local indexer is not running or UI points to wrong indexer URL | Start indexer and set `VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787` |
 | Holder cannot generate proof | Credential leaf is not indexed or artifacts are unavailable | Keep indexer running, ensure issuance indexed the leaf, ensure `/artifacts` works |
+| Holder proof asks for DAO/admin wallet | Stale UI bundle or old Wallet-side root-sync code is running | Refresh/restart `solid-sim`; the holder should never connect the DAO/admin wallet to prove |
+| Holder proof fails with `ROOT_SYNC_REQUIRED` | Indexer cannot sign service-side schema/global root updates | Start the indexer with the devnet root-sync keypair from `deployments/devnet.json` |
 | Verifier cannot load proof | Holder has not approved/generated proof yet | Go to wallet vault and approve the proof request |
+| Verifier shows `Unexpected error` before Phantom returns a signature | Usually a proof-buffer init retry against an already-open verifier buffer, or another preflight simulation failure hidden by the wallet | Refresh `solid-sim`; current code skips init when the proof buffer exists and surfaces simulation logs |
+| Verifier plan says `txs=3` | Existing proof-buffer PDA is open for that verifier wallet | Normal retry path: upload chunk 1, upload chunk 2, verify |
+| Verifier plan says `txs=4` | No proof-buffer PDA exists for that verifier wallet | Normal fresh path: init buffer, upload chunk 1, upload chunk 2, verify |
+| Verifier shows `STALE_TIMESTAMP` | The proof was generated too long before on-chain verification and its `currentTimestamp` is outside the configured skew window | Go back to `Wallet -> Wallet Vault`, generate a fresh proof for a fresh request, load it in `Verifier -> Verify Proof`, and submit promptly |
 | On-chain verification fails with replay/nullifier error | Same proof was already used | Generate a fresh proof/request |
 
 ## What Is Persisted

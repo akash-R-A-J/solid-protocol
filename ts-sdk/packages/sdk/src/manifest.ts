@@ -119,7 +119,7 @@ export interface SolidManifestOverrides {
 export const DEFAULT_DEVNET_MANIFEST: SolidDevnetManifest = {
   schema_version: 1,
   network: 'devnet',
-  cluster: 'https://api.devnet.solana.com',
+  cluster: 'https://devnet.helius-rpc.com/?api-key=511b50b6-172a-4254-afc6-ac455b6e8d42',
   websocket_cluster: 'wss://api.devnet.solana.com',
   deployed_at: null,
   git_commit: null,

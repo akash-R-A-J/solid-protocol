@@ -38,21 +38,25 @@ Four roles, four products:
 | Operator | "Are the trust roots and artifacts what they should be?"   | All program IDs + VK + artifact hashes pinned and CI-gated; see `docs/DEVNET_STATUS.md`.      |
 
 Today the bottom three layers (programs + circuits + low-level SDK)
-are production-quality. The user-facing wrappers, holder UI, and
-hosted devnet defaults are the next milestone -- see
+are production-quality. The local `solid-sim` four-role UI flow is
+green on devnet with a local indexer/API; hosted devnet defaults are
+the next milestone -- see
 [`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md).
 
 ## Status
 
-- v0.6.1, post-Phase-E close-out (2026-05-02).
-- Three Anchor programs deployed-shape on localnet; first sanctioned
-  devnet deploy is the next milestone.
+- v0.6.1, post-Phase-E close-out plus local `solid-sim` devnet smoke
+  green (2026-05-09).
+- Three Anchor programs are deployed on devnet and the local
+  DAO -> issuer -> holder -> verifier UI path has verified on-chain.
 - 279/279 host + circuit unit tests green; clean-slate localnet
   e2e green end-to-end including replay rejection.
 - Canonical state-of-protocol audit:
   [`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`](sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md).
 - Devnet status page (program IDs, VK pins, artifact hashes,
   known limitations): [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md).
+- Full UI E2E runbook for local `solid-sim` devnet testing:
+  [`docs/SOLID_SIM_UI_E2E_FLOW.md`](docs/SOLID_SIM_UI_E2E_FLOW.md).
 - 6 of 67 registry findings are CRITICAL; all 6 are closed. 19 of
   23 HIGH closed. Open backlog is in
   [`sec/SECURITY_REGISTRY.md`](sec/SECURITY_REGISTRY.md). Mainnet

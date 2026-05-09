@@ -1,6 +1,6 @@
 # SolID Devnet Status
 
-Last updated: 2026-05-06 (public devnet protocol deploy in progress).
+Last updated: 2026-05-09 (local solid-sim devnet UI smoke green).
 
 This page is the public, machine-friendly source of truth for the
 SolID devnet deployment. If a value here disagrees with code in the
@@ -17,7 +17,7 @@ For the full state-of-the-protocol audit see
 | Network           | devnet                               |
 | Cluster RPC       | https://api.devnet.solana.com        |
 | Last live deploy  | 2026-05-06 partial protocol deploy  |
-| Reproducible      | localnet e2e green on 2026-05-02; fresh devnet issue/prove/replay green on 2026-05-07 |
+| Reproducible      | localnet e2e green on 2026-05-02; fresh devnet issue/prove/replay green on 2026-05-07; local `solid-sim` four-role UI smoke green on 2026-05-09 |
 
 The `deployments/devnet.json` manifest in this repository declares
 the canonical program IDs, PDAs, launch schema, tree bindings, and
@@ -108,6 +108,7 @@ The following public devnet state has been created with deployer
 | On-chain `verify_batch_proof_v2` | green for fresh sample: `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE` |
 | Replay test (nullifier PDA init constraint) | green: replay of the same proof was rejected as expected |
 | Fresh issuance with current SDK/source | green: `gUFgazuUQnMu89rGMVSvS2ZfmBhUxWd2Ki9aCsECDaGDCe7GE5YB1tEEV2nz1NgCNCtp8KSsTRbWt5SNcXjbS3g` |
+| Local `solid-sim` four-role UI smoke | green: DAO/issuer/holder/verifier flow reached `Proof accepted` on 2026-05-09 |
 
 ### SolID Sim state
 
@@ -119,6 +120,11 @@ creates/imports a simulator identity, derives real holder channel and
 schema-bound BabyJubJub public keys, imports encrypted credential envelopes,
 validates holder binding/commitment/subgroup/signature integrity, and generates
 proofs only when real artifacts plus a Merkle proof indexer are configured.
+The local indexer now performs service-side schema/global root synchronization
+before serving holder proof paths, so proof generation does not require the
+holder to connect the DAO/admin wallet. The Verifier page submits the on-chain
+proof-buffer sequence and skips proof-buffer initialization when a retry buffer
+already exists for the verifier wallet.
 
 ### Clean-slate localnet
 
@@ -154,9 +160,12 @@ These items are tracked in
 
 Protocol-side: the fresh issue -> root sync -> Groth16 proof -> on-chain
 verify -> replay rejection path is green on devnet for `basic_identity_v2`.
-The remaining blockers before public tester onboarding are hosted artifacts,
-the indexer/API, solid-sim deployment, public URLs in the manifest, and a
-four-role solid-sim smoke. Mainnet blockers (multi-party trusted setup
+Local product-side smoke is also green through `solid-sim`: DAO approval,
+schema permission, holder credential request, issuer issuance, holder proof
+generation, verifier proof-buffer submission, and on-chain acceptance. The
+remaining blockers before public tester onboarding are hosted artifacts, the
+hosted indexer/API, hosted solid-sim deployment, and public URLs in the
+manifest. Mainnet blockers (multi-party trusted setup
 ceremony, governance multisig on slash/fraud, multisig on the issuer-tree
 operator) do **not** apply to devnet.
 
@@ -166,9 +175,10 @@ Product-side, in rollout order:
    `deployments/devnet.json`.
 2. Deploy the indexer/API and publish its URL in the manifest.
 3. Deploy solid-sim with the devnet manifest/artifact/indexer URLs.
-4. Run a four-role solid-sim smoke: DAO grants issuer/schema permission,
-   holder requests credential, issuer issues, wallet stores, verifier
-   requests proof, holder proves, verifier verifies on-chain, replay fails.
+4. Publish the green four-role `solid-sim` smoke runbook and repeat it against
+   hosted URLs: DAO grants issuer/schema permission, holder requests credential,
+   issuer issues, wallet stores, verifier requests proof, holder proves, verifier
+   verifies on-chain, replay fails.
 5. Register the full launch schema set -- `basic_identity_v1`,
    `vaccination_v1`, `product_cert_v1`, `dao_membership_v1`, and
    `accredited_investor_v1` with canonical schema hashes, field

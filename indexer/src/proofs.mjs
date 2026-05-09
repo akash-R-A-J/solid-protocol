@@ -16,6 +16,83 @@ export async function buildMerkleProof(store, manifest, treeAddress, leafHex) {
   }
 
   await initWasm();
+  return buildMerkleProofForLeaves(depth, treeAddress, targetLeaf, leaves);
+}
+
+export async function buildRootSyncPlan(store, manifest, treeAddress, liveRootHex) {
+  new PublicKey(treeAddress);
+  const depth = treeDepthFor(manifest, treeAddress);
+  const liveRoot = normalizeHex32(liveRootHex, 'liveRoot');
+  const leaves = activeLeavesForTree(store, treeAddress);
+  await initWasm();
+
+  if (liveRoot === bytesToHex(new Uint8Array(32))) {
+    if (leaves.length === 0) {
+      return {
+        kind: 'skip',
+        treeAddress,
+        currentRoot: liveRoot,
+        matchedPrefixLength: 0,
+      };
+    }
+    const proof = await buildMerkleProofForLeaves(depth, treeAddress, leaves[0].leaf, leaves.slice(0, 1));
+    return {
+      kind: 'append',
+      treeAddress,
+      leafIndex: leaves[0].leafIndex,
+      oldLeaf: bytesToHex(new Uint8Array(32)),
+      newLeaf: leaves[0].leaf,
+      newRoot: proof.root,
+      siblings: proof.siblings,
+      pathIndices: proof.pathIndices,
+      matchedPrefixLength: 0,
+    };
+  }
+
+  for (let prefixLength = leaves.length; prefixLength >= 0; prefixLength--) {
+    const prefixRoot = await rootForIndexedLeaves(depth, leaves.slice(0, prefixLength));
+    if (prefixRoot !== liveRoot) continue;
+    if (prefixLength === leaves.length) {
+      return {
+        kind: 'skip',
+        treeAddress,
+        currentRoot: liveRoot,
+        matchedPrefixLength: prefixLength,
+      };
+    }
+
+    const next = leaves[prefixLength];
+    const proof = await buildMerkleProofForLeaves(depth, treeAddress, next.leaf, leaves.slice(0, prefixLength + 1));
+    return {
+      kind: 'append',
+      treeAddress,
+      leafIndex: next.leafIndex,
+      oldLeaf: bytesToHex(new Uint8Array(32)),
+      newLeaf: next.leaf,
+      newRoot: proof.root,
+      siblings: proof.siblings,
+      pathIndices: proof.pathIndices,
+      matchedPrefixLength: prefixLength,
+    };
+  }
+
+  const error = new Error(
+    `Indexed leaves for tree ${treeAddress} do not contain the live binding root ${liveRoot}. ` +
+    'Rebuild the indexer leaf history before root sync.',
+  );
+  error.code = 'ROOT_HISTORY_DIVERGED';
+  throw error;
+}
+
+async function buildMerkleProofForLeaves(depth, treeAddress, leafHex, leaves) {
+  const targetLeaf = normalizeHex32(leafHex, 'leaf');
+  const target = leaves.find((entry) => entry.leaf === targetLeaf);
+  if (!target) {
+    const error = new Error(`Leaf ${targetLeaf} has not been indexed for tree ${treeAddress}`);
+    error.code = 'LEAF_NOT_INDEXED';
+    throw error;
+  }
+
   const leafByIndex = new Map(leaves.map((entry) => [entry.leafIndex, hexToBytes32(entry.leaf, 'leaf')]));
   const zero = new Uint8Array(32);
   const zeroLevels = [zero];
@@ -58,13 +135,24 @@ export async function buildMerkleProof(store, manifest, treeAddress, leafHex) {
   };
 }
 
+async function rootForIndexedLeaves(depth, leaves) {
+  const target = leaves.at(-1);
+  if (!target) {
+    const zero = new Uint8Array(32);
+    let root = zero;
+    for (let height = 0; height < depth; height++) root = poseidonHashPair(root, root);
+    return bytesToHex(root);
+  }
+  return (await buildMerkleProofForLeaves(depth, 'indexed tree', target.leaf, leaves)).root;
+}
+
 export function treeDepthFor(manifest, treeAddress) {
   const schema = (manifest.schemas ?? []).find((entry) => entry.tree_address === treeAddress);
   if (schema?.tree_depth !== undefined && schema.tree_depth !== null) {
     return Number(schema.tree_depth);
   }
   if (manifest.trees?.issuer_tree?.tree_address === treeAddress) {
-    return Number(manifest.trees.issuer_tree.depth ?? 20);
+    return Number(manifest.trees.issuer_tree.depth ?? 16);
   }
   if (manifest.trees?.global_state_tree?.tree_address === treeAddress) {
     return Number(manifest.trees.global_state_tree.depth ?? 20);

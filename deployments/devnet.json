@@ -172,7 +172,8 @@
       "binding_pda": "ExJ2PLDf8qrDxYsYRJbuKNTJ38xPxt1USJpe7cdfgL6h",
       "tree_authority_pda": "Dr8gCiXud8iab1qDnjDDhuKXLYVA7btkNoPWZH4MbTt9",
       "current_root": "bfc02634df26b227601eabeccb97d6d79f39fb23ec19d7b62ec1565f669f5b27",
-      "current_root_slot": 460327011
+      "current_root_slot": 460327011,
+      "depth": 16
     },
     "schema_trees": [
       {

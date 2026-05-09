@@ -469,6 +469,11 @@ export class QueryBuilder {
     return this;
   }
 
+  compoundLogic(logic: 'AND' | 'OR'): this {
+    this._logic = logic;
+    return this;
+  }
+
   verifier(addr: Uint8Array): this { this._verifierAddr = addr; return this; }
   globalRoot(root: Uint8Array): this { this._globalRoot = root; return this; }
   revocationNonce(nonce: bigint): this { this._revocationNonce = nonce; return this; }

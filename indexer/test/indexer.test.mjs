@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { beforeEach, describe, it } from 'node:test';
-import { writeJsonResponse } from '../src/encoding.mjs';
+import { computeIdentityState, initWasm } from '@solid-protocol/core';
+import { bytesToHex, hexToBytes32, writeJsonResponse } from '../src/encoding.mjs';
 import { createIndexerHandler } from '../src/service.mjs';
-import { MemoryIndexerStore } from '../src/store.mjs';
+import { treeDepthFor } from '../src/proofs.mjs';
+import { MemoryIndexerStore, upsertTreeLeaf } from '../src/store.mjs';
 
 const TREE_ADDRESS = '4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc';
+const CUSTOM_TREE_ADDRESS = '6CpYRkZMmQyS7ourERFU112jMpbLebam9iXjdafJpnJS';
+const GLOBAL_TREE_ADDRESS = '68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o';
 const SCHEMA_HASH = '6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823';
+const CUSTOM_SCHEMA_HASH = '1f233b8f0cb1a1bbe747b3b7a8ec8b424025714dc9f4a9b355db83d60568f5eb';
 const LEAF = '902efdd15064fcafa0da19d8bb0f6ed516f14b245fe92d3f5279f063b0a6e81e';
+const HOLDER_PUBLIC_KEY_X = '1111111111111111111111111111111111111111111111111111111111111111';
+const HOLDER_PUBLIC_KEY_Y = '2222222222222222222222222222222222222222222222222222222222222222';
 
 const manifest = {
   schema_version: 1,
@@ -55,7 +62,7 @@ const manifest = {
     predicates: ['GTE'],
   }],
   trees: {
-    global_state_tree: { current_root: null },
+    global_state_tree: { tree_address: GLOBAL_TREE_ADDRESS, current_root: null },
     issuer_tree: {
       tree_address: 'FajCWko9tc6dhdPtwrS5kfkehPoEV8pn5LdL4kLL7k7f',
       binding_pda: null,
@@ -92,8 +99,8 @@ describe('SolID indexer API', () => {
       schemaVersion: 2,
       issuerAuthority: 'GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi',
       holderChannelPublicKey: 'holder-channel-key',
-      holderPublicKeyX: '1',
-      holderPublicKeyY: '2',
+      holderPublicKeyX: HOLDER_PUBLIC_KEY_X,
+      holderPublicKeyY: HOLDER_PUBLIC_KEY_Y,
       notes: 'KYC checked off platform',
     });
 
@@ -111,6 +118,57 @@ describe('SolID indexer API', () => {
     });
     assert.equal(updated.status, 'issued');
     assert.equal(updated.commitment, LEAF);
+
+    const proof = await get(`/v1/merkle-proof/${TREE_ADDRESS}/${LEAF}`);
+    assert.equal(proof.leafIndex, 0);
+    assert.match(proof.root, /^[0-9a-f]{64}$/);
+
+    await initWasm();
+    const holderIdentityLeaf = bytesToHex(computeIdentityState(
+      hexToBytes32(HOLDER_PUBLIC_KEY_X, 'holderPublicKeyX'),
+      hexToBytes32(HOLDER_PUBLIC_KEY_Y, 'holderPublicKeyY'),
+      0n,
+    ));
+    const globalProof = await get(`/v1/merkle-proof/${GLOBAL_TREE_ADDRESS}/${holderIdentityLeaf}`);
+    assert.equal(globalProof.leafIndex, 0);
+    assert.match(globalProof.root, /^[0-9a-f]{64}$/);
+  });
+
+  it('re-appends holder identity leaves when stale local rows are no longer active', async () => {
+    const created = await post('/v1/credential-requests', {
+      schemaHash: SCHEMA_HASH,
+      schemaName: 'basic_identity_v2',
+      schemaVersion: 2,
+      issuerAuthority: 'GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi',
+      holderChannelPublicKey: 'holder-channel-key',
+      holderPublicKeyX: HOLDER_PUBLIC_KEY_X,
+      holderPublicKeyY: HOLDER_PUBLIC_KEY_Y,
+      notes: 'KYC checked off platform',
+    });
+    await patch(`/v1/credential-requests/${created.id}`, {
+      status: 'issued',
+      commitment: LEAF,
+      transactionSignature: 'demo-signature',
+    });
+
+    await initWasm();
+    const holderIdentityLeaf = bytesToHex(computeIdentityState(
+      hexToBytes32(HOLDER_PUBLIC_KEY_X, 'holderPublicKeyX'),
+      hexToBytes32(HOLDER_PUBLIC_KEY_Y, 'holderPublicKeyY'),
+      0n,
+    ));
+    const activeChainLeaf = '3333333333333333333333333333333333333333333333333333333333333333';
+    await post('/v1/tree-leaves', {
+      treeAddress: GLOBAL_TREE_ADDRESS,
+      leaf: activeChainLeaf,
+      leafIndex: 0,
+      slot: 10,
+      source: 'global-root-update-chain',
+    }, true);
+
+    const proof = await get(`/v1/merkle-proof/${GLOBAL_TREE_ADDRESS}/${holderIdentityLeaf}`);
+    assert.equal(proof.leafIndex, 1);
+    assert.equal(proof.siblings.length, 20);
   });
 
   it('creates, lists, and registers custom schema requests', async () => {
@@ -151,6 +209,84 @@ describe('SolID indexer API', () => {
     assert.equal(updated.treeAddress, TREE_ADDRESS);
   });
 
+  it('indexes issued credentials for registered custom schema trees', async () => {
+    await post('/v1/custom-schema-requests', {
+      proposerAuthority: 'GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi',
+      proposerIssuerAccount: '8z3pKLPbB8Rc3o55dWmfZbXgwTpMhwowpP9dzVtywp55',
+      proposerIssuerName: 'Example Issuer',
+      name: 'dao_membership',
+      displayName: 'DAO Membership',
+      version: 1,
+      category: 'Governance',
+      fields: [
+        { name: 'is_valid', type: 'boolean', description: '1 if active member', rangeQueryable: false },
+        { name: 'issued_at', type: 'timestamp', description: 'Unix timestamp', rangeQueryable: true },
+      ],
+      schemaHash: CUSTOM_SCHEMA_HASH,
+      reason: 'Need DAO membership proofs.',
+    });
+    const custom = (await get('/v1/custom-schema-requests')).requests[0];
+    await patch(`/v1/custom-schema-requests/${custom.id}`, {
+      status: 'registered',
+      registeredBy: 'Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm',
+      registerSchemaSignature: 'register-schema-signature',
+      initializeTreeSignature: 'initialize-tree-signature',
+      schemaPda: 'BDqhj8WoFQ1VfRWErJVV6cR48TsTf4amXzngGXXy5UmB',
+      schemaTreeBindingPda: 'AKDjcDE3YwRdJrkCFwYEZDXs9WMeXMCvxX7aERvynpVx',
+      treeAddress: CUSTOM_TREE_ADDRESS,
+    });
+
+    const request = await post('/v1/credential-requests', {
+      schemaHash: CUSTOM_SCHEMA_HASH,
+      schemaName: 'dao_membership_v1',
+      schemaVersion: 1,
+      issuerAuthority: 'GwqjvUSmPKeNnPSWzFBPnURGXVkpLAzdujMuPCEPMyNi',
+      holderChannelPublicKey: 'holder-channel-key',
+      holderPublicKeyX: HOLDER_PUBLIC_KEY_X,
+      holderPublicKeyY: HOLDER_PUBLIC_KEY_Y,
+    });
+    await patch(`/v1/credential-requests/${request.id}`, {
+      status: 'issued',
+      commitment: LEAF,
+      transactionSignature: 'custom-credential-signature',
+    });
+
+    const proof = await get(`/v1/merkle-proof/${CUSTOM_TREE_ADDRESS}/${LEAF}`);
+    assert.equal(proof.leafIndex, 0);
+    assert.equal(proof.siblings.length, 20);
+  });
+
+  it('preserves verifier predicate logic on proof requests', async () => {
+    const created = await post('/v1/proof-requests', {
+      dappName: 'Demo DeFi Pool',
+      action: 'Request access',
+      schemaHash: SCHEMA_HASH,
+      schemaName: 'basic_identity_v2',
+      schemaVersion: 2,
+      compoundLogic: 'OR',
+      predicates: [
+        { fieldIndex: 0, fieldName: 'age', operator: 'GTE', value: '18' },
+        { fieldIndex: 4, fieldName: 'verification_level', operator: 'GTE', value: '2' },
+      ],
+    });
+    assert.equal(created.compoundLogic, 'OR');
+    assert.equal(created.predicates.length, 2);
+  });
+
+  it('defaults proof request predicate logic to AND', async () => {
+    const created = await post('/v1/proof-requests', {
+      dappName: 'Demo DeFi Pool',
+      action: 'Request access',
+      schemaHash: SCHEMA_HASH,
+      schemaName: 'basic_identity_v2',
+      schemaVersion: 2,
+      predicates: [
+        { fieldIndex: 0, fieldName: 'age', operator: 'GTE', value: '18' },
+      ],
+    });
+    assert.equal(created.compoundLogic, 'AND');
+  });
+
   it('requires the write token for tree ingestion and never returns fake proofs', async () => {
     const denied = await request('/v1/tree-leaves', {
       method: 'POST',
@@ -161,6 +297,53 @@ describe('SolID indexer API', () => {
     const missing = await request(`/v1/merkle-proof/${TREE_ADDRESS}/${LEAF}`);
     assert.equal(missing.status, 404);
     assert.equal(missing.body.error, 'LEAF_NOT_INDEXED');
+  });
+
+  it('refuses proofs whose local root does not match the live schema binding root', async () => {
+    await initWasm();
+    const store = new MemoryIndexerStore();
+    const liveBindingRoot = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const manifestWithBinding = {
+      ...manifest,
+      trees: {
+        ...manifest.trees,
+        schema_trees: [{
+          ...manifest.trees.schema_trees[0],
+          binding_pda: 'FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb',
+        }],
+      },
+    };
+    const schemaBindingData = Buffer.alloc(145);
+    schemaBindingData.set(Buffer.from(liveBindingRoot, 'hex'), 72);
+    handler = createIndexerHandler({
+      manifest: manifestWithBinding,
+      store,
+      writeToken: 'test-token',
+      connection: {
+        async getAccountInfo() {
+          return { data: schemaBindingData };
+        },
+      },
+    });
+
+    upsertTreeLeaf(store, {
+      treeAddress: TREE_ADDRESS,
+      leaf: LEAF,
+      leafIndex: 0,
+      slot: 7,
+      source: 'test',
+    });
+
+    const response = await request(`/v1/merkle-proof/${TREE_ADDRESS}/${LEAF}`);
+    assert.equal(response.status, 409);
+    assert.equal(response.body.error, 'ROOT_OUT_OF_SYNC');
+    assert.match(response.body.message, /does not match live on-chain root/);
+  });
+
+  it('uses the protocol issuer-tree depth when the manifest omits explicit depth', () => {
+    assert.equal(treeDepthFor(manifest, manifest.trees.issuer_tree.tree_address), 16);
+    assert.equal(treeDepthFor(manifest, TREE_ADDRESS), 2);
+    assert.equal(treeDepthFor(manifest, GLOBAL_TREE_ADDRESS), 20);
   });
 
   it('indexes leaves idempotently and returns a real Poseidon Merkle proof', async () => {
@@ -186,6 +369,40 @@ describe('SolID indexer API', () => {
     assert.deepEqual(proof.pathIndices, [0, 0]);
     assert.equal(proof.leafIndex, 0);
     assert.equal(proof.slot, 7);
+  });
+
+  it('serves issuer proofs when a stale same-leaf row exists at the wrong index', async () => {
+    const store = new MemoryIndexerStore();
+    handler = createIndexerHandler({ manifest, store, writeToken: 'test-token' });
+    const issuerTree = manifest.trees.issuer_tree.tree_address;
+    const staleIssuerLeaf = '49d0a6f02b63000120afd324e0c5538bdcd6362ea77cdb5ef0f730558441fe01';
+    const activeIndexZeroLeaf = 'e2ce08fcb6450fbdf3dd24ef275981d50cc038fdb31a0e44188e96ba24cc740c';
+
+    upsertTreeLeaf(store, {
+      treeAddress: issuerTree,
+      leaf: staleIssuerLeaf,
+      leafIndex: 0,
+      slot: 0,
+      source: 'issuer-registry-chain',
+    });
+    upsertTreeLeaf(store, {
+      treeAddress: issuerTree,
+      leaf: activeIndexZeroLeaf,
+      leafIndex: 0,
+      slot: 0,
+      source: 'issuer-registry-chain',
+    });
+    upsertTreeLeaf(store, {
+      treeAddress: issuerTree,
+      leaf: staleIssuerLeaf,
+      leafIndex: 3,
+      slot: 0,
+      source: 'issuer-registry-chain',
+    });
+
+    const proof = await get(`/v1/merkle-proof/${issuerTree}/${staleIssuerLeaf}`);
+    assert.equal(proof.leafIndex, 3);
+    assert.equal(proof.siblings.length, 16);
   });
 
   it('serializes BigInt account fields without partially writing a broken response', async () => {
