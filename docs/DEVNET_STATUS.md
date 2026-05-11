@@ -209,6 +209,32 @@ Product-side, in rollout order:
    `docs/ERROR_CODES.md`.
 13. 90-second product video + 5-minute developer quickstart video.
 
+## Planned public URLs
+
+Use `solidislive.com` as the public devnet domain family:
+
+| Surface | URL |
+| --- | --- |
+| Landing page | `https://solidislive.com` |
+| App / demo | `https://app.solidislive.com` |
+| Indexer / API | `https://api.solidislive.com` |
+| Artifact CDN | `https://artifacts.solidislive.com` |
+| Manifest | `https://api.solidislive.com/v1/manifest` |
+| Docs | `https://docs.solidislive.com` |
+
+Hosting split:
+
+- Vercel hosts the landing page, `solid-sim`, artifact files, docs, and SDK-facing static surfaces.
+- AWS Lightsail hosts the indexer/API and canonical manifest.
+- `api.solidislive.com` is the public API hostname and should point to the Lightsail static IPv4 in DNS. Do not publish the raw IP address, AWS account ID, SSH key details, private IP, or write token in public docs.
+- The indexer/API must ship with public rate limiting before tester traffic. Write endpoints remain token-protected; read endpoints get per-IP throttles.
+
+Current deployment status:
+
+- API server instance: provisioned on AWS Lightsail.
+- API DNS: `api.solidislive.com` reserved for the Lightsail static IPv4.
+- Still required: server bootstrap, Node/indexer install, Nginx reverse proxy, HTTPS certificate, `/v1/manifest`, read/write rate limits, and public smoke test.
+
 ## Current live smoke values
 
 These values are public devnet smoke-test state. They are not mainnet

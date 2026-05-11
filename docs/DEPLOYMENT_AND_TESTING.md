@@ -927,11 +927,11 @@ separately.
 | Surface | What it is | Output you deploy | Where it can live | Why it matters |
 | --- | --- | --- | --- | --- |
 | Solana programs | On-chain executable BPF programs. | `target/deploy/schema_registry.so`, `target/deploy/issuer_registry.so`, `target/deploy/zk_verifier.so` plus their program keypairs. | Solana devnet via `solana program deploy`. | This is the protocol state machine: schema registry, issuer governance/issuance, and proof verification. |
-| Circuit artifacts | Proving/verifying files used by browsers and scripts. | Six files: two `.wasm`, two `.zkey`, two VK `.json` files, plus hash pins. | HTTPS static host: Vercel static, Cloudflare R2, S3+CloudFront, GitHub Pages, Netlify, or same-origin under `solid-sim`. | Wallet and console proof flows download these files and verify SHA-256 before using them. |
+| Circuit artifacts | Proving/verifying files used by browsers and scripts. | Six files: two `.wasm`, two `.zkey`, two VK `.json` files, plus hash pins. | Vercel static at `https://artifacts.solidislive.com`. | Wallet and console proof flows download these files and verify SHA-256 before using them. |
 | SDK packages | TypeScript packages consumed by console, wallet, scripts, and external apps. | Built `dist/` package contents, optionally npm packages. | Local monorepo `file:` deps for dev, npm registry for external integrators. | Keeps all clients using the same manifest parser, proof APIs, issuer APIs, and crypto bridge. |
 | WASM bridge | Rust crypto compiled for JS. | `ts-sdk/packages/core/wasm/` and `ts-sdk/packages/core/wasm-web/`, especially `solid_wasm_bg.wasm` and JS bindings. | Included inside `@solid-protocol/core`, then bundled by console/wallet. | Keeps off-chain key, hash, and proof input generation byte-compatible with on-chain/circuit logic. |
-| Indexer/API | Node HTTP API for registry reads, credential requests, issued-event ingestion, and Merkle proofs. | `solid-protocol/indexer` service. | Render, Fly.io with persistent volume, Railway, VPS, Docker host. Avoid stateless serverless unless you replace the file store with durable storage. | Holder proof generation needs real Merkle paths. The console request inbox also uses this API. |
-| App | Public simulator UI with DAO, issuer, holder wallet, and verifier roles. | `solid-console/dist`. | Vercel, Netlify, GitHub Pages, S3+CloudFront, or another static host. | This is what current testers use. The embedded wallet in `solid-sim` must point to the published manifest, artifact host, RPC, and indexer. |
+| Indexer/API | Node HTTP API for registry reads, credential requests, issued-event ingestion, Merkle proofs, and the canonical devnet manifest. | `solid-protocol/indexer` service. | AWS Lightsail Ubuntu behind Nginx at `https://api.solidislive.com`. | Holder proof generation needs real Merkle paths. The console request inbox also uses this API. The manifest lives at `/v1/manifest`. |
+| App | Public simulator UI with DAO, issuer, holder wallet, and verifier roles. | `solid-sim/dist`. | Vercel at `https://app.solidislive.com`. | This is what current testers use. The embedded wallet in `solid-sim` must point to the published manifest, artifact host, RPC, and indexer. |
 | Optional extension | Standalone browser wallet. | `solid-wallet/dist`. | Unpacked ZIP, private Chrome Web Store listing, or controlled tester download. | Not required for the current deploy. Use only when testing external dApp injection through `window.solid`. |
 
 ### 12.2 Values you must decide before deploying
@@ -943,14 +943,42 @@ Do not make up placeholders for these. If one is unknown, stop at that step.
 | Devnet RPC URL | `https://api.devnet.solana.com` or paid RPC | `config/devnet.env.example`, deploy env, `VITE_SOLID_RPC_URL`, manifest `cluster` |
 | Devnet WebSocket URL | `wss://api.devnet.solana.com` | `VITE_SOLID_WS_URL`, manifest `websocket_cluster` |
 | Deployer keypair path | `$HOME/.config/solana/solid-devnet-admin.json` | `SOLID_KEYPAIR_PATH`, `SOLANA_KEYPAIR_PATH`, `ANCHOR_WALLET` |
-| Artifact base URL | `https://sim.example.com/artifacts` | manifest `artifacts.base_url`, `VITE_SOLID_ARTIFACT_BASE_URL`, wallet settings |
-| Manifest URL | `https://sim.example.com/solid/devnet.json` | `VITE_SOLID_MANIFEST_URL`, wallet settings, indexer `/.well-known/solid-protocol.json` |
-| Indexer URL | `https://solid-indexer.example.com` | manifest `indexer.url`, `VITE_SOLID_INDEXER_URL`, wallet settings |
-| Console URL | `https://solid-sim.example.com` | manifest `console.url`, `VITE_SOLID_CONSOLE_URL` |
+| Artifact base URL | `https://artifacts.solidislive.com/artifacts` | manifest `artifacts.base_url`, `VITE_SOLID_ARTIFACT_BASE_URL`, wallet settings |
+| Manifest URL | `https://api.solidislive.com/v1/manifest` | `VITE_SOLID_MANIFEST_URL`, wallet settings, indexer `/.well-known/solid-protocol.json` if mirrored |
+| Indexer URL | `https://api.solidislive.com` | manifest `indexer.url`, `VITE_SOLID_INDEXER_URL`, wallet settings |
+| Console URL | `https://app.solidislive.com` | manifest `console.url`, `VITE_SOLID_CONSOLE_URL` |
 | Wallet release URL | private ZIP or Chrome listing URL | manifest `wallet.release_url`; optional for this milestone because the wallet role is embedded in `solid-console` |
 | Tester origins | `https://solid-sim.example.com/*` | Only needed if deploying `solid-wallet`; configure `solid-wallet/public/manifest.json` `host_permissions`, `content_scripts.matches`, `web_accessible_resources.matches` |
 | Indexer write token | random secret | `SOLID_INDEXER_WRITE_TOKEN` on the indexer host and issuer/operator ingestion commands |
 | Schema launch set | `basic_identity_v2`, depth 20 | protocol env, manifest `schemas`, schema tree bindings |
+
+For the public devnet rollout, use the `solidislive.com` domain family:
+
+| Surface | URL |
+| --- | --- |
+| Landing page | `https://solidislive.com` |
+| App / demo | `https://app.solidislive.com` |
+| Indexer / API | `https://api.solidislive.com` |
+| Artifact CDN | `https://artifacts.solidislive.com` |
+| Manifest | `https://api.solidislive.com/v1/manifest` |
+| Docs | `https://docs.solidislive.com` |
+
+Deployment split:
+
+- Vercel hosts the landing page, `solid-sim`, docs, verifier-SDK-facing static content, and the immutable artifact files.
+- AWS Lightsail hosts only the mutable indexer/API service and serves the canonical devnet manifest at `/v1/manifest`.
+- Public endpoints must be rate limited. Apply Nginx limits on `api.solidislive.com`, Vercel/WAF limits on app/docs/artifact routes where available, and stricter token-based protection on write endpoints.
+- Public documentation must stay sanitized. Do not include AWS account IDs, raw static IPs, SSH key names or paths, private IPs, wallet keypair paths, write tokens, paid RPC URLs, `.env` contents, or credentials.
+
+Current deployment state:
+
+| Item | State |
+| --- | --- |
+| API instance | AWS Lightsail provisioned for the indexer/API |
+| API DNS | `api.solidislive.com` configured to the Lightsail static IPv4 |
+| Manifest source | Planned at `https://api.solidislive.com/v1/manifest` |
+| App/artifact host | Planned on Vercel |
+| Remaining API work | OS bootstrap, Node install, indexer deploy, Nginx, TLS, rate limits, smoke test |
 
 Generate the indexer write token locally:
 

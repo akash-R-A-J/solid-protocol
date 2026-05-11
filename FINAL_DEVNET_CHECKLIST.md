@@ -91,6 +91,39 @@ Current state: the manifest has live program, deployer, upgrade authority,
 existing-sample verify fields. Artifact, indexer, console, and wallet URLs
 remain null until hosted.
 
+Planned hosted URL map:
+
+| Surface | URL |
+| --- | --- |
+| Landing page | `https://solidislive.com` |
+| App / demo | `https://app.solidislive.com` |
+| Indexer / API | `https://api.solidislive.com` |
+| Artifact CDN | `https://artifacts.solidislive.com` |
+| Manifest | `https://api.solidislive.com/v1/manifest` |
+| Docs | `https://docs.solidislive.com` |
+
+Deployment decision:
+
+- Vercel hosts the landing page, `solid-sim`, artifacts, docs, and SDK-facing static surfaces.
+- AWS Lightsail hosts the indexer/API at `api.solidislive.com`.
+- The canonical devnet manifest is served by the indexer at `/v1/manifest`, because it reflects current API, roots, schema, issuer, artifact, and app URLs.
+- Public endpoints need rate limiting before tester traffic: Nginx limits for indexer/API, write-token protection for ingestion endpoints, and Vercel/WAF protections for app, docs, and artifacts where available.
+- Keep public docs sanitized: do not commit or publish AWS account IDs, raw static IPs, SSH key paths, private IPs, admin wallet paths, write tokens, RPC secrets, or credentials.
+
+Current deployment status:
+
+- [X] Lightsail instance provisioned for the indexer/API.
+- [X] Static IPv4 attached and reserved for `api.solidislive.com`.
+- [X] GoDaddy `api` DNS record configured to the static IPv4.
+- [ ] HTTPS firewall rule open for `443`.
+- [ ] Server bootstrap complete: packages, Node, process manager, firewall, Nginx.
+- [ ] Indexer deployed behind `127.0.0.1` and reverse proxied by Nginx.
+- [ ] TLS certificate issued for `api.solidislive.com`.
+- [ ] `/v1/manifest` served from the indexer with public URLs.
+- [ ] Public read endpoints rate-limited.
+- [ ] Write endpoints token-protected and rate-limited.
+- [ ] Hosted API smoke test passes without exposing private values.
+
 Acceptance: a fresh app, wallet, and console can all load the same devnet
 manifest and agree on programs, artifacts, schemas, roots, and indexer URL.
 
