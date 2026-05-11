@@ -27,8 +27,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
-    "@solid-protocol/core": "0.1.0",
     "@solana/web3.js": "^1.95.0",
+    "@solid-protocol/core": "file:../../../../../../../../tmp/solid-sdk-packs/solid-protocol-core-0.1.0.tgz",
     "buffer": "^6.0.3"
   },
   "devDependencies": {

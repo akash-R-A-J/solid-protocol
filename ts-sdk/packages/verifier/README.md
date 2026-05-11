@@ -24,9 +24,10 @@ import {
 
 const solid = new SolidVerifier({
   cluster: "devnet",
-  // Alpha note: pass the hosted artifact URL until canonical devnet defaults
-  // are published in the package.
-  artifactHostUrl: "https://YOUR_SOLID_ARTIFACT_HOST/",
+  // Alpha note: pass the hosted URLs until canonical devnet defaults are
+  // published in the npm package.
+  artifactHostUrl: "https://artifacts.solidislive.com",
+  indexerUrl: "https://api.solidislive.com",
 });
 
 const requirement = solid.defineRequirement({
@@ -76,6 +77,7 @@ host, indexer endpoint, and active artifact pins.
 
 The verifier SDK hides the low-level proof-buffer upload, public input slicing,
 PDA derivation, nullifier replay checks, and typed error mapping. For the alpha,
-integrators should still expect to configure the hosted artifact URL, provide a
-verifier payer from their backend, and use either `walletAdapterTransport`,
-`httpTransport`, or a custom proof transport connected to a SolID-capable holder.
+integrators should still expect to configure the hosted artifact and indexer
+URLs, provide a verifier payer from their backend, and use either
+`walletAdapterTransport`, `httpTransport`, or a custom proof transport
+connected to a SolID-capable holder.
