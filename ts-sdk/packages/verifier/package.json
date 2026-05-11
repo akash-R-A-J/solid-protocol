@@ -1,7 +1,7 @@
 {
   "name": "@solid-protocol/verifier",
   "version": "0.2.0",
-  "description": "Verifier SDK for private Solana eligibility checks with SolID Protocol.",
+  "description": "Devnet alpha verifier SDK for private Solana eligibility checks with SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build",
+    "test": "vitest run && npm run build",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {

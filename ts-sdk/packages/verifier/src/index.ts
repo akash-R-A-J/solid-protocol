@@ -1140,14 +1140,14 @@ const DEFAULT_ARTIFACT_PINS: ResolvedArtifactPins = {
 
 const DEFAULT_SCHEMA_CATALOG: SchemaDescriptor[] = [
   {
-    name: 'basic_identity_v1',
-    version: 1,
-    category: 'Hospitality',
-    hash: 'c27b4c5f3e75c3f0320d02298d06d689a2d3c7e973fbbd23022c567e37bb8306',
+    name: 'basic_identity_v2',
+    version: 2,
+    category: 'Identity',
+    hash: '6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823',
     fields: [
       { index: 0, name: 'age', type: 'uint64', rangeQueryable: true, description: 'Age in years' },
       { index: 1, name: 'country_code', type: 'uint64', description: 'ISO 3166-1 numeric country code' },
-      { index: 2, name: 'resident_region', type: 'uint64', description: 'Region code' },
+      { index: 2, name: 'region', type: 'uint64', description: 'Region or state code' },
       { index: 3, name: 'id_type', type: 'enum', description: 'Identity document type' },
       { index: 4, name: 'verification_level', type: 'uint64', rangeQueryable: true, description: '1=Self, 2=KYC, 3=InPerson' },
       { index: 5, name: 'issued_date', type: 'timestamp', rangeQueryable: true, description: 'Issuance timestamp' },

@@ -1,6 +1,7 @@
 # @solid-protocol/verifier
 
-High-level private eligibility verification for Solana apps.
+High-level private eligibility verification for Solana apps. This package is
+currently published as a devnet alpha surface for verifier dApp pilots.
 
 This package is the verifier-facing integration surface for SolID. App
 developers should think in requirements, not circuits, Merkle paths, proof
@@ -21,10 +22,15 @@ import {
   walletAdapterTransport,
 } from "@solid-protocol/verifier";
 
-const solid = new SolidVerifier({ cluster: "devnet" });
+const solid = new SolidVerifier({
+  cluster: "devnet",
+  // Alpha note: pass the hosted artifact URL until canonical devnet defaults
+  // are published in the package.
+  artifactHostUrl: "https://YOUR_SOLID_ARTIFACT_HOST/",
+});
 
 const requirement = solid.defineRequirement({
-  schema: "basic_identity_v1",
+  schema: "basic_identity_v2",
   predicates: [
     { field: "verification_level", op: ">=", value: 2 },
     { field: "country_code", op: "!=", value: 840 },
@@ -65,3 +71,11 @@ if (!report.ok) console.error(report.errors);
 
 `health()` checks the configured program IDs, verifier config PDA, artifact
 host, indexer endpoint, and active artifact pins.
+
+## Devnet alpha scope
+
+The verifier SDK hides the low-level proof-buffer upload, public input slicing,
+PDA derivation, nullifier replay checks, and typed error mapping. For the alpha,
+integrators should still expect to configure the hosted artifact URL, provide a
+verifier payer from their backend, and use either `walletAdapterTransport`,
+`httpTransport`, or a custom proof transport connected to a SolID-capable holder.
