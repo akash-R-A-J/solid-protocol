@@ -1,7 +1,11 @@
 # SolID Devnet Rollout Punchlist
 
 Status: Active. Tactical task list.
-Last updated: 2026-05-06.
+Last updated: 2026-05-12.
+
+Deployment delta: app/API/artifacts/manifest are now live under
+`solidislive.com`. This punchlist still tracks remaining launch quality
+work. Current deployment state lives in `../DEPLOYMENT_TRACKER.md`.
 
 ## Commitment
 
@@ -63,7 +67,7 @@ deploy completed on 2026-05-06.
   bugs but are actually configuration drift.
 - **Acceptance:** One config manifest can be consumed by protocol
   scripts, `@solid-protocol/verifier`, `solid-wallet`, and
-  `solid-console` without manual copy/paste. Current state:
+  `solid-sim` without manual copy/paste. Current state:
   `deployments/devnet.json` has live program/schema/tree fields, explicit
   existing-sample verify evidence, and null artifact/indexer/console/wallet
   URLs. Separate localnet/devnet env examples now exist for protocol
@@ -149,7 +153,7 @@ deploy completed on 2026-05-06.
   `defineRequirement`, `requestProof`, and `verifyRequirement` without
   importing local files from this repo.
 
-### 7. Finish `solid-console` as the real control plane
+### 7. Finish `solid-sim` as the real control plane
 
 - **What:** Replace demo/simulation paths with real registry, issuer,
   issuance, verifier, schema, and status flows.
@@ -311,7 +315,7 @@ deploy completed on 2026-05-06.
   4. Add backup/restore and claim-link decrypt if required for the
      public demo path.
 
-### A7. `solid-console` real devnet control plane
+### A7. `solid-sim` real devnet control plane
 
 - **Status:** [ ]
 - **Effort:** 5-8 days.

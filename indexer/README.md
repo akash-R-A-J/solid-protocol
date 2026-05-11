@@ -1,6 +1,13 @@
 # SolID Indexer
 
-Production-shaped devnet API for SolID holder proof generation and credential-request workflow.
+Production-shaped devnet API for SolID holder proof generation and
+credential-request workflow.
+
+Live devnet API:
+
+```text
+https://api.solidislive.com
+```
 
 The indexer has two responsibilities:
 
@@ -39,6 +46,13 @@ VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787
 ```
 
 Use HTTPS for public tester builds.
+
+Public devnet reads should use:
+
+```bash
+curl https://api.solidislive.com/v1/health
+curl https://api.solidislive.com/v1/manifest
+```
 
 ## API
 
@@ -85,11 +99,18 @@ the DAO/admin wallet.
 
 ## Devnet Deployment Notes
 
-For devnet rollout, host this service separately from `solid-sim`, set the public HTTPS URL in `deployments/devnet.json` at `indexer.url`, then run:
+For devnet rollout, this service is hosted separately from `solid-sim` on
+AWS Lightsail behind Nginx, TLS, and public rate limits. The public HTTPS
+URL is set in `deployments/devnet.json` at `indexer.url`; the canonical
+manifest is served at `/v1/manifest`.
+
+After changes, run:
 
 ```bash
 npm run validate:devnet
 npm run smoke:devnet-config
 ```
 
-The wallet and verifier flows should stay blocked until this endpoint is live and returning real Merkle proofs for issued credentials.
+The wallet and verifier flows should stay blocked if this endpoint is not
+live, not serving the current manifest, or not returning real Merkle proofs
+for issued credentials.

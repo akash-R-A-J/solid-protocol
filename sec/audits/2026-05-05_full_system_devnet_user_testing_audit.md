@@ -1,5 +1,10 @@
 # SolID Full-System Devnet User-Testing Audit
 
+> Historical audit note, 2026-05-12: this audit predates the
+> `solidislive.com` hosting pass. App/API/artifact deployment state has moved;
+> use `DEPLOYMENT_TRACKER.md`, `docs/DEVNET_STATUS.md`, and
+> `docs/CURRENT_STATE.md` for current public devnet status.
+
 Date: 2026-05-05
 Mode: code-first comprehensive audit for public devnet user testing
 Scope: `solid-protocol`, `ts-sdk`, `solid-light`, `wasm`, `solid-wallet`, `solid-console`

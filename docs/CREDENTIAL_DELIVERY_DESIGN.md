@@ -367,8 +367,8 @@ perspective: the holder accepts both via the same `parseEnvelope` +
 `decryptCredential` pipeline.
 
 This channel is **the only channel implemented today**.
-solid-console emits envelopes via Channel 2 (download / clipboard
-copy); solid-wallet imports envelopes via Channel 2 (textarea paste).
+`solid-sim` emits envelopes via Channel 2 (download / clipboard copy);
+`solid-wallet` imports envelopes via Channel 2 (textarea paste).
 Channels 1 and 3 build on top of the same envelope shape and ship
 when their respective infrastructure (claim-link service, Wallet
 Standard adoption) lands.
@@ -559,7 +559,7 @@ Status as of 2026-05-04:
 
 1. **Channel 2 (download / clipboard)** -- LANDED. The
    `@solid-protocol/channel` package implements the wire format;
-   solid-console emits envelopes and solid-wallet imports them via
+   `solid-sim` emits envelopes and `solid-wallet` imports them via
    pasted JSON or `.solid-credential.json` files. Cross-codebase
    contract gated by `__tests__/cross-codebase.test.ts`.
 2. **Channel 1 (claim-link service)** -- DEFERRED. Requires a
@@ -601,7 +601,7 @@ parallel decoder support during the migration.
   package on the holder side: derives the channel keypair via
   `deriveChannelKeyFromMasterSeed(identitySeed)` and ingests envelopes
   via `parseEnvelope` + `decryptCredential`.
-- `solid-console/src/roles/issuer/pages/IssueCredential.tsx` consumes
+- `solid-sim/src/roles/issuer/pages/IssueCredential.tsx` consumes
   the channel package on the issuer side: builds a `CredentialBundle`,
   calls `encryptCredential(bundle, holderChannelPubKey)`, and exposes
   the resulting envelope via Channel 2 (file download / clipboard).

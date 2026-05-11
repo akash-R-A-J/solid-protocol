@@ -1,18 +1,21 @@
 # SolID Sim UI E2E Flow
 
-This is the end-to-end flow for testing `solid-sim` locally against the deployed devnet programs.
+This is the end-to-end flow for testing `solid-sim` against the deployed
+devnet programs. It can be run locally or repeated against the hosted app at
+`https://app.solidislive.com`.
 
 After this base flow is green, use
 [`SOLID_SIM_SCHEMA_BATCH_TEST_PLAN.md`](./SOLID_SIM_SCHEMA_BATCH_TEST_PLAN.md)
 to add three more schemas, test custom schema registration, and test the
 protocol's four-credential batch proof shape.
 
-Current intended setup:
+Current local setup:
 
 - Programs run on devnet: `schema_registry`, `issuer_registry`, `zk_verifier`.
 - UI runs locally: `solid-sim` on Vite.
 - Indexer/API runs locally: `solid-protocol/indexer` on `http://127.0.0.1:8787`.
-- Proof artifacts are served by `solid-sim` from `/artifacts`.
+- Proof artifacts are served by `solid-sim` from `/artifacts` for local
+  testing. Hosted devnet uses `https://artifacts.solidislive.com`.
 - Wallet roles are separate even if you test them in one browser.
 
 Current implementation note:
@@ -100,6 +103,15 @@ VITE_SOLID_ARTIFACT_BASE_URL=/artifacts
 VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787
 VITE_SOLID_CONSOLE_URL=http://localhost:5174
 VITE_SOLID_EXPLORER_CLUSTER=devnet
+```
+
+For the hosted smoke run, use the public defaults:
+
+```bash
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com
+VITE_SOLID_CONSOLE_URL=https://app.solidislive.com
 ```
 
 Then run:

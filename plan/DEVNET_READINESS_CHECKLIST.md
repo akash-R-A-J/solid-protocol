@@ -1,16 +1,20 @@
 # Devnet Readiness Checklist
 
-Last updated: 2026-05-06 (after partial public devnet protocol deploy).
+Last updated: 2026-05-12 (after hosted app/API/artifact deploy).
 
 Single source of truth for what blocks the SolID system (`solid-protocol`
-+ `solid-sim` from the `solid-console` repo + `solid-wallet`) from a public devnet launch. Built
++ `solid-sim` + `solid-wallet`) from a public devnet launch. Built
 from the 2026-05-04 deep audit, then **revised the same day after a
 second-pass audit found that the high-level `@solid-protocol/verifier`
 wrapper is already shipped (not "10-14 days of work" as the first audit
 claimed).** That changes the critical path.
 
-Tracks the protocol repo and the two product repos at sibling paths
-(`../solid-console`, `../solid-wallet`).
+Tracks the protocol repo and product repos at sibling paths
+(`../solid-sim`, `../solid-wallet`).
+
+Current deployment delta: app/API/artifacts/manifest are now hosted under
+`solidislive.com`. This checklist remains useful for launch quality gates,
+but live deployment state is tracked in `../DEPLOYMENT_TRACKER.md`.
 
 ## Operating rules
 
@@ -45,7 +49,7 @@ Out of scope for devnet (handled separately by the owner):
 The latest audit is
 `sec/audits/2026-05-05_full_system_devnet_user_testing_audit.md`.
 It read implementation code across the Anchor programs, Rust crates,
-TS SDK packages, `solid-console`, and `solid-wallet`; docs were treated
+TS SDK packages, `solid-sim`, and `solid-wallet`; docs were treated
 as claims to verify, not as ground truth.
 
 Fast gates verified 2026-05-05:
@@ -55,9 +59,9 @@ Fast gates verified 2026-05-05:
 | `python3 scripts/check_program_ids.py` | pass |
 | `npm run validate:devnet` | pass |
 | `npm run verify:artifacts` | pass |
-| `npm run smoke:devnet-config` | pass structurally; still shows null deployment fields |
+| `npm run smoke:devnet-config` | pass structurally; public app/API/artifact URLs are now hosted under `solidislive.com` |
 | `cd ts-sdk && npm run build && npm test --workspaces --if-present` | pass |
-| `cd ../solid-console && npm run test && npm run build` | pass; large chunk warning |
+| `cd ../solid-sim && npm run test && npm run build` | pass; large chunk warning |
 | `cd ../solid-wallet && npm run test && npm run build` | pass; browser externalization warnings for holder debug imports |
 | `cargo fmt --all -- --check` | pass |
 | `cargo test -p solid-core -p solid-light --no-fail-fast` | pass |
@@ -67,7 +71,7 @@ Fast gates verified 2026-05-05:
 
 Code reality changed several older checklist rows:
 
-- `solid-console` now has real issuer registration, DAO vote/finalize,
+- `solid-sim` now has real issuer registration, DAO vote/finalize,
   verifier proof-buffer submission, manifest loading, and wallet-provider
   integration paths.
 - `solid-wallet` now imports encrypted envelopes, stores validated
@@ -175,7 +179,7 @@ deploy; they do not block it.
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
 | 1.1 | Run `scripts/initialize.ts` against `--provider.cluster devnet`.                                                                                    | Registry/verifier config, VKs, issuer tree, global binding, smoke schema tree, and sample state exist on devnet.                                                                                              | done    |
 | 1.2 | Run main VK chunked upload + finalize + freeze, and subgroup VK chunked upload + finalize + freeze.                                                  | The verifier programs are useless without VKs loaded. Freeze locks them under the 48-hour ADR-0015 timelock so rotation requires a real ceremony, not a `--force`.                                            | done    |
-| 1.3 | Run `scripts/regen_devnet_manifest.py` after deploy.                                                                                                | Populates `deployer.address`, `deployed_at`, and per-program signatures into `deployments/devnet.json`. Current manifest has live smoke values; hosted URLs remain null.                                      | partial |
+| 1.3 | Run `scripts/regen_devnet_manifest.py` after deploy.                                                                                                | Populates `deployer.address`, `deployed_at`, and per-program signatures into `deployments/devnet.json`. Current hosted manifest serves live API, artifact, and app URLs.                                      | partial |
 | 1.4 | Run `backfill-issuer-tree` and `bootstrap-schema-tree` against devnet.                                                                              | Verifier owner-checks `issuer_tree_binding` and `schema_tree_N` accounts (ADR-0014). Both bindings exist for the current smoke state.                                                                         | done    |
 | 1.5 | Sample-data seed: bootstrap one demo issuer (with on-chain BJJ subgroup proof) and one demo schema (matching `verifier`'s `DEFAULT_SCHEMA_CATALOG` or one supplied via `schemaCatalog`). | `basic_identity_v2`, one sample issuer, and one sample credential exist on devnet. Fresh sample issuance awaits `issuer_registry` upgrade + issuer/schema permission. | partial |
 | 1.6 | Capture and pin a reference green `verify_batch_proof_v2` signature on devnet.                                                                      | Existing sample proof tx is `56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`; fresh issue/prove evidence remains pending. | partial |
@@ -212,7 +216,7 @@ external integrator pilots.
 | 2.B.7  | `core/src/index.ts:436-439` `QueryBuilder.schemas()` silently truncates inputs beyond index 4. Should throw on >4.                                                                                                                                                                                                | Silent data loss. If a caller supplies 5 schemas, the 5th vanishes.                                                                                                                                                                                                                                                                                | open   |
 | 2.B.8  | `core/src/index.ts:495-510` `QueryBuilder.build()` ordering check skips zero→non-zero transitions, so a layout like `[A, 0, B, 0]` passes locally but the on-chain handler at `programs/zk-verifier/src/lib.rs:852-854` only requires strict ascending across active slots. SDK check should match on-chain shape. | SDK is laxer than on-chain. Cosmetic but a code smell.                                                                                                                                                                                                                                                                                             | open   |
 | 2.B.9  | `issuer/src/index.ts:282-303` `batchIssueCredentials` runs sequentially. Either parallelise (with concurrency cap) or document the perf trade-off in JSDoc.                                                                                                                                                       | For a 100-credential mint this is 100 round-trips serially. Not a bug; perf footgun without a doc note.                                                                                                                                                                                                                                            | open   |
-| 2.B.10 | `verifier/src/index.ts:34` imports from `'crypto'` (Node-only). Add a `README.md` note in `verifier/` documenting browser-build polyfill needs (or move to `@noble/hashes` for isomorphism).                                                                                                                       | Modern bundlers polyfill, but a vanilla Vite browser build will fail without `crypto-browserify` config. Browser is `solid-console` and `solid-wallet`'s target.                                                                                                                                                                                  | open   |
+| 2.B.10 | `verifier/src/index.ts:34` imports from `'crypto'` (Node-only). Add a `README.md` note in `verifier/` documenting browser-build polyfill needs (or move to `@noble/hashes` for isomorphism).                                                                                                                       | Modern bundlers polyfill, but a vanilla Vite browser build will fail without `crypto-browserify` config. Browser is `solid-sim` and `solid-wallet`'s target.                                                                                                                                                                                  | open   |
 
 ### 2.C — verified shipped (pass-2 corrections to pass-1 audit)
 
@@ -264,7 +268,7 @@ verified they are implemented. Citations:
 | #   | Item                                                                                                                              | Why                                                                                                                                                                                                                                                                                            | Status |
 | --- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ |
 | 5.1 | Artifact CDN serving the four pinned files (`batch.wasm`, `batch.zkey`, `batch.vkey.json`, `bjj_subgroup.*`) plus `.sha256` sidecars. After deploy, update both `verifier/src/index.ts:1128` (`DEFAULT_ARTIFACT_HOST`) and `sdk/src/config.ts:32` (`ARTIFACT_BASE_URL`) — see 2.B.2 to collapse to one. | Holders need to download the WASM + zkey to generate proofs in the browser. Today these only exist locally in `circuits/build/`. Without a CDN there is no "the wallet talks to a public artifact endpoint" story.                                                                              | open   |
-| 5.2 | Schema/issuer registry REST API (read-only mirror of on-chain `getProgramAccounts`).                                              | The console currently uses `getProgramAccounts` with a fragile `dataSize: 200` filter (`solid-console/src/lib/registry.ts:156`). That is brittle on devnet (rate limits) and impossible at scale. A small read-only API makes "list issuers" and "list schemas" deterministic for any client.   | open   |
+| 5.2 | Schema/issuer registry REST API (read-only mirror of on-chain `getProgramAccounts`).                                              | `solid-sim` currently uses `getProgramAccounts` with a fragile `dataSize: 200` filter (`solid-sim/src/lib/registry.ts:156`). That is brittle on devnet (rate limits) and impossible at scale. A small read-only API makes "list issuers" and "list schemas" deterministic for any client.   | open   |
 | 5.3 | Merkle proof / indexer API for the issuer tree and per-schema trees.                                                              | To generate a proof, the holder needs the merkle path for their credential leaf. Without an indexer, every holder has to scan SPL Account Compression CPI logs themselves. That makes the wallet impossible to ship.                                                                          | open   |
 | 5.4 | `/status` health endpoint (or a static `.well-known/solid-protocol.json`) returning `{ programIds, vkPins, lastDeployTx, clusterHeight }`. `SolidVerifier.health()` already pings `${artifactHostUrl}.well-known/solid-protocol.json` (`verifier/src/index.ts:1386`); host that. | `docs/DEVNET_STATUS.md` is human-readable; integrators need a machine-readable equivalent so the SDK can verify "the deployment I am pointing at matches the artifacts I am using" at startup.                                                                                                | open   |
 
@@ -287,13 +291,13 @@ Decision: ship the real extension. No console fallback.
 | 6.11 | Backup/restore via Argon2id + ChaCha20-Poly1305 per `docs/HOLDER_STORAGE_AND_WALLET.md:252-276`.                                                                                                                                                                                            | Cross-device recovery and disaster recovery. Without this, losing the browser profile loses all credentials.                                                                                                                                                                                                                                                                                         | open   |
 | 6.12 | Credential storage format: `encryptedBlob: Uint8Array` (not base64 string), `encryptedSummary`, `schemaHashHint`, `expiresAtHint` per `docs/HOLDER_STORAGE_AND_WALLET.md:209-245`.                                                                                                          | The current shape is wrong relative to the spec. Indexers and the `canSatisfy` predicate evaluator depend on the unencrypted hint fields.                                                                                                                                                                                                                                                            | open   |
 
-## 7. Console (`solid-console`, finished issuer + verifier + holder pages)
+## 7. Solid Sim (`solid-sim`, finished issuer + verifier + holder pages)
 
 Decision: finish all roles in the console. No CLI for v0.
 
 | #    | Item                                                                                                                                                                                                                                                                                          | Why                                                                                                                                                                                                                                                                                                                                                                  | Status |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 7.1  | Add `@solid-protocol/sdk`, `@solid-protocol/verifier`, `@solid-protocol/issuer`, `@solid-protocol/core`, `@solid-protocol/light` to `solid-console/package.json`. Remove the parallel implementations in `src/lib/registry.ts` (manual byte offsets, `dataSize: 200` filter).                | The console currently re-derives PDAs and parses `VerifierConfig` by hand. When ADR-0015 layout changes (SPACE bumps, new fields), the console silently breaks. The SDK is the single source of truth; the console must consume it.                                                                                                                                  | open   |
+| 7.1  | Add `@solid-protocol/sdk`, `@solid-protocol/verifier`, `@solid-protocol/issuer`, `@solid-protocol/core`, `@solid-protocol/light` to `solid-sim/package.json`. Remove the parallel implementations in `src/lib/registry.ts` (manual byte offsets, `dataSize: 200` filter).                | `solid-sim` currently re-derives PDAs and parses `VerifierConfig` by hand. When ADR-0015 layout changes (SPACE bumps, new fields), the app silently breaks. The SDK is the single source of truth; the app must consume it.                                                                                                                                  | open   |
 | 7.2  | Wire `useWallet()` from `@solana/wallet-adapter-react` and replace every demo signature with a real signed instruction.                                                                                                                                                                       | `WalletMultiButton` is wired (`src/layout/TopBar.tsx:69`) but `useWallet()` is never called. Every "submit" button currently fakes success. Without this, the console is a screenshot machine, not an interface.                                                                                                                                                     | open   |
 | 7.3  | Replace `crypto.getRandomValues()` BJJ key generation in `src/roles/issuer/pages/RegisterIssuer.tsx:21-43` with `@solid-protocol/core::generateKeypair()`.                                                                                                                                  | The current keys are not valid BJJ subgroup elements. They will fail the on-chain `bjj_subgroup_proof` check at `register_issuer` time. The console would never successfully register a real issuer.                                                                                                                                                              | open   |
 | 7.4  | Replace the demo-signature return at `src/roles/issuer/pages/RegisterIssuer.tsx:45-68` with real Anchor `register_issuer` ix construction signed via `useWallet()`. Use `@solid-protocol/issuer::generateSubgroupProof` (already shipped) for the 256-byte subgroup proof argument.        | Today the page fakes success. Real registration needs the on-chain BJJ subgroup proof generation (Phase E), DAO vote orchestration, and stake deposit — all of which `bootstrap_issuer.ts` does and the console must do as well.                                                                                                                                  | open   |

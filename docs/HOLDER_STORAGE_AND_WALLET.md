@@ -162,8 +162,8 @@ and runs after `decryptCredential` and before
 The channel package is intentionally crypto-WASM-free so it can be
 audited and ship independently of the BJJ + Poseidon primitives. The
 wallet imports `@solid-protocol/core`'s WASM bridge for these checks.
-Splitting this way also lets a future verifier-side service (e.g.
-solid-console) reuse the same channel package without dragging in the
+Splitting this way also lets a future verifier-side service or `solid-sim`
+reuse the same channel package without dragging in the
 holder-only integrity rules.
 
 ## Two-layer architecture

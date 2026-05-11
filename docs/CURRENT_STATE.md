@@ -2,8 +2,8 @@
 > ===============================
 >
 > Per-component snapshot of the implementation as of v0.6.1
-> (post-Phase-E close-out plus local solid-sim devnet UI smoke,
-> 2026-05-09).  Every row is a direct mirror of
+> (post-Phase-E close-out plus hosted devnet app/API/artifacts,
+> 2026-05-12).  Every row is a direct mirror of
 > a section in [`SYSTEM_VISION.md`](./SYSTEM_VISION.md) so the two
 > documents can be read side-by-side: vision on the left, current
 > reality on the right.
@@ -22,8 +22,10 @@
 
 # 0. Current Public Devnet State
 
-The protocol is live enough for local public-devnet smoke testing through
-`solid-sim`, but the system is not public-test-ready yet.
+The protocol is live enough for controlled public-devnet smoke testing
+through hosted `solid-sim`. Broader public onboarding still needs browser
+smoke testing against the hosted URLs, public docs/landing, verifier SDK
+publication, and monitoring.
 
 | Area | Current state |
 | ---- | ------------- |
@@ -33,17 +35,16 @@ The protocol is live enough for local public-devnet smoke testing through
 | DAO / issuer smoke | One issuer was registered, voted/finalized, and enrolled in the issuer tree. |
 | Credential smoke | One `basic_identity_v2` credential was issued into the schema tree. |
 | Proof smoke | Fresh devnet issue, root sync, local witness generation, local `snarkjs.groth16.verify`, on-chain `verify_batch_proof_v2`, replay rejection, and the local four-role `solid-sim` proof-buffer verifier path are green for `basic_identity_v2`. |
-| Remaining protocol blocker | Protocol terminal smoke and local UI smoke are green. Public user testing is now blocked by hosted artifacts, production indexer/API bootstrap, hosted solid-sim deployment, TLS, rate limits, and public URLs in the manifest. |
-| Product state | `solid-console` is now `solid-sim`: one shared tester environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and Logs. Flow starts at DAO trust and moves through issuer, holder wallet, and verifier. Wallet derives real holder material, imports encrypted envelopes, validates credential integrity, and proves with real artifacts plus an indexer. The indexer owns schema/global root sync service-side, so holders do not need the DAO/admin wallet to generate proofs. |
-| Product blocker | Public solid-sim/integrator testing still needs Vercel app/artifact deployment, AWS indexer/API bootstrap, public manifest serving, TLS, and rate limiting. |
+| Remaining protocol blocker | Protocol terminal smoke, local UI smoke, hosted artifacts, hosted indexer/API, hosted solid-sim, TLS, rate limits, and public URLs in the manifest are in place. Remaining devnet work is hosted browser smoke, public docs/landing, verifier SDK publish, and monitoring. |
+| Product state | `solid-sim` is one shared tester environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and Logs. Flow starts at DAO trust and moves through issuer, holder wallet, and verifier. Wallet derives real holder material, imports encrypted envelopes, validates credential integrity, and proves with real artifacts plus an indexer. The indexer owns schema/global root sync service-side, so holders do not need the DAO/admin wallet to generate proofs. |
+| Product blocker | Public solid-sim/integrator testing now needs hosted browser smoke, landing/docs, verifier SDK npm publication, and operational monitoring. |
 
 The public machine-readable snapshot lives in `deployments/devnet.json`.
 The human-readable operational snapshot lives in `docs/DEVNET_STATUS.md`.
-Do not send public testers through the flow until hosted artifacts, the
-indexer/API, and solid-sim are deployed and the green local four-role smoke is
-repeated against hosted URLs.
+Do not send broad public testers through the flow until the green local
+four-role smoke is repeated against hosted URLs.
 
-Planned public devnet domains:
+Public devnet domains:
 
 | Surface | URL |
 | ------- | --- |
@@ -54,7 +55,7 @@ Planned public devnet domains:
 | Manifest | `https://api.solidislive.com/v1/manifest` |
 | Docs | `https://docs.solidislive.com` |
 
-Deployment split: Vercel hosts app, artifacts, docs, landing, and SDK-facing static surfaces. AWS Lightsail hosts the indexer/API and canonical manifest. The `api.solidislive.com` DNS record is reserved for the Lightsail static IPv4. Every public endpoint should be rate limited before tester traffic, with stricter token protection on indexer write endpoints. Public docs must not include AWS account IDs, static IPs, SSH details, private IPs, tokens, or credentials.
+Deployment split: Vercel hosts app, artifacts, docs, landing, and SDK-facing static surfaces. AWS Lightsail hosts the indexer/API and canonical manifest. `api.solidislive.com` is behind Nginx, TLS, and public rate limits. Indexer write endpoints require token protection. Public docs must not include AWS account IDs, static IPs, SSH details, private IPs, tokens, or credentials.
 
 # 1. Programs (the contract)
 

@@ -307,7 +307,7 @@ has been updated to reflect the post-fix state.
   rm -rf ts-sdk/packages/core/wasm
   PATH="$PWD/.toolchain/bin:$PATH" \
     wasm-pack build wasm/ --target nodejs \
-      --out-dir ts-sdk/packages/core/wasm --release
+      --out-dir ../ts-sdk/packages/core/wasm --release
   node scripts/wasm_bridge_smoke.mjs
   ```
 - **Pre-mitigation if it fails:** add a third cfg branch in
@@ -600,7 +600,7 @@ has been updated to reflect the post-fix state.
   ```
   rm -rf ts-sdk/packages/core/wasm
   PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ \
-    --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+    --target nodejs --out-dir ../ts-sdk/packages/core/wasm --release
   cd ts-sdk && npm ci && npm run build
   ```
   CI should also run `node scripts/wasm_bridge_smoke.mjs` against
@@ -1297,7 +1297,7 @@ The original failure shape was in `Buffer.encode` of the
    (B5 step 2 — gate).
 6. `(cd ts-sdk && npm ci && npm run build)` (C1).
 7. `cd tests/vectors && tsx check_vectors.ts` (C2 — gate).
-8. `rm -rf ts-sdk/packages/core/wasm && PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release` (B6 — if it fails, apply the three-way cfg).
+8. `rm -rf ts-sdk/packages/core/wasm && PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ --target nodejs --out-dir ../ts-sdk/packages/core/wasm --release` (B6 — if it fails, apply the three-way cfg).
 9. `node scripts/wasm_bridge_smoke.mjs` (B6 — gate).
 10. `pkill -f solana-test-validator; rm -rf test-ledger; export COPYFILE_DISABLE=1; solana-test-validator --reset &` (B8).
 11. `sleep 5 && solana config set --url localhost && solana airdrop 10` (C3 prep).

@@ -36,15 +36,14 @@ Read `plan/RESUME.md` first when resuming deployment work. As of
 - On-chain devnet `verify_batch_proof_v2` retest is now blocked earlier by
   schema `BindingRootStale` during `scripts/prove.ts`; refresh the live
   schema-tree path or use a fresh depth-20 launch schema/tree before rerun.
-- `solid-console` is now being used as `solid-sim`: one shared tester
-  environment with System, Flow, DAO, Issuer, Wallet, Verifier, Schemas, and
-  Logs. The visual flow starts at DAO trust and moves through issuer,
-  holder wallet, and verifier. Wallet derives real holder material, imports
-  encrypted envelopes, validates integrity, and only proves with real
-  artifacts plus an indexer.
-- Artifact, indexer, solid-sim, and wallet release URLs are intentionally
-  still null in `deployments/devnet.json`; public tester onboarding waits
-  on those hosted services.
+- `solid-sim` is the hosted tester environment for System, Flow, DAO,
+  Issuer, Wallet, Verifier, Schemas, and Logs. The visual flow starts at
+  DAO trust and moves through issuer, holder wallet, and verifier. Wallet
+  derives real holder material, imports encrypted envelopes, validates
+  integrity, and only proves with real artifacts plus an indexer.
+- Artifact, indexer/API, manifest, and solid-sim URLs are live under
+  `solidislive.com`. Public tester onboarding now waits on hosted browser
+  smoke, public docs/landing, verifier SDK publish, and monitoring.
 
 ## Hard invariants
 
@@ -127,7 +126,7 @@ cd circuits && npm install && node scripts/setup.js && cd ..
 # `crates/solid-core` (which stays BPF-compatible and has no `#[wasm_bindgen]`
 # exports). SOLID-SEC-028 / ADR-0002.
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 
 # Anchor programs
 # `target/deploy/` is gitignored, so on a fresh checkout the program

@@ -1,6 +1,6 @@
 # SolID Protocol
 
-**Private eligibility verification for Solana apps. Without storing user PII.**
+**Private credential verification for Solana apps.**
 
 SolID lets a Solana app privately check whether a wallet satisfies an
 issuer-signed eligibility claim -- KYC, accreditation, residency, age,
@@ -37,18 +37,33 @@ Four roles, four products:
 | Holder   | "What am I revealing, and what stays private?"             | Hold credential locally; generate a Groth16 proof scoped to the verifier and a query.         |
 | Operator | "Are the trust roots and artifacts what they should be?"   | All program IDs + VK + artifact hashes pinned and CI-gated; see `docs/DEVNET_STATUS.md`.      |
 
-Today the bottom three layers (programs + circuits + low-level SDK)
-are production-quality. The local `solid-sim` four-role UI flow is
-green on devnet with a local indexer/API; hosted devnet defaults are
-the next milestone -- see
-[`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md).
+Today the devnet protocol, public artifact host, indexer/API, manifest,
+and `solid-sim` product surface are live under `solidislive.com`.
+Verifier SDK publication is the next external-developer milestone.
+
+## Live Devnet
+
+| Surface | URL | Status |
+| --- | --- | --- |
+| App / demo | `https://app.solidislive.com` | Live |
+| Indexer / API | `https://api.solidislive.com` | Live behind Nginx, TLS, and rate limiting |
+| Manifest | `https://api.solidislive.com/v1/manifest` | Live, canonical |
+| Circuit artifacts | `https://artifacts.solidislive.com` | Live, SHA-256 pinned |
+| Landing | `https://solidislive.com` | Pending product landing |
+| Docs | `https://docs.solidislive.com` | Pending public docs site |
 
 ## Status
 
-- v0.6.1, post-Phase-E close-out plus local `solid-sim` devnet smoke
-  green (2026-05-09).
-- Three Anchor programs are deployed on devnet and the local
-  DAO -> issuer -> holder -> verifier UI path has verified on-chain.
+- v0.6.1, post-Phase-E close-out plus public devnet hosting pass
+  (2026-05-12).
+- Three Anchor programs are deployed on devnet and the
+  DAO -> issuer -> holder -> verifier flow has verified on-chain.
+- `solid-sim` is deployed at `https://app.solidislive.com` with the
+  warm-gold proof-console product surface.
+- The indexer/API serves health, manifest, schemas, issuers, request
+  records, and Merkle proof routes from `https://api.solidislive.com`.
+- Circuit artifacts are hosted at `https://artifacts.solidislive.com`
+  and verified against the manifest pins.
 - 279/279 host + circuit unit tests green; clean-slate localnet
   e2e green end-to-end including replay rejection.
 - Canonical state-of-protocol audit:
@@ -73,13 +88,17 @@ proof on-chain, and returns a stable success/failure result:
 ```ts
 import { SolidVerifier, walletAdapterTransport } from "@solid-protocol/verifier";
 
-const solid = new SolidVerifier({ cluster: "devnet" });
+const solid = new SolidVerifier({
+  cluster: "devnet",
+  artifactHostUrl: "https://artifacts.solidislive.com",
+  indexerUrl: "https://api.solidislive.com",
+});
 
 const result = await solid.verifyRequirement({
   wallet: wallet.publicKey,
   payer: verifierPayer,
   spec: {
-    schema: "basic_identity_v1",
+    schema: "basic_identity_v2",
     predicates: [
       { field: "verification_level", op: ">=", value: 2 },
       { field: "country_code", op: "!=", value: 840 },
@@ -92,8 +111,8 @@ const result = await solid.verifyRequirement({
 if (result.verified) allowUser();
 ```
 
-This is what gets a developer from "evaluating SolID" to "integrated
-in 15 minutes."
+This is the verifier alpha path. The hosted API and artifacts are live,
+but verifier SDK npm publication is still pending.
 
 ## Quick start
 
@@ -112,7 +131,7 @@ export PATH="$PWD/.toolchain/bin:$PATH"
 
 # Build
 cd circuits && npm install && node scripts/setup.js && cd ..
-wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+wasm-pack build wasm/ --target nodejs --out-dir ../ts-sdk/packages/core/wasm --release
 bash scripts/sync_program_keypairs.sh
 anchor build
 cd ts-sdk && npm ci && npm run build && cd ..
@@ -194,21 +213,27 @@ Product / integrator-facing:
 
 - [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md) -- current devnet
   IDs, VK pins, artifact hashes, known limitations.
+- [`docs/DEVNET_QUICKSTART.md`](docs/DEVNET_QUICKSTART.md) -- current
+  public devnet URLs and tester entry points.
 - [`docs/integration-guide.md`](docs/integration-guide.md)
 - [`docs/issuer-guide.md`](docs/issuer-guide.md)
 - [`docs/verifier-guide.md`](docs/verifier-guide.md)
+- [`docs/VERIFIER_INTEGRATION.md`](docs/VERIFIER_INTEGRATION.md)
 - [`docs/REVOCATION_DESIGN.md`](docs/REVOCATION_DESIGN.md)
+- [`DEPLOYMENT_TRACKER.md`](DEPLOYMENT_TRACKER.md) -- live deployment
+  state and remaining rollout work.
+- [`DEPLOYMENT_COMMAND_LOG.md`](DEPLOYMENT_COMMAND_LOG.md) -- exact
+  commands used for the current `solidislive.com` deployment.
 
 Devnet rollout planning (load-bearing for the next release):
 
 - [`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md)
   -- strategic positioning, competitive landscape, demo design.
 - [`plan/DEVNET_ROLLOUT_PUNCHLIST.md`](plan/DEVNET_ROLLOUT_PUNCHLIST.md)
-  -- tactical per-task list, Tier A/B/C/D. **Tier A + Tier B is the
-  bar before public devnet launch.**
+  -- tactical rollout list; some hosted devnet items are now complete.
 - [`plan/VERIFIER_SDK_SHAPE.md`](plan/VERIFIER_SDK_SHAPE.md)
-  -- design sketch for the upcoming `@solid-protocol/verifier`
-  high-level wrapper (not yet shipped).
+  -- design sketch for the `@solid-protocol/verifier` wrapper now
+  implemented as the devnet alpha surface.
 
 Product architecture (per-actor):
 

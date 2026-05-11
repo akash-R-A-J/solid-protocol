@@ -1,16 +1,14 @@
 # SolID Devnet Quickstart
 
-This guide is for public devnet testers and integrators. Current status
-as of 2026-05-06: the three programs are deployed and initialized on
-devnet, the deployer is funded, `zk_verifier` has been upgraded from the
-current source, and the existing `basic_identity_v2` sample verifies
-on-chain. Reference verify tx:
-`56crrCtH7QDAQbgrqiHuytuJVskXiRm27LvBRGBCBLGXM4k7q9nXW2oHhnd3U9rmxTBQzHMEcHuuEk84Ezy1VNut`.
+This guide is for controlled public devnet testers and integrators.
+Current status as of 2026-05-12: the three programs are deployed and
+initialized on devnet, fresh `basic_identity_v2` issue/prove/replay is
+green, the API/manifest is hosted at `https://api.solidislive.com`, the
+artifacts are hosted at `https://artifacts.solidislive.com`, and the app
+is hosted at `https://app.solidislive.com`.
 
-Public solid-sim testing still waits on fresh issuance against the current
-program source, hosted artifacts, and an indexer. The fresh issue path is
-blocked until `issuer_registry` is upgraded from current source and the
-issuer/schema permission PDA is granted.
+Broader public onboarding should wait until the hosted browser smoke run is
+complete and the public docs/landing pages are live.
 
 ## 1. Read The Manifest
 
@@ -30,10 +28,10 @@ Local file:
 cat deployments/devnet.json
 ```
 
-Hosted file, once published:
+Hosted file:
 
 ```bash
-curl https://your-domain.example/solid/devnet.json
+curl https://api.solidislive.com/v1/manifest
 ```
 
 Current live smoke values are listed in `docs/DEVNET_STATUS.md`.
@@ -89,17 +87,12 @@ npm run prove
 
 Expected current result:
 
-- Existing sample: `npm run prove` builds a witness, passes local
-  `snarkjs.groth16.verify`, submits `verify_batch_proof_v2`, and confirms
-  replay rejection.
-- Fresh issue: `npm run issue` currently fails on devnet because the live
-  `issuer_registry` deployment still expects the older account layout. The
-  current SDK/program source passes `issuer_schema_permission`, and the live
-  permission PDA
-  `4Eo32kQPu9mvVypVRM83FV76ZZa3RSe5LWBwgpZcxx5H` is not initialized.
-- Treat public testing as blocked until the operator upgrades
-  `issuer_registry`, grants schema permission, and records a fresh
-  issue/prove/replay sequence.
+- `npm run issue` issues a `basic_identity_v2` credential into the devnet
+  schema tree.
+- `npm run prove` builds a witness, passes local `snarkjs.groth16.verify`,
+  submits `verify_batch_proof_v2`, and confirms replay rejection.
+- Hosted app/API/artifact smoke is separate from terminal E2E and should be
+  repeated before sending broad public tester traffic.
 
 The repo now ships explicit runtime profiles:
 
@@ -109,8 +102,8 @@ source config/devnet.env.example
 source config/localnet.env.example
 
 # solid-sim
-cp ../solid-console/.env.devnet.example ../solid-console/.env
-cp ../solid-console/.env.localnet.example ../solid-console/.env
+cp ../solid-sim/.env.devnet.example ../solid-sim/.env
+cp ../solid-sim/.env.localnet.example ../solid-sim/.env
 
 # extension wallet
 cp ../solid-wallet/.env.devnet.example ../solid-wallet/.env
@@ -154,8 +147,14 @@ Then open `chrome://extensions`, enable Developer Mode, and load
 
 ## 4. Open SolID Sim
 
-Open the solid-sim URL from the manifest. Connect a devnet Solana wallet and
-check the status page before issuing credentials or verifying proofs.
+Open the hosted app from the manifest:
+
+```text
+https://app.solidislive.com
+```
+
+Connect a devnet Solana wallet and check the status page before issuing
+credentials or verifying proofs.
 
 Required live checks:
 
@@ -170,15 +169,15 @@ Required live checks:
 For a local operator run:
 
 ```bash
-cd solid-console
+cd solid-sim
 npm install
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=http://localhost:8080/devnet.json \
-VITE_SOLID_ARTIFACT_BASE_URL=http://localhost:8080/artifacts \
-VITE_SOLID_INDEXER_URL=http://localhost:8787 \
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest \
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com \
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com \
 npm run dev
 ```
 
@@ -205,8 +204,9 @@ proofs only when real artifacts and an indexer are configured.
 11. Verifier submits proof on-chain.
 12. Replay/nullifier reuse fails.
 
-The current public-devnet milestone is reached only when steps 9-12 work
-through Wallet and Verifier using public URLs, not local files.
+The current public-devnet milestone is reached when steps 9-12 work through
+Wallet and Verifier using public URLs, not local files. Terminal devnet is
+green; hosted browser smoke is the next acceptance gate.
 
 For the exact injected-provider path behind step 5, see
 `docs/WALLET_PROVIDER_FLOW.md`.

@@ -249,7 +249,7 @@ Canonical build command (from repo root):
 
 ```
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 ```
 
 `@solid-protocol/core` imports the compiled bundle via the relative

@@ -53,7 +53,7 @@ In solid-sim this is wrapped by:
 const material = await requestHolderMaterial(schemaHash);
 ```
 
-Source: `solid-console/src/lib/solid-wallet-provider.ts`.
+Source: `solid-sim/src/lib/solid-wallet-provider.ts`.
 
 That helper returns:
 
@@ -67,7 +67,7 @@ That helper returns:
 
 `IssueCredential` then signs the credential commitment and encrypts the
 credential envelope for the holder wallet. If `window.solid` is not present,
-the same helper falls back to `solid-console/src/lib/sim-wallet.ts`, which
+the same helper falls back to `solid-sim/src/lib/sim-wallet.ts`, which
 uses the integrated Wallet simulator seed.
 
 ## Security Rules
@@ -82,7 +82,7 @@ uses the integrated Wallet simulator seed.
 
 ## Devnet Test
 
-1. Open `solid-sim` locally or through the hosted URL once published.
+1. Open `solid-sim` locally or at `https://app.solidislive.com`.
 2. Go to Wallet and create or import a simulator identity.
 3. Derive material for the active schema, or load `solid-wallet/dist` as an
    unpacked browser extension to test the injected provider path.
@@ -97,9 +97,9 @@ uses the integrated Wallet simulator seed.
 Local operator build commands are in `docs/DEVNET_QUICKSTART.md`.
 
 Public tester builds must use public HTTPS manifest/artifact/indexer URLs.
-The current protocol deploy is live, but Wallet proof generation is not
-public-ready until hosted artifacts, a Merkle proof indexer, and a green
-devnet verifier transaction are available.
+The current protocol deploy, hosted artifacts, Merkle proof indexer, and
+devnet verifier transaction are live. Broader tester traffic still needs the
+hosted browser smoke pass.
 
 If those fields do not populate, inspect the wallet service worker logs and the
 browser console for `SOLID_GET_HOLDER_PUBLIC_KEY` or `GET_HOLDER_PUBLIC_KEY`.

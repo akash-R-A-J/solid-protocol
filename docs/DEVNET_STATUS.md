@@ -1,6 +1,6 @@
 # SolID Devnet Status
 
-Last updated: 2026-05-09 (local solid-sim devnet UI smoke green).
+Last updated: 2026-05-12 (API, artifacts, manifest, and solid-sim hosted).
 
 This page is the public, machine-friendly source of truth for the
 SolID devnet deployment. If a value here disagrees with code in the
@@ -19,10 +19,21 @@ For the full state-of-the-protocol audit see
 | Last live deploy  | 2026-05-06 partial protocol deploy  |
 | Reproducible      | localnet e2e green on 2026-05-02; fresh devnet issue/prove/replay green on 2026-05-07; local `solid-sim` four-role UI smoke green on 2026-05-09 |
 
-The `deployments/devnet.json` manifest in this repository declares
-the canonical program IDs, PDAs, launch schema, tree bindings, and
-toolchain pins for devnet. Public artifact, indexer, solid-sim, and
-wallet URLs remain null until those services are hosted.
+The `deployments/devnet.json` manifest declares the canonical program IDs,
+PDAs, launch schema, tree bindings, hosted URLs, and toolchain pins for
+devnet. The canonical public manifest is served from
+`https://api.solidislive.com/v1/manifest`.
+
+## Public URLs
+
+| Surface | URL | Status |
+| --- | --- | --- |
+| App / demo | `https://app.solidislive.com` | live |
+| Indexer / API | `https://api.solidislive.com` | live |
+| Manifest | `https://api.solidislive.com/v1/manifest` | live |
+| Artifact CDN | `https://artifacts.solidislive.com` | live |
+| Landing | `https://solidislive.com` | pending |
+| Docs | `https://docs.solidislive.com` | pending |
 
 ## Program IDs
 
@@ -109,11 +120,14 @@ The following public devnet state has been created with deployer
 | Replay test (nullifier PDA init constraint) | green: replay of the same proof was rejected as expected |
 | Fresh issuance with current SDK/source | green: `gUFgazuUQnMu89rGMVSvS2ZfmBhUxWd2Ki9aCsECDaGDCe7GE5YB1tEEV2nz1NgCNCtp8KSsTRbWt5SNcXjbS3g` |
 | Local `solid-sim` four-role UI smoke | green: DAO/issuer/holder/verifier flow reached `Proof accepted` on 2026-05-09 |
+| Hosted indexer/API | green: `/v1/health`, `/v1/manifest`, `/v1/schemas`, and `/v1/issuers` served over HTTPS |
+| Hosted artifacts | green: `.wasm` and `.zkey` downloads return `200`; batch WASM/zkey hashes match manifest pins |
+| Hosted `solid-sim` | live at `https://app.solidislive.com`; full browser smoke still pending |
 
 ### SolID Sim state
 
-`solid-console` has been reworked as `solid-sim` for local devnet testing.
-It now has one System tree: Flow, Schemas, Logs, and DAO, Issuer, Wallet, and
+`solid-sim` is the current hosted and local devnet tester app. It has one
+System tree: Flow, Schemas, Logs, and DAO, Issuer, Wallet, and
 Verifier subsections. The Flow view starts from DAO trust and moves through
 issuer issuance, holder wallet state, and verifier checks. The Wallet section
 creates/imports a simulator identity, derives real holder channel and
@@ -162,19 +176,21 @@ Protocol-side: the fresh issue -> root sync -> Groth16 proof -> on-chain
 verify -> replay rejection path is green on devnet for `basic_identity_v2`.
 Local product-side smoke is also green through `solid-sim`: DAO approval,
 schema permission, holder credential request, issuer issuance, holder proof
-generation, verifier proof-buffer submission, and on-chain acceptance. The
-remaining blockers before public tester onboarding are hosted artifacts, the
-hosted indexer/API, hosted solid-sim deployment, and public URLs in the
-manifest. Mainnet blockers (multi-party trusted setup
+generation, verifier proof-buffer submission, and on-chain acceptance.
+Hosted artifacts, the hosted indexer/API, hosted `solid-sim`, TLS, rate
+limiting, and public manifest URLs are now in place. The remaining blockers
+before broader public tester onboarding are browser smoke testing against
+the hosted URLs, public docs/landing, verifier SDK npm publication, and
+operational monitoring. Mainnet blockers (multi-party trusted setup
 ceremony, governance multisig on slash/fraud, multisig on the issuer-tree
 operator) do **not** apply to devnet.
 
 Product-side, in rollout order:
 
 1. Host pinned circuit artifacts and publish their HTTPS base URL in
-   `deployments/devnet.json`.
-2. Deploy the indexer/API and publish its URL in the manifest.
-3. Deploy solid-sim with the devnet manifest/artifact/indexer URLs.
+   `deployments/devnet.json`. **Done.**
+2. Deploy the indexer/API and publish its URL in the manifest. **Done.**
+3. Deploy solid-sim with the devnet manifest/artifact/indexer URLs. **Done.**
 4. Publish the green four-role `solid-sim` smoke runbook and repeat it against
    hosted URLs: DAO grants issuer/schema permission, holder requests credential,
    issuer issues, wallet stores, verifier requests proof, holder proves, verifier
@@ -187,7 +203,8 @@ Product-side, in rollout order:
    batch circuit (`TREE_DEPTH = 20`).
 6. Hosted devnet defaults -- artifact CDN with SHA-256 pins,
    schema/issuer registry API, Merkle proof / indexer API, current
-   issuer-tree root, and status ping endpoint.
+   issuer-tree root, and status ping endpoint. **Done for the current
+   `basic_identity_v2` devnet surface.**
 7. `@solid-protocol/verifier` package publish -- high-level wrapper
    code now exists locally, but public devnet needs installable
    `@solid-protocol/verifier@0.2.0` and `@solid-protocol/sdk@0.3.0`
@@ -197,7 +214,7 @@ Product-side, in rollout order:
    envelopes, and calls `@solid-protocol/holder`; it still needs live
    indexer/artifact/tree config and a real issuer-issued credential
    package for E2E acceptance.
-9. `solid-console` real control plane -- replace demo/simulation
+9. `solid-sim` real control plane -- replace demo/simulation
    issuer, issuance, verifier, schema, and DAO/status flows with real
    devnet calls.
 10. Issuer CLI or minimal dashboard so issuers do not need to run
@@ -209,7 +226,7 @@ Product-side, in rollout order:
    `docs/ERROR_CODES.md`.
 13. 90-second product video + 5-minute developer quickstart video.
 
-## Planned public URLs
+## Public URLs
 
 Use `solidislive.com` as the public devnet domain family:
 
@@ -231,9 +248,12 @@ Hosting split:
 
 Current deployment status:
 
-- API server instance: provisioned on AWS Lightsail.
-- API DNS: `api.solidislive.com` reserved for the Lightsail static IPv4.
-- Still required: server bootstrap, Node/indexer install, Nginx reverse proxy, HTTPS certificate, `/v1/manifest`, read/write rate limits, and public smoke test.
+- API server instance: live on AWS Lightsail.
+- API DNS/TLS: `https://api.solidislive.com`.
+- Manifest: live at `https://api.solidislive.com/v1/manifest`.
+- Artifacts: live at `https://artifacts.solidislive.com`.
+- App: live at `https://app.solidislive.com`.
+- Still required: hosted browser smoke, public landing/docs, verifier SDK npm publication, and monitoring.
 
 ## Current live smoke values
 
@@ -281,22 +301,21 @@ configuration.
   SDK exists locally, but outside integrators still need either npm
   publication or an explicit local-package install path for devnet
   pilots.
-- The current public manifest still uses null URLs for artifacts,
-  indexer, console, and wallet releases. External platforms can inspect
-  the on-chain programs now, but independent holder/verifier use needs
-  hosted artifacts and a Merkle proof indexer.
+- The current public manifest has live artifact, indexer, and console URLs.
+  The wallet release URL is still optional for this milestone because
+  `solid-sim` includes the holder wallet role.
 - The `basic_identity_v1` binding created during early deployment used
   a depth-16 credential tree and should not be used with the current
   batch circuit. Use `basic_identity_v2` for the current devnet smoke
   path until launch schemas are re-registered with depth-20 trees.
-- The wallet proof path is real code, not a mock, but runtime proof
-  generation depends on a live Merkle proof indexer, hosted artifacts,
-  current tree roots, and a real holder credential package.
-- The fresh smoke credential verifies on-chain, but public holder proving
-  still depends on hosted artifacts plus the indexer/API.
-- `solid-sim` has real DAO, issuer, wallet, and verifier paths in code, but
-  public testing still depends on hosted artifacts, the indexer/API, and a
-  fresh four-role smoke with current deployed programs.
+- The wallet proof path is real code, not a mock. Runtime proof generation
+  depends on the live Merkle proof indexer, hosted artifacts, current tree
+  roots, and a real holder credential package.
+- The fresh smoke credential verifies on-chain. Hosted holder/verifier
+  browser smoke is still the next acceptance gate.
+- `solid-sim` has real DAO, issuer, wallet, and verifier paths in code.
+  Broader public testing still needs the hosted four-role smoke run with the
+  current deployed programs.
 
 ## Reporting an issue
 

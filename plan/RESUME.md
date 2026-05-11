@@ -4,10 +4,11 @@ Living handoff doc. Read this first when starting a new session.
 Updated at the end of each session; the last-updated line is
 authoritative.
 
-- **Last updated:** 2026-05-09 (local solid-sim four-role UI smoke green).
+- **Last updated:** 2026-05-12 (hosted app/API/artifacts live).
 
-  **Current truth:** the protocol is partially live on public devnet, but
-  the system is **not public-test-ready yet**. Programs, registry config,
+  **Current truth:** the protocol is live enough for controlled hosted
+  public-devnet smoke, but the system is **not broad public-test-ready yet**.
+  Programs, registry config,
   verifier config/VKs, issuer tree, `basic_identity_v2` schema tree,
   sample issuer, and fresh credential issuance exist on devnet. `zk_verifier`
   and `issuer_registry` are upgraded from current source. The smoke
@@ -17,9 +18,10 @@ authoritative.
   `4gp49ttdgCeZeegBiE3LsJN3uBXhsHYCiQqQW58F9YjJYhbvhAd6eLRdKRedvnfP8v8eqZnT67b2X1oYZPsre6yE`.
   The local `solid-sim` four-role UI smoke is also green through DAO/issuer
   setup, holder proof generation, and verifier proof-buffer submission with
-  `Proof accepted`. Public tester onboarding is now blocked by hosted artifacts,
-  hosted indexer/API, hosted solid-sim deployment, and repeating the green smoke
-  against hosted URLs.
+  `Proof accepted`. Hosted artifacts, indexer/API, manifest, and `solid-sim`
+  are now live under `solidislive.com`. Public tester onboarding is now blocked
+  by repeating the green smoke against hosted URLs, public landing/docs,
+  verifier SDK publication, and monitoring.
 
   **Admin/deployer state:**
   - Deployer pubkey: `Gdz9JLWUekrfnpT3fPu1SsWfas3b3zMhfC4frvV1QRNm`.
@@ -97,8 +99,8 @@ authoritative.
   - this `plan/RESUME.md`
   - `config/devnet.env.example`
   - `config/localnet.env.example`
-  - sibling `solid-console/.env.devnet.example`,
-    `solid-console/.env.localnet.example`, `solid-wallet/.env.devnet.example`,
+  - sibling `solid-sim/.env.devnet.example`,
+    `solid-sim/.env.localnet.example`, `solid-wallet/.env.devnet.example`,
     and `solid-wallet/.env.localnet.example`
 
   **Verification run after the docs/manifest update:**
@@ -118,8 +120,8 @@ authoritative.
   through issuer/credential/root-sync/local-proof/on-chain verifier/replay
   rejection.
 
-  **solid-sim state:** `solid-console` is now the `solid-sim` package and
-  app surface. It has one System tree with Flow, Schemas, Logs, and DAO,
+  **solid-sim state:** `solid-sim` is the hosted tester app and product
+  surface. It has one System tree with Flow, Schemas, Logs, and DAO,
   Issuer, Wallet, and Verifier subsections. The Flow page visualizes DAO ->
   Issuer -> Wallet -> Verifier causality, with motion originating at the DAO
   trust body. The visual system uses one SolID product accent; status colors
@@ -128,15 +130,14 @@ authoritative.
   encrypted credential envelopes, validates holder
   binding/commitment/subgroup/signature integrity, and only generates proofs
   when real artifacts plus a Merkle proof indexer are configured. `npm run
-  build` and `npm run test` pass in `solid-console`.
+  build` and `npm run test` pass in `solid-sim`.
 
-  Public solid-sim/integrator testing still requires hosted circuit artifacts,
-  a Merkle proof indexer/API, public manifest URLs, and a four-role browser
-  smoke in the deployed solid-sim.
+  Public solid-sim/integrator testing still requires a four-role browser
+  smoke in the deployed solid-sim before broader tester traffic.
 
-  **Immediate next action:** deploy the artifact host, deploy the indexer/API,
-  update `deployments/devnet.json` with public URLs, deploy solid-sim, then
-  run the full four-role smoke through solid-sim instead of terminal scripts.
+  **Immediate next action:** run the full four-role smoke through hosted
+  solid-sim, publish public docs/landing, and package the verifier SDK
+  devnet alpha.
 
 - **Previous update (preserved for history):** 2026-05-02 (SEC-048
   Phase E close).  This

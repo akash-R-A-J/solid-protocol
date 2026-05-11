@@ -3,10 +3,10 @@
 Verifiers should integrate through `@solid-protocol/verifier`, not by
 constructing proof request JSON manually.
 
-Current devnet status (2026-05-06): program accounts and live smoke
-bindings are deployed, but public verifier onboarding should wait until
-`deployments/devnet.json` has public artifact/indexer URLs and a known-good
-devnet `verify_batch_proof_v2` transaction.
+Current devnet status (2026-05-12): program accounts, live smoke bindings,
+public artifacts, canonical manifest, and indexer/API are hosted. Public
+verifier onboarding should still wait for the verifier SDK npm release and
+the hosted browser smoke pass.
 
 ## Install
 
@@ -38,8 +38,8 @@ const solid = new SolidVerifier({
     subgroupWasm: pins.subgroupWasm,
     subgroupZkey: pins.subgroupZkey,
   },
-  artifactHostUrl: DEFAULT_DEVNET_MANIFEST.artifacts.base_url ?? undefined,
-  indexerUrl: DEFAULT_DEVNET_MANIFEST.indexer.url ?? undefined,
+  artifactHostUrl: DEFAULT_DEVNET_MANIFEST.artifacts.base_url ?? "https://artifacts.solidislive.com",
+  indexerUrl: DEFAULT_DEVNET_MANIFEST.indexer.url ?? "https://api.solidislive.com",
   programIds: {
     zkVerifier: new PublicKey(programIds.zkVerifier),
     issuerRegistry: new PublicKey(programIds.issuerRegistry),
@@ -70,9 +70,9 @@ const proof = await solid.requestProof({
 For public devnet feedback, prefer on-chain verification so testers see a
 real Solana transaction and replay protection.
 
-Until the public artifact host and Merkle proof indexer are live, verifier
-platforms can inspect the deployed program IDs and PDAs but cannot run an
-independent holder proof flow without local operator files.
+The public artifact host and Merkle proof indexer are live. For the devnet
+alpha, verifier platforms should still fail closed if the hosted manifest,
+artifacts, indexer, or holder transport is unavailable.
 
 The verifier must fail closed when:
 

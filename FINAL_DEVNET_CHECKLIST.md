@@ -2,14 +2,15 @@
 
 Status: final operator checklist for the first public devnet feedback run.
 Scope: `solid-protocol`, `ts-sdk`, `solid-channel`, `solid-wallet`, and
-`solid-console`.
+`solid-sim`.
 
-Last updated: 2026-05-09. Protocol deployment is partially live on public
-devnet. Fresh `basic_identity_v2` issue -> root sync -> proof -> on-chain
-verify -> replay rejection is green, and the local `solid-sim` four-role UI
-smoke has reached `Proof accepted`. The public feedback run is still blocked by
-hosted artifacts, a hosted indexer/API, public solid-sim URL, and repeating the
-green local smoke against hosted URLs.
+Last updated: 2026-05-12. Protocol deployment is live enough for controlled
+public devnet smoke. Fresh `basic_identity_v2` issue -> root sync -> proof ->
+on-chain verify -> replay rejection is green, the local `solid-sim` four-role
+UI smoke has reached `Proof accepted`, and the app/API/artifacts are hosted at
+`solidislive.com`. The broader public feedback run is still blocked by
+repeating the green local smoke against hosted URLs, public landing/docs,
+verifier SDK publication, and monitoring.
 
 This checklist is intentionally strict. A public tester should be able to
 install the wallet, open the console, issue a credential, request a proof,
@@ -29,7 +30,7 @@ Do not call the system "devnet ready" until these are true:
   SHA-256 before use.
 - Wallet proof generation uses hosted artifacts, live roots, live Merkle
   proofs, and a real holder credential package.
-- Console issuer, DAO, holder-facing issuance, and verifier flows use real
+- `solid-sim` issuer, DAO, holder-facing issuance, and verifier flows use real
   protocol calls and show honest empty/error states when data is missing.
 - One clean external devnet E2E is recorded from fresh issue to proof,
   including a successful proof verification transaction and a failed replay
@@ -55,7 +56,7 @@ If any ID changes, update every consumer before shipping:
 - generated IDLs
 - `ts-sdk` program ID exports
 - `solid-wallet` runtime config
-- `solid-console` runtime config
+- `solid-sim` runtime config
 - integration docs and examples
 
 ## Ordered Checklist
@@ -305,7 +306,9 @@ Host every required artifact at public HTTPS URLs:
 - [ ] Publish a pin manifest with SHA-256 for every file.
 - [ ] Publish optional `.sha256` sidecar files.
 - [ ] Configure wallet, console, and SDK to reject hash mismatches.
-- [ ] Keep `solid-console/public/artifacts` only if console intentionally
+- [x] Use the public artifact base URL `https://artifacts.solidislive.com`
+  for the current deployment.
+- [ ] Keep `solid-sim/public/artifacts` only if the app intentionally
   serves same-origin artifacts through Vercel. Otherwise, replace with the
   public artifact base URL.
 
@@ -410,7 +413,7 @@ Wallet requirements:
 Acceptance: a fresh tester can install the wallet, import a real credential,
 approve a verifier request, and return a proof to a dApp.
 
-### 9. Deploy Console To Vercel
+### 9. Deploy Solid Sim To Vercel
 
 Recommended production env:
 
@@ -419,16 +422,17 @@ VITE_SOLID_NETWORK=devnet
 VITE_SOLID_CLUSTER=devnet
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com
-VITE_SOLID_MANIFEST_URL=https://your-domain.example/manifest
-VITE_SOLID_ARTIFACT_BASE_URL=https://your-artifacts.example/solid/devnet/v0.1.0
-VITE_SOLID_INDEXER_URL=https://your-api.example
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com
+VITE_SOLID_CONSOLE_URL=https://app.solidislive.com
 VITE_SOLID_EXPLORER_CLUSTER=devnet
 ```
 
 Build:
 
 ```bash
-cd solid-console
+cd solid-sim
 npm ci
 npm test
 npm run build
@@ -437,7 +441,7 @@ npm run build
 Vercel settings:
 
 ```text
-Root directory: solid-console
+Root directory: solid-sim
 Build command: npm run build
 Output directory: dist
 ```

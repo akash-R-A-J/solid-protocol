@@ -858,7 +858,7 @@ Anchor programs.
 **Crate:** wasm/ (package `solid-wasm`). Separate workspace member.
 `crates/solid-core` stays strictly BPF-compatible and has zero
 `#[wasm_bindgen]` exports (ADR-0002 / SOLID-SEC-009 / SOLID-SEC-028).
-**Build:** `wasm-pack build wasm/ --target nodejs --out-dir ts-sdk/packages/core/wasm --release`
+**Build:** `wasm-pack build wasm/ --target nodejs --out-dir ../ts-sdk/packages/core/wasm --release`
 **Output:** `ts-sdk/packages/core/wasm/` -- consumed by `@solid-protocol/core`
 via the relative runtime import `../wasm/solid_wasm.js`. There is no
 `wasm/pkg/` dir and no separate `@solid-protocol/wasm` npm package.

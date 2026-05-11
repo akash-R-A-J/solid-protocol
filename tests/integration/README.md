@@ -17,7 +17,7 @@ Prerequisites (same as the root README):
 anchor build
 cd circuits && npm install && node scripts/setup.js && cd ..
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 cd ts-sdk && npm ci && npm run build && cd ..
 
 # Run integration suite

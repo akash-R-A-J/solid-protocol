@@ -398,10 +398,12 @@ single-party ceremony is not acceptable for mainnet.
 
 ```bash
 wasm-pack build wasm/ --target nodejs \
-  --out-dir ts-sdk/packages/core/wasm --release
+  --out-dir ../ts-sdk/packages/core/wasm --release
 ```
 
-Run this whenever Rust crypto or WASM bridge code changes.
+Run this whenever Rust crypto or WASM bridge code changes. `wasm-pack`
+resolves `--out-dir` relative to the `wasm/` crate, so the repo-root
+command must use `../ts-sdk/...`.
 
 ### 4.5 Sync program keypairs and build programs
 
@@ -1069,7 +1071,7 @@ npm run e2e
 
 ```bash
 wasm-pack build wasm/ --target nodejs \
-  --out-dir ts-sdk/packages/core/wasm --release
+  --out-dir ../ts-sdk/packages/core/wasm --release
 
 cd ts-sdk
 npm ci

@@ -19,7 +19,7 @@ OR `wasm/src/lib.rs` MUST also re-emit the WASM bridge:
 ```bash
 rm -rf ts-sdk/packages/core/wasm
 PATH="$PWD/.toolchain/bin:$PATH" wasm-pack build wasm/ \
-    --target nodejs --out-dir ts-sdk/packages/core/wasm --release
+    --target nodejs --out-dir ../ts-sdk/packages/core/wasm --release
 (cd ts-sdk && npm ci && npm run build)
 ```
 
@@ -50,7 +50,7 @@ export PATH="$PWD/.toolchain/bin:$PATH"
 # 2. Build everything, in order.
 cd circuits && npm install && node scripts/setup.js && cd ..
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 bash scripts/sync_program_keypairs.sh --reset-state    # hydrate keys + wipe state cache
 anchor build                                            # SEC-048 closed (Phase E, 2026-05-XX); no `--features` flag
 (cd ts-sdk && npm ci && npm run build)
@@ -123,7 +123,7 @@ PORT=8787 HOST=127.0.0.1 \
 ```
 
 ```bash
-cd solid-console
+cd solid-sim
 VITE_SOLID_NETWORK=devnet \
   VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
   VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
@@ -138,12 +138,12 @@ rate-limits the full console click-through. Use a private devnet RPC for
 tester builds and set it in `SOLID_RPC_URL`, `VITE_SOLID_RPC_URL`, and
 `VITE_SOLID_WS_URL`.
 
-Before public testers, these off-chain pieces must also be hosted:
+For the current public devnet deployment, these off-chain pieces are hosted:
 
 ```text
 artifact host/CDN    all six pinned circuit artifacts from circuits/build/
 indexer/API         solid-protocol/indexer as an HTTPS Node service
-solid-sim frontend  solid-console built with the public manifest/indexer/artifact URLs
+solid-sim frontend  built with the public manifest/indexer/artifact URLs
 npm packages        @solid-protocol/* SDK packages after npm pack checks
 manifest            deployments/devnet.json served over HTTPS or /v1/manifest
 ```
@@ -152,13 +152,10 @@ Keep private values out of Git and out of frontend `VITE_*` variables.
 Use local shell env for deployer keypairs and host-provider secret
 stores for RPC API keys, DB credentials, and `SOLID_INDEXER_WRITE_TOKEN`.
 
-Known testing limitation: `solid-console/public/artifacts/` currently
-contains only the subgroup artifacts and the batch verification key. The
-integrated wallet proof-generation path also needs
-`batch_credential_query.wasm` and `batch_credential_query.zkey` served
-from the configured artifact base URL, and the indexer must have indexed
-the issued credential leaves before `/v1/merkle-proof/:tree/:leaf` can
-return inclusion proofs.
+Known testing limitation: hosted artifacts and the indexer/API are live, but
+the hosted browser four-role smoke still needs to be repeated before broad
+public tester traffic. The indexer must have indexed issued credential leaves
+before `/v1/merkle-proof/:tree/:leaf` can return inclusion proofs.
 
 ---
 
@@ -312,7 +309,7 @@ The bridge lives in the top-level `wasm/` crate (NOT in
 
 ```bash
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 ```
 
 Output: `ts-sdk/packages/core/wasm/` containing the `.wasm` binary
@@ -320,6 +317,11 @@ and the TypeScript declaration shim. The TS SDK imports from here
 exclusively; re-running `wasm-pack build` after any change to
 `wasm/src/lib.rs` or `crates/solid-core` is mandatory, otherwise
 the SDK and the program disagree byte-for-byte.
+
+`wasm-pack` resolves `--out-dir` relative to the crate being built
+(`wasm/` here), so use `../ts-sdk/...` when running from the repo root.
+Using `ts-sdk/...` writes to `wasm/ts-sdk/...`, which does not satisfy
+the SDK import from `ts-sdk/packages/core/wasm/solid_wasm.js`.
 
 ### 2.4 Anchor programs
 
@@ -525,7 +527,7 @@ export PATH="$PWD/.toolchain/bin:$PATH"
 # Per-checkout build
 cd circuits && npm install && node scripts/setup.js && cd ..
 wasm-pack build wasm/ --target nodejs \
-    --out-dir ts-sdk/packages/core/wasm --release
+    --out-dir ../ts-sdk/packages/core/wasm --release
 anchor build
 (cd ts-sdk && npm ci && npm run build)
 npm install
@@ -943,11 +945,11 @@ Do not make up placeholders for these. If one is unknown, stop at that step.
 | Devnet RPC URL | `https://api.devnet.solana.com` or paid RPC | `config/devnet.env.example`, deploy env, `VITE_SOLID_RPC_URL`, manifest `cluster` |
 | Devnet WebSocket URL | `wss://api.devnet.solana.com` | `VITE_SOLID_WS_URL`, manifest `websocket_cluster` |
 | Deployer keypair path | `$HOME/.config/solana/solid-devnet-admin.json` | `SOLID_KEYPAIR_PATH`, `SOLANA_KEYPAIR_PATH`, `ANCHOR_WALLET` |
-| Artifact base URL | `https://artifacts.solidislive.com/artifacts` | manifest `artifacts.base_url`, `VITE_SOLID_ARTIFACT_BASE_URL`, wallet settings |
+| Artifact base URL | `https://artifacts.solidislive.com` | manifest `artifacts.base_url`, `VITE_SOLID_ARTIFACT_BASE_URL`, wallet settings |
 | Manifest URL | `https://api.solidislive.com/v1/manifest` | `VITE_SOLID_MANIFEST_URL`, wallet settings, indexer `/.well-known/solid-protocol.json` if mirrored |
 | Indexer URL | `https://api.solidislive.com` | manifest `indexer.url`, `VITE_SOLID_INDEXER_URL`, wallet settings |
 | Console URL | `https://app.solidislive.com` | manifest `console.url`, `VITE_SOLID_CONSOLE_URL` |
-| Wallet release URL | private ZIP or Chrome listing URL | manifest `wallet.release_url`; optional for this milestone because the wallet role is embedded in `solid-console` |
+| Wallet release URL | private ZIP or Chrome listing URL | manifest `wallet.release_url`; optional for this milestone because the wallet role is embedded in `solid-sim` |
 | Tester origins | `https://solid-sim.example.com/*` | Only needed if deploying `solid-wallet`; configure `solid-wallet/public/manifest.json` `host_permissions`, `content_scripts.matches`, `web_accessible_resources.matches` |
 | Indexer write token | random secret | `SOLID_INDEXER_WRITE_TOKEN` on the indexer host and issuer/operator ingestion commands |
 | Schema launch set | `basic_identity_v2`, depth 20 | protocol env, manifest `schemas`, schema tree bindings |
@@ -974,11 +976,12 @@ Current deployment state:
 
 | Item | State |
 | --- | --- |
-| API instance | AWS Lightsail provisioned for the indexer/API |
-| API DNS | `api.solidislive.com` configured to the Lightsail static IPv4 |
-| Manifest source | Planned at `https://api.solidislive.com/v1/manifest` |
-| App/artifact host | Planned on Vercel |
-| Remaining API work | OS bootstrap, Node install, indexer deploy, Nginx, TLS, rate limits, smoke test |
+| API instance | AWS Lightsail running the indexer/API under PM2 |
+| API DNS | `https://api.solidislive.com` configured with Nginx, TLS, and rate limits |
+| Manifest source | Live at `https://api.solidislive.com/v1/manifest` |
+| Artifact host | Live on Vercel at `https://artifacts.solidislive.com` |
+| App host | Live on Vercel at `https://app.solidislive.com` |
+| Remaining rollout work | Hosted browser smoke, public landing/docs, verifier SDK publish, monitoring |
 
 Generate the indexer write token locally:
 
@@ -1048,7 +1051,7 @@ cd ..
 
 # 2. Build the Rust-to-JS WASM bridge used by SDK, console, and wallet.
 wasm-pack build wasm/ --target nodejs \
-  --out-dir ts-sdk/packages/core/wasm --release
+  --out-dir ../ts-sdk/packages/core/wasm --release
 
 # 3. Build Solana program binaries.
 NO_DNA=1 anchor build --no-idl
@@ -1363,10 +1366,12 @@ The manifest value should be the directory, not an individual file:
 
 #### Option A: Same-origin Vercel static files
 
-Use this if `solid-console` and artifacts should live under the same host.
+Use this only if `solid-sim` and artifacts should live under the same host.
+The current deployment uses the separate artifact host
+`https://artifacts.solidislive.com`.
 
 ```bash
-cd ../solid-console
+cd ../solid-sim
 rm -rf public/artifacts
 mkdir -p public/artifacts
 cp -R ../solid-protocol/public-devnet-artifacts/. public/artifacts/
@@ -1374,13 +1379,13 @@ npm ci
 npm run build
 ```
 
-Deploy `solid-console` to Vercel. The artifact base URL becomes:
+Deploy `solid-sim` to Vercel. The artifact base URL becomes:
 
 ```text
 https://<console-host>/artifacts
 ```
 
-This works because `solid-console/vercel.json` already sets immutable cache
+This works because `solid-sim/vercel.json` already sets immutable cache
 headers for `/artifacts/(.*)`.
 
 #### Option B: Cloudflare R2
@@ -1413,7 +1418,7 @@ are same-origin or localhost.
 Replace `ARTIFACT_BASE_URL` with the final URL:
 
 ```bash
-export ARTIFACT_BASE_URL="https://<artifact-host>/solid/devnet/2026-05-06"
+export ARTIFACT_BASE_URL="https://artifacts.solidislive.com"
 
 node <<'NODE'
 const manifest = require('./deployments/devnet.json');
@@ -1491,7 +1496,7 @@ What each env var does:
 
 ```bash
 cd solid-protocol
-npm install --prefix indexer
+npm ci
 
 PORT=8787 \
 HOST=127.0.0.1 \
@@ -1524,7 +1529,6 @@ COPY ts-sdk ./ts-sdk
 COPY deployments ./deployments
 COPY indexer ./indexer
 RUN npm ci
-RUN npm ci --prefix indexer
 ENV HOST=0.0.0.0
 ENV PORT=8787
 CMD ["npm", "start", "--prefix", "indexer"]
@@ -1613,10 +1617,16 @@ npm run verify:artifacts
 npm run smoke:devnet-config
 ```
 
-Publish the manifest to HTTPS. Three common choices:
+Publish the manifest to HTTPS. The current canonical manifest is:
 
-1. Same-origin under `solid-console`, for example
-   `solid-console/public/solid/devnet.json`.
+```text
+https://api.solidislive.com/v1/manifest
+```
+
+Other valid choices:
+
+1. Same-origin under `solid-sim`, for example
+   `solid-sim/public/solid/devnet.json`.
 2. The indexer well-known endpoint, if it serves the same manifest:
    `https://<indexer-host>/.well-known/solid-protocol.json`.
 3. Static storage/CDN:
@@ -1625,15 +1635,16 @@ Publish the manifest to HTTPS. Three common choices:
 Verify the published manifest:
 
 ```bash
-export SOLID_MANIFEST_URL="https://<manifest-host>/solid/devnet.json"
+export SOLID_MANIFEST_URL="https://api.solidislive.com/v1/manifest"
 curl -fsS "$SOLID_MANIFEST_URL" -o /tmp/solid-devnet.json
 python3 -m json.tool /tmp/solid-devnet.json >/dev/null
 ```
 
-### 12.11 Deploy `solid-console` / `solid-sim`
+### 12.11 Deploy `solid-sim`
 
-`solid-console` is a Vite static app. It can deploy to Vercel, Netlify,
-GitHub Pages, S3+CloudFront, or any static web host.
+`solid-sim` is a Vite static app. It can deploy to Vercel, Netlify,
+GitHub Pages, S3+CloudFront, or any static web host. The current public
+deployment is live at `https://app.solidislive.com`.
 
 Production env vars:
 
@@ -1642,10 +1653,10 @@ VITE_SOLID_NETWORK=devnet
 VITE_SOLID_CLUSTER=devnet
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com
-VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json
-VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06
-VITE_SOLID_INDEXER_URL=https://<indexer-host>
-VITE_SOLID_CONSOLE_URL=https://<console-host>
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com
+VITE_SOLID_CONSOLE_URL=https://app.solidislive.com
 VITE_SOLID_EXPLORER_CLUSTER=devnet
 ```
 
@@ -1665,17 +1676,17 @@ What each value does:
 #### Local production build test
 
 ```bash
-cd ../solid-console
+cd ../solid-sim
 npm ci
 
 VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json \
-VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06 \
-VITE_SOLID_INDEXER_URL=https://<indexer-host> \
-VITE_SOLID_CONSOLE_URL=https://<console-host> \
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest \
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com \
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com \
+VITE_SOLID_CONSOLE_URL=https://app.solidislive.com \
 VITE_SOLID_EXPLORER_CLUSTER=devnet \
 npm run build
 
@@ -1697,7 +1708,7 @@ Open the preview URL and check:
 
 #### Vercel deploy
 
-`solid-console/vercel.json` already sets:
+`solid-sim/vercel.json` already sets:
 
 - framework: `vite`
 - build command: `npm run build`
@@ -1707,7 +1718,7 @@ Open the preview URL and check:
 Set the production env vars in Vercel, then deploy:
 
 ```bash
-cd ../solid-console
+cd ../solid-sim
 vercel pull --yes --environment=production
 vercel build --prod
 vercel deploy --prebuilt --prod
@@ -1716,8 +1727,8 @@ vercel deploy --prebuilt --prod
 After deploy:
 
 ```bash
-curl -I https://<console-host>/
-curl -I https://<console-host>/artifacts/batch_credential_query.wasm
+curl -I https://app.solidislive.com/
+curl -I https://artifacts.solidislive.com/batch_credential_query.wasm
 ```
 
 If artifacts are hosted elsewhere, the second command is only required
@@ -1727,10 +1738,10 @@ against the artifact host, not the console host.
 
 Skip this section for the current `solid-sim` deployment unless you explicitly
 want to test the standalone browser extension. The current wallet role lives
-inside `solid-console`, so the required public E2E path is:
+inside `solid-sim`, so the required public E2E path is:
 
 ```text
-solid-console DAO -> solid-console Issuer -> solid-console Wallet -> solid-console Verifier
+solid-sim DAO -> solid-sim Issuer -> solid-sim Wallet -> solid-sim Verifier
 ```
 
 `solid-wallet` is a separate browser extension. Its build output is
@@ -1790,9 +1801,9 @@ VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=https://<manifest-host>/solid/devnet.json \
-VITE_SOLID_ARTIFACT_BASE_URL=https://<artifact-host>/solid/devnet/2026-05-06 \
-VITE_SOLID_INDEXER_URL=https://<indexer-host> \
+VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest \
+VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com \
+VITE_SOLID_INDEXER_URL=https://api.solidislive.com \
 npm run build
 ```
 
@@ -1815,13 +1826,13 @@ Install locally:
 
 If you do not deploy the extension, leave `deployments/devnet.json`
 `wallet.release_url` as `null` and record that the active wallet for this
-milestone is the embedded `solid-console` wallet. If you do deploy it, update
+milestone is the embedded `solid-sim` wallet. If you do deploy it, update
 `wallet.release_url` with the ZIP URL or private Chrome Web Store URL.
 
 ### 12.13 Optional verifier dApp deployment
 
 For full external-dApp testing, deploy a simple verifier app or use
-`solid-console` verifier pages as the verifier role.
+`solid-sim` verifier pages as the verifier role.
 
 If using `examples/verifier-dapp`, remember its `package.json` currently
 uses published package ranges:
@@ -1835,7 +1846,7 @@ Until npm packages are published, use one of these:
 
 1. Publish SDK packages first.
 2. Temporarily switch example deps to local `file:` paths for operator testing.
-3. Use `solid-console` verifier pages instead of the example dApp.
+3. Use `solid-sim` verifier pages instead of the example dApp.
 
 Verifier app requirements:
 
@@ -1893,16 +1904,16 @@ npm view @solid-protocol/channel version
 After all pieces are deployed, the links should form this graph:
 
 ```text
-solid-console
+solid-sim
   -> VITE_SOLID_MANIFEST_URL
   -> VITE_SOLID_RPC_URL / VITE_SOLID_WS_URL
   -> VITE_SOLID_INDEXER_URL
   -> VITE_SOLID_ARTIFACT_BASE_URL
 
-embedded console wallet
-  -> same solid-console VITE_SOLID_MANIFEST_URL
-  -> same solid-console VITE_SOLID_INDEXER_URL
-  -> same solid-console VITE_SOLID_ARTIFACT_BASE_URL
+embedded solid-sim wallet
+  -> same solid-sim VITE_SOLID_MANIFEST_URL
+  -> same solid-sim VITE_SOLID_INDEXER_URL
+  -> same solid-sim VITE_SOLID_ARTIFACT_BASE_URL
 
 optional solid-wallet extension
   -> baked VITE_SOLID_MANIFEST_URL, if extension is deployed
@@ -1928,10 +1939,10 @@ manifest
 Run this final wiring checklist:
 
 ```bash
-export SOLID_MANIFEST_URL="https://<manifest-host>/solid/devnet.json"
-export SOLID_INDEXER_URL="https://<indexer-host>"
-export ARTIFACT_BASE_URL="https://<artifact-host>/solid/devnet/2026-05-06"
-export SOLID_CONSOLE_URL="https://<console-host>"
+export SOLID_MANIFEST_URL="https://api.solidislive.com/v1/manifest"
+export SOLID_INDEXER_URL="https://api.solidislive.com"
+export ARTIFACT_BASE_URL="https://artifacts.solidislive.com"
+export SOLID_CONSOLE_URL="https://app.solidislive.com"
 
 curl -fsS "$SOLID_MANIFEST_URL" -o /tmp/solid-devnet.json
 curl -fsS "$SOLID_INDEXER_URL/v1/health" | python3 -m json.tool
@@ -2106,7 +2117,7 @@ the same flow through `solid-wallet` and `window.solid`.
 
 Evidence to record:
 
-- console build hash and wallet mode: `embedded solid-console wallet`
+- app build hash and wallet mode: `embedded solid-sim wallet`
 - holder public material, not secret seed
 - credential metadata
 - proof request origin
@@ -2278,8 +2289,8 @@ Console:
 - browser route smoke results
 
 Wallet:
-- active wallet mode: embedded `solid-console` wallet
-- console wallet route smoke result
+- active wallet mode: embedded `solid-sim` wallet
+- solid-sim wallet route smoke result
 - proof generation result
 - optional extension release URL, ZIP hash, and allowed origins only if
   `solid-wallet` is included in the test release
