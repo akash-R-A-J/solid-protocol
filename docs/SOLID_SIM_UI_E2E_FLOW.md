@@ -56,11 +56,13 @@ From the repo root:
 ```bash
 cd /Users/rajakash/Desktop/testing/solid-protocol/indexer
 npm install
+PORT=8787 \
+HOST=127.0.0.1 \
 SOLID_MANIFEST_PATH=../deployments/devnet.json \
 SOLID_INDEXER_STORE_PATH=../.solid-indexer/state.json \
-SOLID_RPC_URL="https://devnet.helius-rpc.com/?api-key=<YOUR_HELIUS_KEY>" \
-SOLID_INDEXER_WRITE_TOKEN="local-dev-token" \
-SOLID_ROOT_SYNC_KEYPAIR_PATH="../keys/devnet/deployer.json" \
+SOLID_RPC_URL=https://api.devnet.solana.com \
+SOLID_INDEXER_WRITE_TOKEN=local-dev-token \
+SOLID_ROOT_SYNC_KEYPAIR_PATH=$HOME/.config/solana/solid-devnet-admin.json \
 npm start
 ```
 
@@ -211,7 +213,9 @@ Required:
 
 - Issuer wallet connected.
 - Issuer wallet has more than `1 SOL`.
-- Metadata URI is a valid URL and no more than 128 bytes.
+- Metadata URI is optional in the simulator. If left blank, `solid-sim`
+  submits a compact `solid-sim://issuer/<authority>` URI so first-time
+  issuers do not need to publish JSON before testing.
 - Organization name is no more than 64 bytes.
 
 Actions:
@@ -698,6 +702,20 @@ What happens:
   of `4`.
 - `zk_verifier` creates a nullifier PDA to prevent replay.
 - Proof request is marked verified.
+
+Why this is not currently one normal wallet transaction:
+
+- The proof bytes plus public-signal/account surface exceed the practical
+  Solana transaction size path that a normal wallet can submit cleanly.
+- Address lookup tables help with account addresses, but they do not remove the
+  proof payload itself, and the verifier also needs an increased compute budget.
+- The proof-buffer path keeps each transaction within Solana packet and compute
+  limits at the cost of multiple signatures.
+- A relayer can make this one user action by paying/submitting the proof-buffer
+  sequence after the holder approves the proof. That improves UX, but adds
+  relayer availability, fee policy, abuse prevention, and observability
+  requirements. It should not move witness/proof generation server-side unless
+  the product intentionally gives up holder-side privacy.
 
 Expected result:
 

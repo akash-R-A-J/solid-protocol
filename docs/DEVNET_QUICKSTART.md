@@ -169,16 +169,32 @@ Required live checks:
 For a local operator run:
 
 ```bash
+cd solid-protocol/indexer
+npm install
+PORT=8787 \
+HOST=127.0.0.1 \
+SOLID_MANIFEST_PATH=../deployments/devnet.json \
+SOLID_INDEXER_STORE_PATH=../.solid-indexer/state.json \
+SOLID_RPC_URL=https://api.devnet.solana.com \
+SOLID_INDEXER_WRITE_TOKEN=local-dev-token \
+SOLID_ROOT_SYNC_KEYPAIR_PATH=$HOME/.config/solana/solid-devnet-admin.json \
+npm run start
+```
+
+Then, in a second terminal:
+
+```bash
 cd solid-sim
 npm install
 VITE_SOLID_CLUSTER=devnet \
 VITE_SOLID_NETWORK=devnet \
 VITE_SOLID_RPC_URL=https://api.devnet.solana.com \
 VITE_SOLID_WS_URL=wss://api.devnet.solana.com \
-VITE_SOLID_MANIFEST_URL=https://api.solidislive.com/v1/manifest \
+VITE_SOLID_MANIFEST_URL=http://127.0.0.1:8787/v1/manifest \
 VITE_SOLID_ARTIFACT_BASE_URL=https://artifacts.solidislive.com \
-VITE_SOLID_INDEXER_URL=https://api.solidislive.com \
-npm run dev
+VITE_SOLID_INDEXER_URL=http://127.0.0.1:8787 \
+VITE_SOLID_CONSOLE_URL=http://127.0.0.1:5174 \
+npm run dev -- --host 127.0.0.1 --port 5174
 ```
 
 The current app is now `solid-sim`: one shared simulator with System, Flow,
@@ -278,7 +294,8 @@ If manual settings are required, open Settings and enter:
 ### Issuer test flow
 
 1. Go to Issuer -> Register Issuer.
-2. Enter organization name and metadata URL.
+2. Enter organization name. Metadata URL is optional in `solid-sim`; a
+   `solid-sim://issuer/<authority>` URI is generated when left blank.
 3. Click "Derive issuer identity".
 4. Approve the wallet signature.
 5. Submit registration and save the transaction signature.

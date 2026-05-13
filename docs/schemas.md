@@ -50,6 +50,90 @@ Current devnet hash:
 
 ---
 
+### `dao_membership_v1`
+
+**Category:** Community
+
+| Index | Field | Type | Range Queryable | Example Values |
+|---|---|---|---|---|
+| 0 | `member_active` | Boolean | no | 0=No, 1=Yes |
+| 1 | `dao_id` | Uint64 | no | 1001 |
+| 2 | `membership_tier` | Uint64 | yes | 1=Member, 2=Contributor, 3=Core |
+| 3 | `joined_at` | Timestamp | yes | Unix timestamp |
+| 4 | `voting_power_band` | Uint64 | yes | Bucketed voting power |
+| 5 | `contribution_score` | Uint64 | yes | 0-100 |
+| 6 | `role_code` | Enum | no | Issuer-defined role code |
+| 7 | `valid_until` | Timestamp | yes | Membership expiry |
+
+**Example queries:**
+- DAO member: `field[0] == 1`
+- Contributor access: `field[2] >= 2`
+
+---
+
+### `accredited_investor_v1`
+
+**Category:** Finance
+
+| Index | Field | Type | Range Queryable | Example Values |
+|---|---|---|---|---|
+| 0 | `accredited_status` | Boolean | no | 0=No, 1=Yes |
+| 1 | `jurisdiction` | Uint64 | no | 840 (US), 826 (UK), 356 (IN) |
+| 2 | `accreditation_level` | Uint64 | yes | 1=Basic, 2=Reviewed, 3=Institutional |
+| 3 | `income_band` | Enum | no | Issuer-defined band |
+| 4 | `net_worth_band` | Enum | no | Issuer-defined band |
+| 5 | `entity_type` | Enum | no | 1=Individual, 2=Entity, 3=Trust |
+| 6 | `verification_date` | Timestamp | yes | Unix timestamp |
+| 7 | `valid_until` | Timestamp | yes | Credential expiry |
+
+**Example queries:**
+- Private pool eligibility: `field[0] == 1 AND field[2] >= 2`
+- Fresh accreditation: `field[7] >= <current unix timestamp>`
+
+---
+
+### `defi_eligibility_v1`
+
+**Category:** DeFi
+
+| Index | Field | Type | Range Queryable | Example Values |
+|---|---|---|---|---|
+| 0 | `eligible` | Boolean | no | 0=No, 1=Yes |
+| 1 | `jurisdiction` | Uint64 | no | ISO 3166-1 numeric |
+| 2 | `kyc_level` | Uint64 | yes | 1=Basic, 2=KYC, 3=Enhanced |
+| 3 | `risk_tier` | Enum | no | Issuer-defined risk tier |
+| 4 | `accredited_status` | Boolean | no | 0=No, 1=Yes |
+| 5 | `sanctions_screened_at` | Timestamp | yes | Unix timestamp |
+| 6 | `verification_date` | Timestamp | yes | Unix timestamp |
+| 7 | `valid_until` | Timestamp | yes | Eligibility expiry |
+
+**Example queries:**
+- Compliant DeFi access: `field[0] == 1 AND field[2] >= 2`
+- Still valid: `field[7] >= <current unix timestamp>`
+
+---
+
+### `proof_of_humanity_v1`
+
+**Category:** Identity
+
+| Index | Field | Type | Range Queryable | Example Values |
+|---|---|---|---|---|
+| 0 | `human_verified` | Boolean | no | 0=No, 1=Yes |
+| 1 | `liveness_level` | Uint64 | yes | 1=Low, 2=Standard, 3=Strong |
+| 2 | `uniqueness_level` | Uint64 | yes | 1=Device, 2=Social, 3=Biometric |
+| 3 | `method_code` | Enum | no | Issuer-defined method |
+| 4 | `country_code` | Uint64 | no | ISO 3166-1 numeric |
+| 5 | `verification_date` | Timestamp | yes | Unix timestamp |
+| 6 | `recheck_after` | Timestamp | yes | Recommended recheck time |
+| 7 | `valid_until` | Timestamp | yes | Credential expiry |
+
+**Example queries:**
+- One-person access: `field[0] == 1 AND field[2] >= 2`
+- Strong liveness: `field[1] >= 2`
+
+---
+
 ### `vaccination_v1`
 
 **Category:** Healthcare
@@ -87,6 +171,32 @@ Current devnet hash:
 | 7 | `valid_until` | Timestamp | ✅ | Certification expiry |
 
 ---
+
+## Making A Schema Proof-Ready
+
+Adding a schema to `solid-sim` only makes it selectable in the simulator UI.
+For a schema to behave like `basic_identity_v2` across the real devnet flow, it
+must be launched through the protocol path:
+
+1. Register the schema on-chain in `schema_registry`.
+2. Create a depth-20 credential Merkle tree for that schema.
+3. Initialize the schema tree binding PDA for the schema hash.
+4. Grant issuer permission for the schema before issuing real credentials.
+5. Publish the schema hash, tree, binding, and current root through the devnet
+   manifest or the indexer's registered-schema store.
+6. Run the indexer with a root-sync authority key so fresh issue events update
+   the service-side binding roots before holders generate proofs.
+
+Current local operator command for step 6:
+
+```bash
+cd /Users/rajakash/Desktop/testing/solid-protocol/indexer
+SOLID_ROOT_SYNC_KEYPAIR_PATH=$HOME/.config/solana/solid-devnet-admin.json npm run start
+```
+
+Without these steps, a built-in schema is only a UI/catalog option: users can
+see the shape of the credential, but the verifier path cannot produce a real
+on-chain proof against that schema.
 
 ## Creating Custom Schemas
 

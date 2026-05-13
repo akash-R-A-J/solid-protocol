@@ -39,6 +39,28 @@ SOLID_INDEXER_WRITE_TOKEN=change-me
 SOLID_ROOT_SYNC_KEYPAIR_PATH=../keys/devnet/deployer.json # optional; falls back to manifest deployer keypair path
 ```
 
+For the current devnet simulator flow, run the indexer with the root-sync
+authority key. This lets the service advance `SchemaTreeBinding` and
+`GlobalStateBinding` roots after fresh UI issuance, so holders do not need to
+manually sign DAO/admin sync transactions before proving:
+
+```bash
+cd /Users/rajakash/Desktop/testing/solid-protocol/indexer
+PORT=8787 \
+HOST=127.0.0.1 \
+SOLID_MANIFEST_PATH=../deployments/devnet.json \
+SOLID_INDEXER_STORE_PATH=../.solid-indexer/state.json \
+SOLID_RPC_URL=https://api.devnet.solana.com \
+SOLID_INDEXER_WRITE_TOKEN=local-dev-token \
+SOLID_ROOT_SYNC_KEYPAIR_PATH=$HOME/.config/solana/solid-devnet-admin.json \
+npm run start
+```
+
+The keypair must be the devnet registry/root-sync authority from the manifest.
+If the public key does not match the on-chain authority, the indexer will still
+serve reads, but proof generation after fresh issuance will stop with a root
+sync setup error instead of asking the holder to connect an admin wallet.
+
 Point `solid-sim` and `solid-wallet` at it with:
 
 ```bash
