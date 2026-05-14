@@ -9,6 +9,11 @@ data. The check is a Groth16 proof verified by an on-chain program, with
 revocation-aware issuer trust roots, schema governance, and one-shot
 nullifier replay protection.
 
+   [Simulator](https://app.solidislive.com) | 
+   [Indexer](https://api.solidislive.com) | 
+   [Circuit artifacts](https://artifacts.solidislive.com) | 
+   [Manifest](https://api.solidislive.com/v1/manifest)
+
 ## What problem this solves
 
 Solana apps that gate participation today have four bad options:
@@ -41,43 +46,6 @@ Today the devnet protocol, public artifact host, indexer/API, manifest,
 and `solid-sim` product surface are live under `solidislive.com`.
 Verifier SDK publication is the next external-developer milestone.
 
-## Live Devnet
-
-| Surface | URL | Status |
-| --- | --- | --- |
-| App / demo | `https://app.solidislive.com` | Live |
-| Indexer / API | `https://api.solidislive.com` | Live behind Nginx, TLS, and rate limiting |
-| Manifest | `https://api.solidislive.com/v1/manifest` | Live, canonical |
-| Circuit artifacts | `https://artifacts.solidislive.com` | Live, SHA-256 pinned |
-| Landing | `https://solidislive.com` | Pending product landing |
-| Docs | `https://docs.solidislive.com` | Pending public docs site |
-
-## Status
-
-- v0.6.1, post-Phase-E close-out plus public devnet hosting pass
-  (2026-05-12).
-- Three Anchor programs are deployed on devnet and the
-  DAO -> issuer -> holder -> verifier flow has verified on-chain.
-- `solid-sim` is deployed at `https://app.solidislive.com` with the
-  warm-gold proof-console product surface.
-- The indexer/API serves health, manifest, schemas, issuers, request
-  records, and Merkle proof routes from `https://api.solidislive.com`.
-- Circuit artifacts are hosted at `https://artifacts.solidislive.com`
-  and verified against the manifest pins.
-- 279/279 host + circuit unit tests green; clean-slate localnet
-  e2e green end-to-end including replay rejection.
-- Canonical state-of-protocol audit:
-  [`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`](sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md).
-- Devnet status page (program IDs, VK pins, artifact hashes,
-  known limitations): [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md).
-- Full UI E2E runbook for local `solid-sim` devnet testing:
-  [`docs/SOLID_SIM_UI_E2E_FLOW.md`](docs/SOLID_SIM_UI_E2E_FLOW.md).
-- 6 of 67 registry findings are CRITICAL; all 6 are closed. 19 of
-  23 HIGH closed. Open backlog is in
-  [`sec/SECURITY_REGISTRY.md`](sec/SECURITY_REGISTRY.md). Mainnet
-  blockers (multi-party ceremony; governance multisig on slash and
-  on the issuer-tree operator) are tracked separately and do **not**
-  apply to devnet.
 
 ## How a verification flow looks today
 
@@ -207,68 +175,6 @@ consumer. See `CLAUDE.md` for the hard invariants and
 - **VK rotation.** ADR-0015 freeze gate + 48-hour timelock; chunked
   upload mirror for both the batch and subgroup verification keys.
 
-## Documentation
-
-Product / integrator-facing:
-
-- [`docs/DEVNET_STATUS.md`](docs/DEVNET_STATUS.md) -- current devnet
-  IDs, VK pins, artifact hashes, known limitations.
-- [`docs/DEVNET_QUICKSTART.md`](docs/DEVNET_QUICKSTART.md) -- current
-  public devnet URLs and tester entry points.
-- [`docs/integration-guide.md`](docs/integration-guide.md)
-- [`docs/issuer-guide.md`](docs/issuer-guide.md)
-- [`docs/verifier-guide.md`](docs/verifier-guide.md)
-- [`docs/VERIFIER_INTEGRATION.md`](docs/VERIFIER_INTEGRATION.md)
-- [`docs/REVOCATION_DESIGN.md`](docs/REVOCATION_DESIGN.md)
-- [`DEPLOYMENT_TRACKER.md`](DEPLOYMENT_TRACKER.md) -- live deployment
-  state and remaining rollout work.
-- [`DEPLOYMENT_COMMAND_LOG.md`](DEPLOYMENT_COMMAND_LOG.md) -- exact
-  commands used for the current `solidislive.com` deployment.
-
-Devnet rollout planning (load-bearing for the next release):
-
-- [`plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md`](plan/PRODUCT_SURFACE_DEVNET_LAUNCH_PLAN.md)
-  -- strategic positioning, competitive landscape, demo design.
-- [`plan/DEVNET_ROLLOUT_PUNCHLIST.md`](plan/DEVNET_ROLLOUT_PUNCHLIST.md)
-  -- tactical rollout list; some hosted devnet items are now complete.
-- [`plan/VERIFIER_SDK_SHAPE.md`](plan/VERIFIER_SDK_SHAPE.md)
-  -- design sketch for the `@solid-protocol/verifier` wrapper now
-  implemented as the devnet alpha surface.
-
-Product architecture (per-actor):
-
-- [`docs/CREDENTIAL_DELIVERY_DESIGN.md`](docs/CREDENTIAL_DELIVERY_DESIGN.md)
-  -- issuer-to-holder credential package format and three delivery
-  channels.
-- [`docs/HOLDER_STORAGE_AND_WALLET.md`](docs/HOLDER_STORAGE_AND_WALLET.md)
-  -- holder storage architecture and proposed Wallet Standard
-  `solid:credentials@1` feature spec.
-- [`docs/SDK_INTEGRATOR_MATRIX.md`](docs/SDK_INTEGRATOR_MATRIX.md)
-  -- five-actor SDK package surface (verifier, issuer, holder, dao,
-  light) including the new `@solid-protocol/dao` package.
-
-Protocol / cryptography:
-
-- [`docs/architecture.md`](docs/architecture.md)
-- [`docs/circuits.md`](docs/circuits.md)
-- [`docs/light-protocol.md`](docs/light-protocol.md) (SPL Account
-  Compression integration)
-- [`docs/key-management.md`](docs/key-management.md)
-- [`docs/schemas.md`](docs/schemas.md)
-- [`docs/PROGRAM_ID_RECONCILIATION.md`](docs/PROGRAM_ID_RECONCILIATION.md)
-- [`docs/CU_BUDGET.md`](docs/CU_BUDGET.md)
-- [`docs/DEPLOYMENT_AND_TESTING.md`](docs/DEPLOYMENT_AND_TESTING.md)
-
-Audit history:
-
-- [`sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md`](sec/audits/2026-05-02_v0.6.1_post_phase_e_full_system_audit.md)
-  -- canonical post-Phase-E full-system audit.
-- [`sec/audits/2026-05-01_v0.6.1_comprehensive_audit_synthesis.md`](sec/audits/2026-05-01_v0.6.1_comprehensive_audit_synthesis.md)
-  -- NF-batch synthesis (superseded).
-- [`sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md`](sec/audits/2026-04-25_v0.6.1_deep_comprehensive_audit.md)
-  -- post-Phase-3-impl-4 (superseded).
-- [`sec/SECURITY_REGISTRY.md`](sec/SECURITY_REGISTRY.md)
-
 ## Trust model
 
 - **DAO-governed issuers.** Issuers stake SOL, are admitted via
@@ -296,5 +202,5 @@ Audit history:
 
 ## License
 
-Dual licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT)
+[MIT](LICENSE-MIT)
 at your option.
