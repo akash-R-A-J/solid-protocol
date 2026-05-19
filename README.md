@@ -1,116 +1,137 @@
 SolID Protocol
 ==============
 
-Private, ZK-powered Credential Verification Engine for Solana
--------------------------------------------------------------
+Private Zero-Knowledge Credential Registry on Solana
+----------------------------------------------------
 
-SolID allows Solana applications to verify user eligibility—KYC, age, membership, or accreditation—without ever handling or storing private user data. Verification is performed on-chain via Groth16 zero-knowledge proofs, ensuring complete privacy for the holder and cryptographic certainty for the verifier.
+SolID Protocol is an on-chain identity and private credential verification engine built on the Solana blockchain. By integrating Groth16 zero-knowledge proofs, BabyJubJub elliptic curve cryptography, Poseidon hashing, and SPL Account Compression, SolID provides a highly scalable framework for decentralized, privacy-preserving identity claims. 
 
-Powered by BabyJubJub, Poseidon Hash, and Groth16 Zero-Knowledge Proofs
+Holders can mathematically prove attributes (e.g., country of residence, age threshold, or membership status) to on-chain verifiers without exposing their raw personal data or compromising their public wallet addresses.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Solana Devnet](https://img.shields.io/badge/Solana-Devnet-green.svg)](https://explorer.solana.com/?cluster=devnet)
-[![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](#)
+Live System Resources
+---------------------
 
-Overview
---------
+*   **Console Simulator**: [https://app.solidislive.com](https://app.solidislive.com)
+*   **Indexer API Endpoint**: [https://api.solidislive.com](https://api.solidislive.com)
+*   **ZK Proof Artifact Storage**: [https://artifacts.solidislive.com](https://artifacts.solidislive.com)
+*   **Active Devnet Manifest**: [https://api.solidislive.com/v1/manifest](https://api.solidislive.com/v1/manifest)
 
-SolID is a decentralized identity protocol designed for the privacy-first Web3 era. It solves the "regulatory compliance vs. absolute user privacy" dilemma for Solana developers by providing a standard for:
+Cryptographic Foundations
+------------------------
 
-*   **Private Proofs**: Holders generate ZK proofs that satisfy verifier requirements (e.g., "Age >= 18" or "Country != USA") without revealing the underlying attribute value or their identity.
-*   **On-Chain Verification**: Proofs are verified directly by a specialized Solana program using efficient `alt_bn128` syscalls.
-*   **Decentralized Trust**: A DAO-governed registry manages issuer enrollment, trust tiers, and schema definitions.
-*   **State Compression**: Utilizes SPL Account Compression (Merkle trees) to scale credential storage with minimal on-chain rent costs.
+SolID relies on a custom cryptographic pipeline optimized for zero-knowledge proving and low compute-unit verification on Solana.
 
-Resources & Links
------------------
+### 1. Poseidon Hash Function
+*   **Purpose**: Used as the primary snark-friendly collision-resistant hash function for building state commitments, Merkle tree nodes, and nullifiers.
+*   **Configuration**: Parametrized over the scalar field of the `bn254` (alt_bn128) curve, using 5 inputs for nullifiers to enforce replay protection without public exposure.
 
-Here are the key live components of the SolID ecosystem:
+### 2. BabyJubJub (BJJ) Elliptic Curve
+*   **Purpose**: Encodes wallet-bound identity keys. BJJ is a twisted Edwards curve birationally equivalent to a Montgomery curve, defined over the scalar field of `bn254`.
+*   **Subgroup Proofs**: To prevent identity key spoofing, issuers must submit an on-chain Groth16 proof demonstrating that their derived BJJ public key lies strictly within the prime-order subgroup of the curve, shielding the registry against invalid curve attacks.
 
-*   **Live Console Simulator**: [app.solidislive.com](https://app.solidislive.com)
-*   **Live Indexer API**: [api.solidislive.com](https://api.solidislive.com)
-*   **ZK Proof Artifacts**: [artifacts.solidislive.com](https://artifacts.solidislive.com)
-*   **System Manifest**: [api.solidislive.com/v1/manifest](https://api.solidislive.com/v1/manifest)
+### 3. Groth16 Zero-Knowledge Proofs
+*   **Purpose**: Enforces statement-level validity (e.g., credential ownership, attribute checks, and subgroup membership) with small constant-sized proof footprints (3 G1/G2 points).
+*   **Solana Verification**: Uses built-in `alt_bn128` elliptic curve addition, scalar multiplication, and pairing check syscalls, keeping verification compute costs well within single-transaction limits.
 
-Architecture & Core Components
-------------------------------
-
-### System Components
-
-#### ts-sdk/core (WASM Primitives)
-*   Provides Poseidon, BabyJubJub, and nullifier WASM cryptographic primitives.
-*   Loads browser-native WASM from `wasm-web/` and server-native WASM from `wasm/`.
-
-#### ts-sdk/holder
-*   Coordinates Groth16 proof generation and local Merkle path management for user wallets.
-
-#### ts-sdk/verifier
-*   A clean, developer-facing wrapper for submitting proofs to the on-chain ZK verifier program.
-
-#### ts-sdk/issuer
-*   Utility libraries for credential signing, Poseidon commitment generation, and BabyJubJub subgroup proof generation.
-
-### Protocol Architecture
+On-Chain Architecture
+---------------------
 
 ```mermaid
 graph TD
-    subgraph "On-Chain (Solana)"
+    subgraph On-Chain Program Layer
         VR[ZK Verifier Program]
         IR[Issuer Registry Program]
         SR[Schema Registry Program]
         AC[SPL Account Compression]
     end
 
-    subgraph "Off-Chain (TS SDK)"
+    subgraph Off-Chain SDK Layer
         SDK[Unified SDK Facade]
-        Core[Core WASM Primitives]
-        Holder[Holder Proof Generator]
+        Core[Core WASM Cryptography]
+        Holder[Holder Wallet SDK]
         Verifier[Verifier SDK Wrapper]
     end
 
-    subgraph "ZK Layer (Circom)"
-        BCQ[Batch Credential Query]
-        BSP[BJJ Subgroup Proof]
+    subgraph Zero-Knowledge Layer
+        BCQ[Batch Credential Query Circuit]
+        BSP[BabyJubJub Subgroup Circuit]
     end
 
-    Holder -->|Groth16 Proof| VR
-    Verifier -->|Query Specification| VR
-    IR -->|Trust Roots| AC
-    BCQ -->|Compiled Circuit| Holder
-    BCQ -->|Verification Key| VR
+    Holder -->|Submit Groth16 Proof| VR
+    Verifier -->|Query Predicates| VR
+    IR -->|Anchor CPI / State Tree| AC
+    BCQ -->|Compile Circuit| Holder
+    BCQ -->|Write Verification Key| VR
 ```
 
-Protocol Trust Guarantees
---------------------------
+### Core Program Deployments (Devnet)
 
-*   **DAO-governed issuers**: Issuers stake SOL, are admitted via token-weighted vote with a 100-slot flash-loan window, and prove on-chain that their BabyJubJub key sits in the prime-order subgroup before they can issue.
-*   **Atomic revocation**: `revoke_issuer_atomic` flips status, bumps the revocation nonce, CPIs `replace_leaf` into the SPL AC issuer tree, and writes the new Poseidon root into `IssuerTreeBinding` in a single instruction.
-*   **Slashing**: Lamports move atomically from the issuer's stake vault to the DAO treasury PDA via `slash_issuer` and `submit_fraud_proof`.
-*   **Deterministic verification**: The verifier program reads trust roots directly from registry accounts by byte offset, enforcing strict ownership checks.
+*   **ZK Verifier Program**: `DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb`
+    Responsible for validating Groth16 proofs against registered verification keys (VKs) and preventing double-spending via persistent nullifier PDAs.
+*   **Issuer Registry Program**: `5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx`
+    Manages issuer lifecycle states (registration, trust tier assignments, and BJJ identity verification) and coordinates state compression via SPL Account Compression.
+*   **Schema Registry Program**: `4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1`
+    Acts as the source of truth for global schema definitions, attestation layouts, and permitted cryptographic configurations.
 
-Setup & Installation
---------------------
+State Compression & Scalability
+--------------------------------
 
-### Prerequisites
+To solve Solana's high account rent costs for millions of credentials, SolID utilizes **SPL Account Compression** (concurrent Merkle trees).
 
-Ensure you have the following toolchain installed:
-*   **Rust**: `1.79.0` with `wasm32-unknown-unknown` target
-*   **Solana CLI**: `1.18.22`
-*   **Anchor CLI**: `0.30.1`
-*   **Circom**: `2.1.9`
-*   **SnarkJS**: `0.7.5`
-*   **Wasm-pack**: `0.13.1`
-*   **Node.js**: `v18` + **npm**: `v10`
+*   **Issuer and Credential Trees**: Credentials are not represented by individual on-chain accounts. Instead, they are accumulated into concurrent Merkle trees. Only the tree root is stored on-chain, reducing storage fees by over 99%.
+*   **Tree Bindings**: The `IssuerTreeBinding` PDA maps a specific issuer to their active Merkle tree.
+*   **Atomic Revocation**: The `revoke_issuer_atomic` instruction performs a cross-program invocation (CPI) to replace the revoked leaf in the tree, updating the root in the same transaction.
 
-### Build Instructions
+Governance, Staking, & Security
+-------------------------------
 
-1.  **Clone the Repository**:
+*   **Registry Onboarding**: Issuers register by staking 1 SOL and submitting a subgroup proof. The application is reviewed and finalized via token-weighted DAO votes.
+*   **Slash Mechanics**: If an issuer signs fraudulent data or violates protocol specifications, any participant can submit a cryptographic fraud proof on-chain to trigger the `slash_issuer` instruction, which slashes the staked SOL and transfers it to the DAO treasury.
+*   **Replay Protection**: The nullifier is computed as:
+    $$\text{Nullifier} = \text{Poseidon}(\text{Holder BJJ Secret}, \text{Credential Leaf Index}, \text{Tree ID}, \text{Scope})$$
+    When verified, the nullifier is persisted on-chain as a PDA, preventing proof-replay attacks.
+
+Unified TypeScript SDK Monorepo
+--------------------------------
+
+The monorepo contains modular npm packages under the `@solid-protocol` namespace:
+
+### 1. `@solid-protocol/core`
+*   Low-level WebAssembly bindings compiled from the core Rust primitives.
+*   Distributes browser-native WASM (`wasm-web/`) and Server-native WASM (`wasm/`).
+*   Implements Poseidon hashing, BabyJubJub key derivation, and signature validation.
+
+### 2. `@solid-protocol/holder`
+*   Client-side SDK for holders to store credential envelopes, build Merkle paths from indexer data, and compile offline Groth16 proofs.
+
+### 3. `@solid-protocol/verifier`
+*   Developer-facing module for constructing credential validation queries, generating versioned transactions using Address Lookup Tables (ALTs), and submitting verify requests.
+
+### 4. `@solid-protocol/issuer`
+*   Utility module for credential envelope encryption, commitment generation, and subgroup identity proof compilation.
+
+Build & Environment Setup
+-------------------------
+
+### System Dependencies
+
+*   **Rust**: Version `1.79.0` with `wasm32-unknown-unknown` target
+*   **Solana CLI**: Version `1.18.22`
+*   **Anchor CLI**: Version `0.30.1`
+*   **Circom**: Version `2.1.9`
+*   **SnarkJS**: Version `0.7.5`
+*   **Wasm-pack**: Version `0.13.1`
+*   **Node.js**: Version `v18+` and **npm** `v10`
+
+### Step-by-Step Compilation
+
+1.  **Clone the Monorepo**:
     ```bash
     git clone https://github.com/solid-protocol/solid-protocol.git
     cd solid-protocol
     ```
 
-2.  **Build Circuits**:
+2.  **Generate Circuit Artifacts**:
     ```bash
     cd circuits
     npm install
@@ -118,19 +139,19 @@ Ensure you have the following toolchain installed:
     cd ..
     ```
 
-3.  **Build Core WebAssembly Primitives**:
+3.  **Compile WebAssembly Primitives**:
     ```bash
-    # For Node.js (Indexer and tests)
+    # Compiles Rust crypto and places target bridges inside ts-sdk core
     wasm-pack build wasm --target nodejs --out-dir ts-sdk/packages/core/wasm --release --no-opt
     ```
 
-4.  **Synchronize Program Keypairs & Build Programs**:
+4.  **Sync Keypairs and Build Smart Programs**:
     ```bash
     bash scripts/sync_program_keypairs.sh
     anchor build
     ```
 
-5.  **Build TypeScript SDK**:
+5.  **Build TypeScript SDK Modules**:
     ```bash
     cd ts-sdk
     npm ci
@@ -138,30 +159,30 @@ Ensure you have the following toolchain installed:
     cd ..
     ```
 
-Verification & Local Testing
------------------------------
+Verification & E2E Integration Suite
+-------------------------------------
 
-To run the complete E2E integration test suite against a clean-slate local Solana validator:
+To validate the complete protocol flow (initialization, Merkle tree bindings, schema registration, issuer onboarding, credential issuance, proof generation, and verification) against a clean local Solana validator:
 
 ```bash
-# Start the Solana local validator
+# Start a clean local validator with state compression pre-loaded
 solana-test-validator --reset \
   --clone-upgradeable-program cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK \
   --clone-upgradeable-program noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV \
   --url https://api.devnet.solana.com &
 
-# Sync keypairs and deploy
+# Sync keypairs and deploy smart programs
 bash scripts/sync_program_keypairs.sh --reset-state
 anchor deploy --provider.cluster localnet
 
-# Run end-to-end flow
+# Execute end-to-end testing script
 export SOLID_VOTING_PERIOD_SECONDS=120
 npm run e2e
 ```
 
-`npm run e2e` runs the sequence: `init-onchain` -> `backfill-issuer-tree` -> `bootstrap-schema-tree` -> `bootstrap-issuer` -> `issue` -> `prove` and exits `0` with a final `verified: true` validation status.
+Development team contacts and auditing histories are maintained locally under `/adr` and `/sec` directories.
 
 License
 -------
 
-Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under either of Apache License, Version 2.0 or MIT License at your option.
