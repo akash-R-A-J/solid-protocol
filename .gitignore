@@ -102,3 +102,15 @@ REAL_E2E_PROTOCOL_RUNBOOK.md
 SCHEMA_POWER_AND_SYSTEM_IMPROVEMENTS.md
 security_audit.md
 solid_protocol_system_audit_2026_04_21.md
+
+# Exclude local-only folders from GitHub tracking
+/adr/
+/docs/
+/plan/
+/sec/
+/render.yaml
+/flake.nix
+/rust-toolchain.toml
+/build_output.txt
+/test_output.txt
+
