@@ -6,6 +6,11 @@ import {
   TransactionInstruction,
 } from '@solana/web3.js';
 import {
+  createMintToInstruction,
+  getAssociatedTokenAddressSync,
+  createAssociatedTokenAccountInstruction,
+} from '@solana/spl-token';
+import {
   computeIdentityState,
   computeIssuerLeaf,
   initWasm,
@@ -58,6 +63,41 @@ export function createIndexerHandler({ manifest, store, connection = null, write
 
       if (url.pathname === '/.well-known/solid-protocol.json' || url.pathname === '/v1/manifest') {
         writeJsonResponse(res, 200, await manifestWithLiveRoots(manifest, connection));
+        return;
+      }
+
+      if (url.pathname === '/v1/faucet/governance' && req.method === 'POST') {
+        if (!connection || !rootSyncKeypair) {
+          writeJsonResponse(res, 503, { ok: false, error: 'FAUCET_UNAVAILABLE', message: 'No RPC or deployer keypair' });
+          return;
+        }
+        try {
+          const body = await readJsonBody(req);
+          const wallet = new PublicKey(body.wallet);
+          const mint = new PublicKey(manifest.programs.issuer_registry.governance_token_mint);
+          const ata = getAssociatedTokenAddressSync(mint, wallet);
+          const accountInfo = await connection.getAccountInfo(ata);
+          const tx = new Transaction();
+          if (!accountInfo) {
+            tx.add(createAssociatedTokenAccountInstruction(
+              rootSyncKeypair.publicKey, // payer
+              ata,
+              wallet,
+              mint
+            ));
+          }
+          // Mint 10,000 tokens (assuming 6 decimals)
+          tx.add(createMintToInstruction(mint, ata, rootSyncKeypair.publicKey, 10_000_000_000n));
+          
+          const latest = await connection.getLatestBlockhash();
+          tx.recentBlockhash = latest.blockhash;
+          tx.feePayer = rootSyncKeypair.publicKey;
+          tx.sign(rootSyncKeypair);
+          const signature = await connection.sendRawTransaction(tx.serialize());
+          writeJsonResponse(res, 200, { ok: true, signature });
+        } catch (e) {
+          writeJsonResponse(res, 500, { ok: false, error: e.message });
+        }
         return;
       }
 

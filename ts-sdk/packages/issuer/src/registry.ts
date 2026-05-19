@@ -426,7 +426,6 @@ export function buildRegisterIssuerTransaction(params: {
   const metadataUri = params.metadataUri.trim();
   if (!name) throw new Error('Issuer name is required.');
   if (new TextEncoder().encode(name).length > 64) throw new Error('Issuer name must be 64 bytes or less.');
-  if (!metadataUri) throw new Error('Metadata URI is required.');
   if (new TextEncoder().encode(metadataUri).length > 128) throw new Error('Metadata URI must be 128 bytes or less.');
   if (params.bjjPubKeyX.length !== 32 || params.bjjPubKeyY.length !== 32) {
     throw new Error('Issuer BJJ public key coordinates must be 32 bytes each.');

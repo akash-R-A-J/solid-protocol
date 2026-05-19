@@ -523,8 +523,10 @@ pub mod issuer_registry {
         let now_ts = Clock::get()?.unix_timestamp;
 
         // Flash-loan protection: stake age minimum.
+        // SIMULATOR MODE: Reduced from 50 to 12 slots (~5s on devnet)
+        // to lower friction for testing. Restore to 100 for mainnet.
         require!(
-            now_slot >= staker.last_stake_slot + 100,
+            now_slot >= staker.last_stake_slot + 12,
             ErrorCode::StakeTooNew
         );
 
@@ -923,6 +925,26 @@ pub mod issuer_registry {
                 registry.approval_threshold_bps / 100
             );
         }
+        Ok(())
+    }
+
+    /// SIMULATOR MODE: Allow updating the voting period on the live
+    /// registry config. Used on devnet to set a short window (e.g. 10s)
+    /// so issuers can be approved quickly during testing.
+    /// Remove this entire instruction for mainnet.
+    pub fn set_voting_period(
+        ctx: Context<SetVotingPeriod>,
+        new_period: i64,
+    ) -> Result<()> {
+        require!(new_period > 0, ErrorCode::InvalidVotingPeriod);
+        let registry = &mut ctx.accounts.registry_config;
+        let old = registry.voting_period_seconds;
+        registry.voting_period_seconds = new_period;
+        msg!(
+            "Voting period updated: {}s -> {}s",
+            old,
+            new_period,
+        );
         Ok(())
     }
 
@@ -1575,12 +1597,15 @@ pub mod issuer_registry {
         ctx: Context<AppendIssuerLeaf>,
         poseidon_proof_path: Vec<u8>,
     ) -> Result<()> {
-        // Authority gate mirrors the binding lifecycle instructions.
-        require_keys_eq!(
-            ctx.accounts.authority.key(),
-            ctx.accounts.registry_config.authority,
-            ErrorCode::Unauthorized
-        );
+        // SIMULATOR MODE: Authority check removed so any wallet can enroll
+        // issuers into the issuer tree during devnet testing. Restore for mainnet.
+        // See PRE_LAUNCH_REVERT.md
+        //
+        // require_keys_eq!(
+        //     ctx.accounts.authority.key(),
+        //     ctx.accounts.registry_config.authority,
+        //     ErrorCode::Unauthorized
+        // );
 
         let issuer = &mut ctx.accounts.issuer_account;
         require!(
@@ -2653,13 +2678,27 @@ pub struct FinalizeVoting<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// SIMULATOR MODE: Accounts for `set_voting_period`.
+/// Remove this entire struct for mainnet.
+#[derive(Accounts)]
+pub struct SetVotingPeriod<'info> {
+    #[account(mut, seeds = [b"registry-config"], bump)]
+    pub registry_config: Account<'info, RegistryConfig>,
+    // SIMULATOR MODE: No authority check so any wallet can
+    // adjust the voting period during devnet testing.
+    // For mainnet, gate this behind registry_config.authority.
+    pub caller: Signer<'info>,
+}
+
 #[derive(Accounts)]
 #[instruction(schema_hash: [u8; 32])]
 pub struct GrantSchemaPermission<'info> {
     #[account(
         seeds = [b"registry-config"],
         bump,
-        constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
+        // SIMULATOR MODE: Authority check removed so any wallet can grant
+        // schema permissions during devnet testing. Restore for mainnet.
+        // constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
     )]
     pub registry_config: Account<'info, RegistryConfig>,
 
@@ -2701,7 +2740,9 @@ pub struct RevokeSchemaPermission<'info> {
     #[account(
         seeds = [b"registry-config"],
         bump,
-        constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
+        // SIMULATOR MODE: Authority check removed so any wallet can revoke
+        // schema permissions during devnet testing. Restore for mainnet.
+        // constraint = registry_config.authority == registry_authority.key() @ ErrorCode::Unauthorized,
     )]
     pub registry_config: Account<'info, RegistryConfig>,
 

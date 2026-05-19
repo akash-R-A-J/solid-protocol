@@ -89,3 +89,16 @@ circuits/trusted_setup/
 # encode per-developer permission grants and runtime state that should
 # not flow upstream.
 .claude/
+
+# Internal docs — not shipped to GitHub.
+# Only README.md stays tracked.
+docs/
+AGENTS.md
+CLAUDE.md
+DEPLOYMENT_COMMAND_LOG.md
+DEPLOYMENT_TRACKER.md
+FINAL_DEVNET_CHECKLIST.md
+REAL_E2E_PROTOCOL_RUNBOOK.md
+SCHEMA_POWER_AND_SYSTEM_IMPROVEMENTS.md
+security_audit.md
+solid_protocol_system_audit_2026_04_21.md
