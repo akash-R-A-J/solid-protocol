@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Connection, Keypair } from '@solana/web3.js';
 import { validateSolidManifest } from '@solid-protocol/sdk/manifest';
@@ -9,6 +9,31 @@ import { createIndexerHandler } from './service.mjs';
 import { FileIndexerStore } from './store.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+// Minimal dependency-free .env file loader for Node.js 18+
+try {
+  const envPath = resolve(here, '..', '.env');
+  if (existsSync(envPath)) {
+    const content = readFileSync(envPath, 'utf8');
+    for (const line of content.split('\r\n').join('\n').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const index = trimmed.indexOf('=');
+      if (index > 0) {
+        const key = trimmed.slice(0, index).trim();
+        let val = trimmed.slice(index + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        if (process.env[key] === undefined) {
+          process.env[key] = val;
+        }
+      }
+    }
+  }
+} catch (err) {
+  console.warn(`Failed to load .env file: ${err.message}`);
+}
 const repoRoot = resolve(here, '..', '..');
 const manifestPath = resolve(process.env.SOLID_MANIFEST_PATH ?? resolve(repoRoot, 'deployments/devnet.json'));
 const storePath = resolve(process.env.SOLID_INDEXER_STORE_PATH ?? resolve(repoRoot, '.solid-indexer/state.json'));

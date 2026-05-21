@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { requiredString } from './encoding.mjs';
 
 const EMPTY_STATE = Object.freeze({
   credentialRequests: [],
@@ -427,11 +428,7 @@ function normalizeSchemaHash(value) {
   return normalized;
 }
 
-function requiredString(value, name) {
-  const text = String(value ?? '').trim();
-  if (!text) throw new Error(`Missing required field: ${name}`);
-  return text;
-}
+
 
 function nullableString(value) {
   const text = value === undefined || value === null ? '' : String(value).trim();

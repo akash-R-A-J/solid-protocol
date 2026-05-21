@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "network": "localnet",
+  "cluster": "http://127.0.0.1:8899",
+  "websocket_cluster": "ws://127.0.0.1:8900",
+  "deployed_at": "2026-05-21T17:12:00Z",
+  "git_commit": "localnet",
+  "note": "Localnet configuration for development.",
+  "deployer": {
+    "address": null,
+    "keypair_path": "~/.config/solana/id.json"
+  },
+  "programs": {
+    "schema_registry": {
+      "program_id": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1",
+      "upgrade_authority": null,
+      "idl_metadata": null,
+      "binary": "target/deploy/schema_registry.so",
+      "description": "On-chain credential schema registry plus SchemaTreeBinding and GlobalStateBinding PDAs"
+    },
+    "issuer_registry": {
+      "program_id": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx",
+      "upgrade_authority": null,
+      "idl_metadata": null,
+      "binary": "target/deploy/issuer_registry.so",
+      "description": "DAO-governed issuer registry with staking, voting, and credential issuance"
+    },
+    "zk_verifier": {
+      "program_id": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb",
+      "upgrade_authority": null,
+      "idl_metadata": null,
+      "binary": "target/deploy/zk_verifier.so",
+      "description": "Groth16 batch verifier with PDA-per-nullifier replay protection"
+    }
+  },
+  "artifacts": {
+    "base_url": null,
+    "manifest_url": null,
+    "items": {
+      "batchCredentialQueryWasm": {
+        "filename": "batch_credential_query.wasm",
+        "local_path": "circuits/build/batch_credential_query_js/batch_credential_query.wasm",
+        "sha256": "add8cb0390511405faf2ffb1213d3792b858c7b2082d5b4b92a84dcd627e61b4",
+        "content_type": "application/wasm"
+      },
+      "batchCredentialQueryZkey": {
+        "filename": "batch_credential_query.zkey",
+        "local_path": "circuits/build/batch_credential_query_final.zkey",
+        "sha256": "7f43bbac249e8c913ac384ff4b007138d1ffb5bc489a16be42737598d96395e8",
+        "content_type": "application/octet-stream"
+      },
+      "batchCredentialQueryVerificationKey": {
+        "filename": "batch_credential_query_verification_key.json",
+        "local_path": "circuits/build/verification_key.json",
+        "sha256": "8385b82b032f65e505c784b28486ca8bec7da3f3d4b97b82724e697734565146",
+        "content_type": "application/json"
+      },
+      "subgroupWasm": {
+        "filename": "bjj_subgroup_proof.wasm",
+        "local_path": "circuits/build/bjj_subgroup_proof_js/bjj_subgroup_proof.wasm",
+        "sha256": "2c00e5a455a3b6fe1dc2a8761737acf2911baf396aab70165de3abd2673608b0",
+        "content_type": "application/wasm"
+      },
+      "subgroupZkey": {
+        "filename": "bjj_subgroup_proof.zkey",
+        "local_path": "circuits/build/bjj_subgroup_proof_final.zkey",
+        "sha256": "ea401ea9cbeb9ef829be30e0080b83a3c82544af53367b95a17f24a75845bd4a",
+        "content_type": "application/octet-stream"
+      },
+      "subgroupVerificationKey": {
+        "filename": "bjj_subgroup_verification_key.json",
+        "local_path": "circuits/build/bjj_subgroup_verification_key.json",
+        "sha256": "938ab39020f31156fa7e8fc230fc458adba5f13e08c64d41d9dbffdbc3643ce9",
+        "content_type": "application/json"
+      }
+    }
+  },
+  "indexer": {
+    "url": null,
+    "health_path": "/v1/health",
+    "api_version": "v1"
+  },
+  "console": {
+    "url": null
+  },
+  "wallet": {
+    "release_url": null
+  },
+  "schemas": [
+    {
+      "name": "basic_identity_v2",
+      "display_name": "Basic Identity v2",
+      "version": 2,
+      "category": "Identity",
+      "status": "localnet",
+      "schema_hash": "6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823",
+      "schema_pda": "EmdhTJt5VcQ4FiTy9xitTBBNa3XaBvwXsAB34FJWkx4",
+      "fields": [
+        "age",
+        "country_code",
+        "region",
+        "id_type",
+        "verification_level",
+        "issued_date",
+        "nationality",
+        "_reserved"
+      ],
+      "predicates": ["EQ", "NE", "GT", "GTE", "LT", "LTE"],
+      "field_metadata": [
+        {
+          "name": "age",
+          "type": "uint64",
+          "description": "Age in years",
+          "range_queryable": true
+        },
+        {
+          "name": "country_code",
+          "type": "uint64",
+          "description": "ISO 3166-1 numeric country code"
+        },
+        {
+          "name": "region",
+          "type": "uint64",
+          "description": "Region or state code"
+        },
+        {
+          "name": "id_type",
+          "type": "enum",
+          "description": "1 passport, 2 license, 3 national ID"
+        },
+        {
+          "name": "verification_level",
+          "type": "enum",
+          "description": "1 self, 2 KYC, 3 in-person",
+          "range_queryable": true
+        },
+        {
+          "name": "issued_date",
+          "type": "timestamp",
+          "description": "Credential issuance date as Unix seconds",
+          "range_queryable": true
+        },
+        {
+          "name": "nationality",
+          "type": "uint64",
+          "description": "ISO 3166-1 numeric nationality code"
+        },
+        {
+          "name": "_reserved",
+          "type": "uint64",
+          "description": "Reserved field; keep 0"
+        }
+      ],
+      "tree_depth": 20,
+      "tree_address": "4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc",
+      "tree_authority_pda": "CHc3kWDEiSGx9gHFaqj3whe4yo33ocbLVHKjYi6D3im1",
+      "tree_binding_pda": "FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb",
+      "current_root": null,
+      "current_root_slot": null
+    }
+  ],
+  "trees": {
+    "global_state_tree": {
+      "tree_address": "68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o",
+      "binding_pda": "68Twk6dXwbahut6VDv1wSRkQMdFZRaeTbhUMNPiaJM8o",
+      "current_root": null,
+      "current_root_slot": null,
+      "depth": 20
+    },
+    "issuer_tree": {
+      "tree_address": "FajCWko9tc6dhdPtwrS5kfkehPoEV8pn5LdL4kLL7k7f",
+      "binding_pda": "ExJ2PLDf8qrDxYsYRJbuKNTJ38xPxt1USJpe7cdfgL6h",
+      "tree_authority_pda": "Dr8gCiXud8iab1qDnjDDhuKXLYVA7btkNoPWZH4MbTt9",
+      "current_root": null,
+      "current_root_slot": null,
+      "depth": 16
+    },
+    "schema_trees": [
+      {
+        "schema_hash": "6b5014bf611a025a4693b196a517ece9f2d0672672a2eb38d7a50481474e6823",
+        "tree_address": "4mhWLGb2KAtF1bY2mdrGb37xhAUpmRsL9bgzLRjE35sc",
+        "binding_pda": "FiiYYq2gysBiwhVYptS5GkmKvMJETXNXthz9SrTciuDb",
+        "current_root": null,
+        "current_root_slot": null
+      }
+    ]
+  },
+  "sample": null,
+  "pdas": {
+    "verifier_config": {
+      "seeds": ["verifier-config"],
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+    },
+    "vk_storage": {
+      "seeds": ["vk-storage", "<verifier_config_pubkey>"],
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+    },
+    "nullifier_record": {
+      "seeds": ["null", "<nullifier_bytes>"],
+      "program": "DcyezhHYGwFTZCeb3BMJbQHFh7EyQMx8WCrKDNLbarb"
+    },
+    "registry_config": {
+      "seeds": ["registry-config"],
+      "program": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
+    },
+    "dao_treasury": {
+      "seeds": ["dao-treasury"],
+      "program": "5fxhJ1uKBtsVGq17xuVDapcTALZprNVU8Ar9mFHVijMx"
+    },
+    "global_binding": {
+      "seeds": ["global-binding"],
+      "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
+    },
+    "schema_tree_binding": {
+      "seeds": ["schema-tree-binding", "<schema_hash>"],
+      "program": "4ZCrxVBKpko7xUSrLq7zZzd87xGEKFSxFm3JG6j3CmF1"
+    }
+  },
+  "toolchain": {
+    "anchor_cli": "0.30.1",
+    "anchor_lang": "0.30.1",
+    "solana_cli": "1.18.22",
+    "rust": "1.79.0",
+    "node": "18",
+    "circom": "2.1.9",
+    "snarkjs": "0.7.5",
+    "wasm_pack": "0.13.1"
+  }
+}

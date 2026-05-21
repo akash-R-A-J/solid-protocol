@@ -44,7 +44,7 @@ import {
   updateSchemaPermissionRequest,
   upsertTreeLeaf,
 } from './store.mjs';
-import { bytesToHex, hexToBytes32, normalizeHex32, writeJsonResponse } from './encoding.mjs';
+import { bytesToHex, hexToBytes32, normalizeHex32, writeJsonResponse, requiredString } from './encoding.mjs';
 
 const UPDATE_TREE_ROOT_DISCRIMINATOR = Buffer.from([96, 226, 40, 157, 60, 110, 3, 1]);
 const UPDATE_GLOBAL_ROOT_DISCRIMINATOR = Buffer.from([75, 70, 121, 86, 205, 171, 173, 156]);
@@ -1008,11 +1008,7 @@ function requireWriteAuth(req, writeToken) {
   }
 }
 
-function requiredString(value, name) {
-  const text = String(value ?? '').trim();
-  if (!text) throw new Error(`Missing required field: ${name}`);
-  return text;
-}
+
 
 function statusForError(error) {
   if (error.code === 'UNAUTHORIZED') return 401;

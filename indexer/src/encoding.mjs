@@ -42,3 +42,10 @@ export function writeJsonResponse(res, status, body) {
 function jsonReplacer(_key, value) {
   return typeof value === 'bigint' ? value.toString() : value;
 }
+
+export function requiredString(value, name) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new Error(`Missing required field: ${name}`);
+  return text;
+}
+
