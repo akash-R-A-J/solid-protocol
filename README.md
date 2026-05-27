@@ -15,6 +15,7 @@ Live System Resources
 *   **Indexer API Endpoint**: [https://api.solidislive.com](https://api.solidislive.com)
 *   **ZK Proof Artifact Storage**: [https://artifacts.solidislive.com](https://artifacts.solidislive.com)
 *   **Active Devnet Manifest**: [https://api.solidislive.com/v1/manifest](https://api.solidislive.com/v1/manifest)
+*   **Docs**: [https://deepwiki.com/akash-R-A-J/solid-protocol](https://deepwiki.com/akash-R-A-J/solid-protocol)
 
 Cryptographic Foundations
 ------------------------
