@@ -1,6 +1,6 @@
 {
   "name": "@solid-protocol/verifier",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Devnet alpha verifier SDK for private Solana eligibility checks with SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",

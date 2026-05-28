@@ -14,6 +14,18 @@
 //!   `schema-registry` and asserts `merkleRoot` belongs to the tree that was
 //!   pre-bound to `schemaHash`.
 
+// SOLID-SEC-A5 (2026-05-28): no production-code panic surfaces.
+//
+// Anchor instruction handlers run inside the BPF VM where a panic aborts
+// the transaction with a non-typed error and burns the user's tx fee
+// without surfacing a useful reason.  Every panicking primitive in
+// production code must be replaced with a typed `ErrorCode` so callers
+// see what actually went wrong.  The lints below enforce that contract
+// at clippy time; `#[cfg(test)]` modules are explicitly allowed because
+// `unwrap`/`expect`/`panic!` are the standard assertion mechanism in
+// `#[test]` functions.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use anchor_lang::prelude::*;
 use solid_light::cpi_helpers;
 use solid_light::cpi_helpers::{ISSUER_REGISTRY_ID, SCHEMA_REGISTRY_ID};
@@ -1363,6 +1375,7 @@ pub enum ErrorCode {
 // malformed-input regressions are caught without a full program-test harness.
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

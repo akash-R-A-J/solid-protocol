@@ -1,3 +1,9 @@
+// SOLID-SEC-A5 (2026-05-28): no production-code panic surfaces.
+// See programs/zk-verifier/src/lib.rs for the full rationale. Tests are
+// explicitly allowed because `unwrap`/`expect`/`panic!` are the standard
+// assertion mechanism in `#[test]` functions.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -155,7 +161,15 @@ fn write_issuer_tree_binding_root(
         binding_data[80] == ISSUER_TREE_STATUS_ACTIVE,
         ErrorCode::IssuerTreeBindingFrozen
     );
-    let prev_slot_bytes: [u8; 8] = binding_data[72..80].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): prior `binding_data.len() >= ISSUER_TREE_BINDING_SIZE`
+    // require! makes this slice statically safe today, but we route through
+    // `get(..).ok_or(..)? + try_into().map_err(..)?` so a future refactor of
+    // the size check cannot silently re-introduce a panic on a too-short buffer.
+    let prev_slot_bytes: [u8; 8] = binding_data
+        .get(72..80)
+        .ok_or(error!(ErrorCode::InvalidIssuerTreeBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
     let prev_slot = u64::from_le_bytes(prev_slot_bytes);
     require!(slot > prev_slot, ErrorCode::IssuerTreeRootNotMonotonic);
     binding_data[40..72].copy_from_slice(new_root);
@@ -1471,13 +1485,22 @@ pub mod issuer_registry {
             ErrorCode::IssuerTreeBindingFrozen
         );
 
-        let stored_authority: [u8; 32] = data[81..113].try_into().unwrap();
+        // SOLID-SEC-A5 (2026-05-28): see write_issuer_tree_binding_root for rationale.
+        let stored_authority: [u8; 32] = data
+            .get(81..113)
+            .ok_or(error!(ErrorCode::InvalidIssuerTreeBinding))?
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         require!(
             stored_authority == ctx.accounts.authority.key().to_bytes(),
             ErrorCode::Unauthorized
         );
 
-        let last_slot_bytes: [u8; 8] = data[72..80].try_into().unwrap();
+        let last_slot_bytes: [u8; 8] = data
+            .get(72..80)
+            .ok_or(error!(ErrorCode::InvalidIssuerTreeBinding))?
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         let last_slot = u64::from_le_bytes(last_slot_bytes);
         let now_slot = Clock::get()?.slot;
         require!(now_slot > last_slot, ErrorCode::IssuerTreeRootNotMonotonic);
@@ -1510,7 +1533,12 @@ pub mod issuer_registry {
             data.len() >= ISSUER_TREE_BINDING_SIZE && data[0..8] == ISSUER_TREE_DISCRIMINATOR,
             ErrorCode::InvalidIssuerTreeBinding
         );
-        let stored_authority: [u8; 32] = data[81..113].try_into().unwrap();
+        // SOLID-SEC-A5 (2026-05-28): see write_issuer_tree_binding_root for rationale.
+        let stored_authority: [u8; 32] = data
+            .get(81..113)
+            .ok_or(error!(ErrorCode::InvalidIssuerTreeBinding))?
+            .try_into()
+            .map_err(|_| error!(ErrorCode::InvalidIssuerTreeBinding))?;
         require!(
             stored_authority == ctx.accounts.authority.key().to_bytes(),
             ErrorCode::Unauthorized
@@ -3855,6 +3883,7 @@ pub enum RevokeReason {
 // integration suite under `tests/integration/`.
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

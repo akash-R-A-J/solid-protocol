@@ -1,6 +1,6 @@
 {
   "name": "@solid-protocol/light",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "SPL Account Compression adapter and Merkle proof utilities for SolID Protocol.",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "@solid-protocol/issuer",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Credential issuance SDK for SolID Protocol issuers.",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
   "dependencies": {
     "@solana/web3.js": "^1.95.0",
     "@solid-protocol/core": "file:../../../../../../../../tmp/solid-sdk-packs/solid-protocol-core-0.1.0.tgz",
-    "@solid-protocol/light": "0.2.0",
+    "@solid-protocol/light": "0.1.0",
     "bn.js": "^5.2.1",
     "buffer": "^6.0.3",
     "snarkjs": "^0.7.0"

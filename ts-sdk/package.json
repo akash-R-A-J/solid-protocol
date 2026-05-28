@@ -1,6 +1,6 @@
 {
   "name": "solid-protocol-ts-sdk-workspace",
-  "version": "0.3.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Private workspace for the SolID Protocol TypeScript SDK packages",
   "packageManager": "npm@10.0.0",

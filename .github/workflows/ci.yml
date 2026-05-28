@@ -99,6 +99,24 @@ jobs:
         # Only lint the non-program crates here; programs are BPF-only and
         # are linted by `anchor build` with proper cfg gating.
         run: cargo clippy -p solid-core -p solid-light -- -D warnings
+      - name: cargo clippy (Anchor programs, host-target lint gate)
+        # SOLID-SEC-A5 (2026-05-28): forbid production-code panic surfaces.
+        #
+        # Each program crate carries a crate-root
+        #   #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+        # that turns any future re-introduction of `.unwrap()` / `.expect()` /
+        # `panic!()` outside `#[cfg(test)]` into a hard build error.  The deny
+        # is attached at the source so it cannot be silently dropped by edits
+        # to this workflow; this step exists to surface the failure in CI
+        # rather than only at `anchor build` time.
+        #
+        # `--lib` keeps clippy on the host target — clippy is a syntactic /
+        # MIR-level analysis, so the BPF target is not required for the lint
+        # gate.  BPF-specific issues are still caught by the `anchor` job.
+        # Test modules carry `#[allow(clippy::unwrap_used, clippy::expect_used,
+        # clippy::panic)]` at the source so assertion-style unwraps inside
+        # `#[cfg(test)] mod tests { ... }` remain idiomatic.
+        run: cargo clippy --lib -p zk-verifier -p issuer-registry -p schema-registry -- -D warnings
       # solid-prover fmt/clippy moved to the `prover` job below, since
       # that workspace pins a different toolchain (1.85 vs 1.79 here).
       # Keeping them in this job would require installing two toolchains

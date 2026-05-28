@@ -49,11 +49,40 @@ const rpcUrl = process.env.SOLID_RPC_URL || manifest.cluster;
 const connection = rpcUrl ? new Connection(rpcUrl, 'confirmed') : null;
 const store = new FileIndexerStore(storePath);
 const rootSyncKeypair = loadRootSyncKeypair(manifest);
+
+// SOLID-SEC-A1 (2026-05-28): fail-closed write auth gate at boot.
+//
+// The legacy default of empty SOLID_INDEXER_WRITE_TOKEN silently disabled
+// write authentication on every gated POST. We now refuse to boot whenever
+// the configured network is anything other than localnet without an explicit
+// token. To keep the localnet inner loop frictionless we still allow boot
+// with no token on localnet, but the service-level helper logs a loud warning
+// and SOLID_INDEXER_AUTH_REQUIRED=0 is the only way to permit anonymous
+// writes in that case.
+const writeToken = (process.env.SOLID_INDEXER_WRITE_TOKEN ?? '').trim();
+const network = String(manifest.network ?? '').toLowerCase();
+const isLocalnet = network === 'localnet' || network === '';
+const authBypass = process.env.SOLID_INDEXER_AUTH_REQUIRED === '0';
+if (!writeToken && !isLocalnet && !authBypass) {
+  console.error(
+    `[SolID indexer] SOLID_INDEXER_WRITE_TOKEN is empty but network is "${network}". ` +
+      `Refusing to start — set the env var or pin SOLID_INDEXER_AUTH_REQUIRED=0 ` +
+      `(explicit opt-in to anonymous writes).`,
+  );
+  process.exit(1);
+}
+if (!writeToken && isLocalnet) {
+  console.warn(
+    '[SolID indexer] SOLID_INDEXER_WRITE_TOKEN is empty on localnet. Writes will be unauthenticated. ' +
+      'Set a token before exposing this indexer on a public network.',
+  );
+}
+
 const handler = createIndexerHandler({
   manifest,
   store,
   connection,
-  writeToken: process.env.SOLID_INDEXER_WRITE_TOKEN ?? '',
+  writeToken,
   rootSyncKeypair,
 });
 

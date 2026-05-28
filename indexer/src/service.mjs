@@ -67,10 +67,18 @@ export function createIndexerHandler({ manifest, store, connection = null, write
       }
 
       if (url.pathname === '/v1/faucet/governance' && req.method === 'POST') {
+        if (!isWritableNetwork(manifest.network)) {
+          const error = new Error(
+            `Governance faucet is only available on devnet/localnet/testnet (got: ${manifest.network ?? 'unknown'}).`,
+          );
+          error.code = 'FORBIDDEN_ON_NETWORK';
+          throw error;
+        }
         if (!connection || !rootSyncKeypair) {
           writeJsonResponse(res, 503, { ok: false, error: 'FAUCET_UNAVAILABLE', message: 'No RPC or deployer keypair' });
           return;
         }
+        requireWriteAuth(req, writeToken);
         try {
           const body = await readJsonBody(req);
           const wallet = new PublicKey(body.wallet);
@@ -161,6 +169,7 @@ export function createIndexerHandler({ manifest, store, connection = null, write
       }
 
       if (url.pathname === '/v1/credential-requests' && req.method === 'POST') {
+        requireWriteAuth(req, writeToken);
         const body = await readJsonBody(req);
         const record = createCredentialRequest(store, body, manifest.network ?? 'devnet');
         writeJsonResponse(res, 201, record);
@@ -194,6 +203,7 @@ export function createIndexerHandler({ manifest, store, connection = null, write
       }
 
       if (url.pathname === '/v1/proof-requests' && req.method === 'POST') {
+        requireWriteAuth(req, writeToken);
         const body = await readJsonBody(req);
         const record = createProofRequest(store, body, manifest.network ?? 'devnet');
         writeJsonResponse(res, 201, record);
@@ -226,6 +236,7 @@ export function createIndexerHandler({ manifest, store, connection = null, write
       }
 
       if (url.pathname === '/v1/schema-permission-requests' && req.method === 'POST') {
+        requireWriteAuth(req, writeToken);
         const body = await readJsonBody(req);
         const record = createSchemaPermissionRequest(store, body, manifest.network ?? 'devnet');
         writeJsonResponse(res, 201, record);
@@ -240,6 +251,7 @@ export function createIndexerHandler({ manifest, store, connection = null, write
       }
 
       if (url.pathname === '/v1/custom-schema-requests' && req.method === 'POST') {
+        requireWriteAuth(req, writeToken);
         const body = await readJsonBody(req);
         const record = createCustomSchemaRequest(store, body, manifest.network ?? 'devnet');
         writeJsonResponse(res, 201, record);
@@ -991,27 +1003,80 @@ async function fetchSchemas(connection, manifest) {
   return accounts.map((entry) => decodeSchemaAccount(entry.pubkey, entry.account.data));
 }
 
-async function readJsonBody(req) {
+// Default body-size cap. Most write routes accept a single JSON record; Groth16
+// proofs + public inputs sit comfortably under 64 KB. We keep the default at
+// 256 KB to leave headroom for batched proof bodies on /v1/tree-leaves.
+// Routes that need a different limit can pass `{ maxBytes }` explicitly.
+const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+
+async function readJsonBody(req, { maxBytes = DEFAULT_MAX_BODY_BYTES } = {}) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let received = 0;
+  for await (const chunk of req) {
+    received += chunk.length;
+    if (received > maxBytes) {
+      const error = new Error(
+        `Request body exceeded ${maxBytes} bytes; configure a larger maxBytes if intentional.`,
+      );
+      error.code = 'PAYLOAD_TOO_LARGE';
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch (parseErr) {
+    const error = new Error(`Invalid JSON body: ${parseErr.message}`);
+    error.code = 'INVALID_JSON';
+    throw error;
+  }
 }
 
+// SOLID-SEC-A1 (2026-05-28): fail closed.
+//
+// Previously this helper short-circuited to "allow" when `writeToken` was the
+// empty string, which meant a missing/forgotten `SOLID_INDEXER_WRITE_TOKEN`
+// env var silently disabled auth on every write route. The fix:
+//
+//   1. server.mjs refuses to start in non-localnet networks when the token is
+//      empty (see SOLID-SEC-A1 in server.mjs).
+//   2. This helper now throws UNAUTHORIZED if the configured token is empty
+//      AND the request did not supply one. The intent is: if you reached this
+//      function at all, auth is required.
+//
+// The one escape hatch is `SOLID_INDEXER_AUTH_REQUIRED=0`, which restores the
+// legacy fail-open behavior. server.mjs only honors that flag on localnet.
 function requireWriteAuth(req, writeToken) {
-  if (!writeToken) return;
-  const header = req.headers.authorization ?? '';
-  if (header !== `Bearer ${writeToken}`) {
+  const expected = (writeToken ?? '').trim();
+  const header = (req.headers.authorization ?? '').trim();
+
+  if (!expected) {
+    if (process.env.SOLID_INDEXER_AUTH_REQUIRED === '0') return;
+    const error = new Error(
+      'Indexer write auth is enabled but no SOLID_INDEXER_WRITE_TOKEN is configured on the server.',
+    );
+    error.code = 'UNAUTHORIZED';
+    throw error;
+  }
+
+  if (header !== `Bearer ${expected}`) {
     const error = new Error('Missing or invalid write token.');
     error.code = 'UNAUTHORIZED';
     throw error;
   }
 }
 
-
+function isWritableNetwork(network) {
+  const n = (network ?? '').toLowerCase();
+  return n === 'devnet' || n === 'localnet' || n === 'testnet';
+}
 
 function statusForError(error) {
   if (error.code === 'UNAUTHORIZED') return 401;
+  if (error.code === 'PAYLOAD_TOO_LARGE') return 413;
+  if (error.code === 'INVALID_JSON') return 400;
+  if (error.code === 'FORBIDDEN_ON_NETWORK') return 403;
   if (/Missing|required|invalid|must be|Unsupported/.test(error.message)) return 400;
   return 500;
 }

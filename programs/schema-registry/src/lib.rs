@@ -1,3 +1,9 @@
+// SOLID-SEC-A5 (2026-05-28): no production-code panic surfaces.
+// See programs/zk-verifier/src/lib.rs for the full rationale. Tests are
+// explicitly allowed because `unwrap`/`expect`/`panic!` are the standard
+// assertion mechanism in `#[test]` functions.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::system_instruction;
 
@@ -104,12 +110,24 @@ pub fn apply_schema_tree_root_update(
         ErrorCode::SchemaHashMismatch
     );
     require!(data[112] == STATUS_ACTIVE, ErrorCode::BindingFrozen);
-    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): the prior `data.len() >= SCHEMA_TREE_BINDING_SIZE`
+    // require! makes both slices statically safe today, but we route through
+    // `get(..).ok_or(..)? + try_into().map_err(..)?` so a future refactor of
+    // the size check cannot silently re-introduce a panic on a too-short buffer.
+    let stored_authority: [u8; 32] = data
+        .get(113..145)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     require!(
         &stored_authority == signer_pubkey,
         ErrorCode::UnauthorizedTreeBinding
     );
-    let last_slot_bytes: [u8; 8] = data[104..112].try_into().unwrap();
+    let last_slot_bytes: [u8; 8] = data
+        .get(104..112)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     let last_slot = u64::from_le_bytes(last_slot_bytes);
     require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
 
@@ -133,7 +151,12 @@ pub fn apply_schema_tree_status_update(
         data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
         ErrorCode::MalformedBinding
     );
-    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): see write_schema_tree_binding_root for rationale.
+    let stored_authority: [u8; 32] = data
+        .get(113..145)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     require!(
         &stored_authority == signer_pubkey,
         ErrorCode::UnauthorizedTreeBinding
@@ -153,7 +176,12 @@ pub fn apply_schema_tree_authority_rotation(
         data.len() >= SCHEMA_TREE_BINDING_SIZE && data[0..8] == SCHEMA_TREE_DISCRIMINATOR,
         ErrorCode::MalformedBinding
     );
-    let stored_authority: [u8; 32] = data[113..145].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): see write_schema_tree_binding_root for rationale.
+    let stored_authority: [u8; 32] = data
+        .get(113..145)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     require!(
         &stored_authority == signer_pubkey,
         ErrorCode::UnauthorizedTreeBinding
@@ -178,12 +206,21 @@ pub fn apply_global_root_update(
         data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
         ErrorCode::MalformedBinding
     );
-    let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): see write_schema_tree_binding_root for rationale.
+    let stored_authority: [u8; 32] = data
+        .get(48..80)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     require!(
         &stored_authority == signer_pubkey,
         ErrorCode::UnauthorizedTreeBinding
     );
-    let last_slot_bytes: [u8; 8] = data[40..48].try_into().unwrap();
+    let last_slot_bytes: [u8; 8] = data
+        .get(40..48)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     let last_slot = u64::from_le_bytes(last_slot_bytes);
     require!(now_slot > last_slot, ErrorCode::RootSlotNotMonotonic);
 
@@ -203,7 +240,12 @@ pub fn apply_global_authority_rotation(
         data.len() >= GLOBAL_STATE_BINDING_SIZE && data[0..8] == GLOBAL_ROOT_DISCRIMINATOR,
         ErrorCode::MalformedBinding
     );
-    let stored_authority: [u8; 32] = data[48..80].try_into().unwrap();
+    // SOLID-SEC-A5 (2026-05-28): see write_schema_tree_binding_root for rationale.
+    let stored_authority: [u8; 32] = data
+        .get(48..80)
+        .ok_or(error!(ErrorCode::MalformedBinding))?
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MalformedBinding))?;
     require!(
         &stored_authority == signer_pubkey,
         ErrorCode::UnauthorizedTreeBinding
@@ -817,6 +859,7 @@ pub enum ErrorCode {
 // ─── Host-side tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

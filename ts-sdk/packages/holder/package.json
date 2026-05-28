@@ -1,6 +1,6 @@
 {
   "name": "@solid-protocol/holder",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Holder-side proof generation SDK for SolID Protocol credentials.",
   "type": "module",
   "main": "dist/index.js",
